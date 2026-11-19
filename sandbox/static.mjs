@@ -146,24 +146,35 @@ export function analyseArchive(buf, { subdir = '' } = {}) {
     let m = null; try { m = RS.fromMcpbManifest(t); } catch { m = null; }
     if (m && m.tools && m.tools.length) cands.push({ kind: 'mcpb', fidelity: m.fidelity, path: p, tools: m.tools });
   }
-  const found = []; const byName = new Set();
-  const goFound = [];
-  let scanned = 0;
-  for (const p of plan.src.concat(paths.filter((x) => /\.go$/.test(x) && !SKIP_DIR.test(x) && !/_test\.go$/.test(x)))) {
+  // JavaScript, TypeScript and Python: the shared reader, which detects the SDK and schema library from the
+  // manifests, reads the registrations as that SDK lists them, and sets aside tools that are not registered at run time.
+  const srcPaths = plan.src.filter((x) => !SKIP_DIR.test(x));
+  let an = { found: [], tools: [], excluded: [], sdk: null, files: 0 };
+  try { an = RS.analyseRepo(files, { maxSourceFiles: MAX_SRC_FILES }); } catch (e) { out.static.errors.push({ path: null, error: String(e.message).slice(0, 200) }); }
+  const found = an.tools;
+  const goFound = []; const goNames = new Set();
+  let scanned = an.files;
+  for (const p of srcPaths) { const t = files.get(p); if (t) for (const n of envRefsFromSource(t)) out.env_refs.source.push(n); }
+  for (const p of paths.filter((x) => /\.go$/.test(x) && !SKIP_DIR.test(x) && !/_test\.go$/.test(x))) {
     if (scanned >= MAX_SRC_FILES) break;
     const t = files.get(p); if (!t) continue;
     scanned++;
     let ts = [];
-    try { ts = /\.go$/.test(p) ? extractGo(t) : RS.extractFromFile(p, t); } catch (e) { out.static.errors.push({ path: p, error: String(e.message).slice(0, 200) }); }
+    try { ts = extractGo(t); } catch (e) { out.static.errors.push({ path: p, error: String(e.message).slice(0, 200) }); }
     for (const x of ts) {
-      if (!x || !x.tool || typeof x.tool.name !== 'string' || byName.has(x.tool.name)) continue;
-      byName.add(x.tool.name);
-      (/\.go$/.test(p) ? goFound : found).push({ path: p, ...x });
+      if (!x || !x.tool || typeof x.tool.name !== 'string' || goNames.has(x.tool.name)) continue;
+      goNames.add(x.tool.name);
+      goFound.push({ path: p, ...x });
     }
     for (const n of envRefsFromSource(t)) out.env_refs.source.push(n);
   }
   out.static.scanned_src = scanned;
+  out.static.sdk_read = an.sdk ? { kind: an.sdk.kind ?? null, version: an.sdk.version ?? null, zod: an.sdk.zod ?? null, py: an.sdk.py ?? null } : null;
   out.env_refs.source = [...new Set(out.env_refs.source)].sort();
+  const left = an.excluded.map((x) => ({ reasons: [...new Set(x.marks.filter((m) => m.exclude).map((m) => m.reason))] }));
+  const kept = an.tools.filter((x) => x.marks && x.marks.length).length;
+  out.static.left_out = { tools: left.length, reasons: [...new Set(left.flatMap((x) => x.reasons))].sort() };
+  out.static.kept_marked = kept;
   for (const [list, kind] of [[found, 'source'], [goFound, 'source-go']]) {
     if (!list.length) continue;
     const allLiteral = list.every((x) => x.fidelity === 'literal');

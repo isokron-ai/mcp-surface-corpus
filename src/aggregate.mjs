@@ -99,7 +99,9 @@ function checksTable(R, key, checks, min) {
     const hit = R.filter((r) => r.checks[key][c.id]);
     const servers = cell(hit.length, R.length, min, R.hide);
     // Over the servers the check fired on: the share of their tools it fired on. Its size would repeat the cell, so it is not given.
-    per[c.id] = { section: c.section, severity: c.severity, servers, tool_share_when_fired: servers.suppressed ? { n: null, suppressed: true } : dist(hit.map((r) => share(r.checks[key][c.id][1], r.features && r.features[key] ? r.features[key].tools : null)).filter((x) => x !== null), { min, hide: true }) };
+    // The default severity is the check's; the severity seen is the worst one each server's findings carried (an envelope check is advice on an earlier-era server).
+    const seen = tally(hit, (r) => r.checks[key][c.id][2] || null);
+    per[c.id] = { section: c.section, severity: c.severity, severity_seen: servers.suppressed ? null : categorical(seen, min, R.hide), servers, tool_share_when_fired: servers.suppressed ? { n: null, suppressed: true } : dist(hit.map((r) => share(r.checks[key][c.id][1], r.features && r.features[key] ? r.features[key].tools : null)).filter((x) => x !== null), { min, hide: true }) };
   }
   return { n: size(R, min), enough: R.length >= min, counts_withheld: !!R.hide, per_check: per };
 }
@@ -303,6 +305,15 @@ export function aggregate(rowsIn, { checks, minCell = DEFAULT_MIN_CELL, engine =
 }
 
 /** Read off the aggregate (so it can hold nothing the aggregate withholds). */
+/** The severity the findings carried when it is known and the same on every server that fired; else the check's default. */
+function sevLabel(pc, k) {
+  const seen = pc && pc.severity_seen && pc.severity_seen.by ? Object.keys(pc.severity_seen.by).filter((x) => x !== 'other') : [];
+  const other = pc && pc.severity_seen && pc.severity_seen.other;
+  if (seen.length === 1 && !other) return seen[0];
+  if (seen.length) return `${k.severity} by default; seen ${seen.join(', ')}${other ? ' and others' : ''}`;
+  return k.severity;
+}
+
 export function calibration(agg, checks) {
   const out = { almost_all_threshold: ALMOST_ALL, disagree_threshold: DISAGREE, live: null, static: null, never_fires_anywhere: [], static_vs_live_disagree: [], static_vs_live_withheld: 0 };
   const isZero = (s) => !s.suppressed && s.n === 0 && s.rate !== null;
@@ -315,11 +326,11 @@ export function calibration(agg, checks) {
       if (s.suppressed) {
         // A withheld cell that is known to be nearly everything is still "almost all" when its floor passes the threshold.
         const floor = s.bound && s.bound.startsWith('>') ? (Number(s.bound.slice(1)) + 1) / s.of : s.bound === 'nearly all' ? 1 : 0;
-        if (floor >= ALMOST_ALL) o.fires_on_almost_all.push({ id: k.id, severity: k.severity, servers: s.bound });
+        if (floor >= ALMOST_ALL) o.fires_on_almost_all.push({ id: k.id, severity: sevLabel(T.per_check[k.id], k), servers: s.bound });
         else if (s.bound && (s.bound.startsWith('>') || s.bound === 'nearly all')) o.fires.push({ id: k.id, rate: null, servers: s.bound });
         else o.withheld.push(k.id);
       } else if (isZero(s)) o.never_fires.push(k.id);
-      else { if (s.rate >= ALMOST_ALL) o.fires_on_almost_all.push({ id: k.id, severity: k.severity, servers: s.n, rate: s.rate }); o.fires.push({ id: k.id, rate: s.rate }); }
+      else { if (s.rate >= ALMOST_ALL) o.fires_on_almost_all.push({ id: k.id, severity: sevLabel(T.per_check[k.id], k), servers: s.n, rate: s.rate }); o.fires.push({ id: k.id, rate: s.rate }); }
     }
     o.fires.sort((a, b) => (b.rate ?? 2) - (a.rate ?? 2));
     out[key] = o;

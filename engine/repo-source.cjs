@@ -102,8 +102,13 @@
     else if (tok.type === 'id' && ctx && ctx.zod && ctx.zodNames.has(tok.value) && isP(t[i + 1], '.')) {
       const z = parseZod(t, i, ctx);
       if (z) r = z;
+    } else if (tok.type === 'id' && ctx && ctx.consts && Object.prototype.hasOwnProperty.call(ctx.consts, tok.value) && isP(t[i + 1], '.') && t[i + 2] && t[i + 2].type === 'id' && t[i + 2].value === 'shape' && !isP(t[i + 3], '(') && !isP(t[i + 3], '.')) {
+      // Schema.shape of a zod object constant: the raw shape, with the optional flags the object schema kept.
+      const c = ctx.consts[tok.value]; const sch = c.value;
+      if (c.zod && sch && sch.type === 'object' && sch.properties) { const req = new Set(sch.required || []); r = { value: sch.properties, end: i + 3, exact: c.exact, rawShape: true, optionalKeys: new Set(Object.keys(sch.properties).filter((k) => !req.has(k))) }; }
     } else if (tok.type === 'id' && ctx && ctx.consts && Object.prototype.hasOwnProperty.call(ctx.consts, tok.value) && !isP(t[i + 1], '.') && !isP(t[i + 1], '(')) {
-      r = { value: ctx.consts[tok.value].value, end: i + 1, exact: ctx.consts[tok.value].exact };
+      const c = ctx.consts[tok.value];
+      r = { value: c.value, end: i + 1, exact: c.exact, optional: c.optional, zod: c.zod, optionalKeys: c.optionalKeys };
     }
     if (r) {
       // TS: `as const`, `satisfies X`, non-null `!`
@@ -130,7 +135,15 @@
     const o = {}; let exact = true; const optionalKeys = new Set(); i++;
     while (i < t.length && !isP(t[i], '}')) {
       const k = t[i];
-      if (isP(k, '...')) { exact = false; i = skipExpr(t, i + 1); if (isP(t[i], ',')) i++; continue; }
+      if (isP(k, '...')) {
+        // {...NAME}: a constant holding a plain object (this file's, or another file's when the caller supplied them) is merged in.
+        const nx = t[i + 1]; const c = nx && nx.type === 'id' && ctx && ctx.consts && Object.prototype.hasOwnProperty.call(ctx.consts, nx.value) ? ctx.consts[nx.value] : null;
+        if (c && !c.zod && c.value && typeof c.value === 'object' && !Array.isArray(c.value) && (isP(t[i + 2], ',') || isP(t[i + 2], '}'))) {
+          Object.assign(o, c.value); exact = exact && c.exact !== false; if (c.optionalKeys) c.optionalKeys.forEach((x) => optionalKeys.add(x));
+          i += isP(t[i + 2], ',') ? 3 : 2; continue;
+        }
+        exact = false; i = skipExpr(t, i + 1); if (isP(t[i], ',')) i++; continue;
+      }
       let key = null;
       if (k.type === 'str' || k.type === 'id') key = String(k.value);
       else if (k.type === 'num') key = String(k.value);
@@ -150,7 +163,7 @@
       if (!isP(t[j], ':')) return { value: SKIP, end: skipExpr(t, i), exact: false };
       const v = parseValue(t, j + 1, ctx);
       if (v.optional) optionalKeys.add(key);
-      if (v.value !== SKIP) { o[key] = v.value; exact = exact && v.exact !== false; } else if (!HANDLER_KEYS.has(key)) exact = false;
+      if (v.value !== SKIP) { o[key] = v.value; exact = exact && v.exact !== false; } else if (!HANDLER_KEYS.has(key)) { exact = false; if (ctx && ctx.placeholder) o[key] = {}; }
       i = v.end;
       if (isP(t[i], ',')) i++;
       else if (!isP(t[i], '}')) return { value: SKIP, end: skipExpr(t, i), exact: false };
@@ -186,7 +199,9 @@
       let args = [];
       if (isP(t[j], '(')) {
         const close = matchClose(t, j); let k = j + 1;
-        while (k < close) { const v = parseValue(t, k, ctx); args.push(v); k = v.end; if (isP(t[k], ',')) k++; else break; }
+        // the properties of z.object({...}) that cannot be read keep their name (an empty schema) rather than vanish
+        const actx = /^(object|strictObject|looseObject)$/.test(name) && !calls.length ? Object.assign({}, ctx, { placeholder: true }) : ctx;
+        while (k < close) { const v = parseValue(t, k, actx); args.push(v); k = v.end; if (isP(t[k], ',')) k++; else break; }
         j = close + 1;
       }
       calls.push({ name, args });
@@ -209,8 +224,8 @@
       case 'enum': s = Array.isArray(argv(0)) ? { type: 'string', enum: argv(0) } : (exact = false, { type: 'string' }); break;
       case 'nativeEnum': s = {}; exact = false; break;
       case 'array': { const it = argv(0); s = { type: 'array', items: it && it !== SKIP ? it : {} }; if (!it || it === SKIP || base.args[0].exact === false) exact = false; break; }
-      case 'object': case 'strictObject': case 'looseObject': { const sh = argv(0); const r = shapeToSchema(sh && sh !== SKIP ? sh : {}, base.args[0] ? base.args[0].optionalKeys : null); s = r.schema; if (!sh || sh === SKIP || base.args[0].exact === false) exact = false; break; }
-      case 'record': { const v = base.args.length > 1 ? argv(1) : argv(0); s = { type: 'object', additionalProperties: v && v !== SKIP ? v : {} }; break; }
+      case 'object': case 'strictObject': case 'looseObject': { const sh = argv(0); const r = shapeToSchema(sh && sh !== SKIP ? sh : {}, base.args[0] ? base.args[0].optionalKeys : null, ctx && ctx.fl); if (base.name === 'strictObject') r.schema.additionalProperties = false; s = r.schema; if (!sh || sh === SKIP || base.args[0].exact === false) exact = false; break; }
+      case 'record': { const v = base.args.length > 1 ? argv(1) : argv(0); s = { type: 'object', additionalProperties: v && v !== SKIP ? v : {} }; if (ctx && ctx.fl && ctx.fl.zod >= 4) { const kk = base.args.length > 1 ? argv(0) : { type: 'string' }; s = { type: 'object', propertyNames: kk && kk !== SKIP ? kk : { type: 'string' }, additionalProperties: s.additionalProperties }; } break; }
       case 'union': { const a = argv(0); s = Array.isArray(a) ? { anyOf: a } : {}; if (!Array.isArray(a)) exact = false; break; }
       case 'url': s = { type: 'string', format: 'uri' }; break;
       case 'email': s = { type: 'string', format: 'email' }; break;
@@ -243,10 +258,21 @@
         default: exact = false;
       }
     }
+    const fl = ctx && ctx.fl;
+    if (fl && fl.intBounds && s.type === 'integer') { // zod 4 gives an integer the safe-integer range unless the schema narrows it
+      if (s.minimum === undefined && s.exclusiveMinimum === undefined) s.minimum = -SAFE_INT;
+      if (s.maximum === undefined && s.exclusiveMaximum === undefined) s.maximum = SAFE_INT;
+    }
     return { schema: s, exact, optional };
   }
   // A zod raw shape { a: z.string(), b: z.number().optional() } -> object schema the way the TS SDK emits it.
-  function shapeToSchema(shape, optionalKeys) {
+  // What the TS SDK lists for a zod schema depends on the SDK major and the zod major (see tsFlavour):
+  //   SDK 1.x + zod 3 (zod-to-json-schema): draft-07, objects closed (additionalProperties: false).
+  //   zod 4 (z.toJSONSchema, input mode):    objects open, integers carry the safe-integer bounds; draft-07 under SDK 1.x, 2020-12 under SDK 2.x.
+  const SAFE_INT = 9007199254740991;
+  const DIALECT = { 'draft-07': 'http://json-schema.org/draft-07/schema#', '2020-12': 'https://json-schema.org/draft/2020-12/schema' };
+  const FL_DEFAULT = { dialect: 'draft-07', closed: true, intBounds: false, execution: false, kind: null };
+  function shapeToSchema(shape, optionalKeys, fl) {
     const props = {}; const required = [];
     Object.keys(shape || {}).forEach((k) => {
       const v = shape[k];
@@ -254,8 +280,17 @@
     });
     const s = { type: 'object', properties: props };
     if (required.length) s.required = required;
-    s.additionalProperties = false;
+    if (!fl || fl.closed) s.additionalProperties = false;
     return { schema: s };
+  }
+  // The root schema of a raw shape or a zod object.
+  function rootSchema(props, optionalKeys, fl) {
+    const f = fl || FL_DEFAULT;
+    const shaped = { type: 'object', properties: props };
+    const req = Object.keys(props).filter((k) => !(optionalKeys && optionalKeys.has(k))); if (req.length) shaped.required = req;
+    if (f.closed) shaped.additionalProperties = false;
+    shaped.$schema = DIALECT[f.dialect];
+    return shaped;
   }
 
   // ------------------------------------------------------------ JS/TS extraction
@@ -271,15 +306,17 @@
   }
 
   // Top-level `const NAME = <literal>` (strings and literal objects) so { description: DESC } resolves.
+  // Brace/paren depth before token i: top-level constants only (a const inside a function body is not shared).
+  function depthAt(t, i) { let d = 0; for (let k = 0; k < i; k++) { const v = t[k].type === 'p' ? t[k].value : null; if (v === '{' || v === '(' || v === '[') d++; else if (v === '}' || v === ')' || v === ']') d--; } return d; }
   function collectConsts(t, ctx) {
-    const consts = {};
+    const consts = Object.assign({}, ctx.globalConsts || {});
     for (let i = 0; i < t.length - 3; i++) {
       if (t[i].type === 'id' && (t[i].value === 'const' || t[i].value === 'let' || t[i].value === 'var') && t[i + 1].type === 'id') {
         let j = i + 2;
         if (isP(t[j], ':')) j = skipType(t, j + 1);
         if (!isP(t[j], '=')) continue;
         const v = parseValue(t, j + 1, Object.assign({}, ctx, { consts }));
-        if (v.value !== SKIP) consts[t[i + 1].value] = { value: v.value, exact: v.exact };
+        if (v.value !== SKIP) consts[t[i + 1].value] = { value: v.value, exact: v.exact, optional: !!v.optional, zod: !!v.zod, optionalKeys: v.optionalKeys || null, top: depthAt(t, i) === 0 };
       }
     }
     return consts;
@@ -290,34 +327,54 @@
     if (isP(t[i], '{')) {
       const optionalKeys = new Set(); const props = {}; let exact = true; let j = i + 1;
       while (j < t.length && !isP(t[j], '}')) {
+        if (isP(t[j], '...')) { // {...SHARED, a: z.string()}
+          const nx = t[j + 1]; const c = nx && nx.type === 'id' && ctx.consts && Object.prototype.hasOwnProperty.call(ctx.consts, nx.value) ? ctx.consts[nx.value] : null;
+          if (c && !c.zod && c.value && typeof c.value === 'object' && !Array.isArray(c.value) && (isP(t[j + 2], ',') || isP(t[j + 2], '}'))) { Object.assign(props, c.value); exact = exact && c.exact !== false; if (c.optionalKeys) c.optionalKeys.forEach((x) => optionalKeys.add(x)); j += isP(t[j + 2], ',') ? 3 : 2; continue; }
+          exact = false; j = skipExpr(t, j + 1); if (isP(t[j], ',')) j++; continue;
+        }
         const k = t[j]; if (!(k.type === 'id' || k.type === 'str') || !isP(t[j + 1], ':')) { exact = false; j = skipExpr(t, j); if (isP(t[j], ',')) j++; continue; }
         const v = parseValue(t, j + 2, ctx);
-        if (v.value !== SKIP) { props[k.value] = v.value; if (v.optional) optionalKeys.add(String(k.value)); } else exact = false;
+        if (v.value !== SKIP) { props[k.value] = v.value; if (v.optional) optionalKeys.add(String(k.value)); } else { exact = false; props[k.value] = {}; }
         exact = exact && v.exact !== false; j = v.end; if (isP(t[j], ',')) j++;
       }
-      const shaped = { type: 'object', properties: props };
-      const req = Object.keys(props).filter((k) => !optionalKeys.has(k)); if (req.length) shaped.required = req;
-      shaped.additionalProperties = false; shaped.$schema = 'http://json-schema.org/draft-07/schema#';
-      return { schema: shaped, end: j + 1, exact };
+      return { schema: rootSchema(props, optionalKeys, ctx.fl), end: j + 1, exact };
     }
     const v = parseValue(t, i, ctx);
     if (v.value === SKIP || !v.value || typeof v.value !== 'object') return { schema: null, end: v.end, exact: false };
-    if (v.zod && v.value.type === 'object') { const s = Object.assign({}, v.value); s.$schema = 'http://json-schema.org/draft-07/schema#'; if (!('additionalProperties' in s)) s.additionalProperties = false; return { schema: s, end: v.end, exact: v.exact }; }
+    if (v.rawShape) return { schema: rootSchema(v.value, v.optionalKeys, ctx.fl), end: v.end, exact: v.exact };
+    if (v.zod && v.value.type === 'object') { const s = Object.assign({}, v.value); s.$schema = DIALECT[(ctx.fl || FL_DEFAULT).dialect]; return { schema: s, end: v.end, exact: v.exact }; }
     return { schema: v.value, end: v.end, exact: v.exact };
   }
 
   const SDK_CALLS = new Set(['registerTool', 'tool', 'addTool']);
   // Keys that hold a tool's argument schema in hand-rolled tool tables: { name, description, schema: { a: z.string() } }
   const SCHEMA_KEYS = ['inputSchema', 'input_schema', 'parameters', 'schema', 'paramsSchema', 'argsSchema'];
-  function extractJs(src) {
+  // The SDK a TypeScript file is written against, from its imports first and the repository's dependencies second
+  // (opts.sdk = { kind: 'v1' | 'v2', version, zod }, see detectSdk). Unknown stays at the zod 3 / SDK 1 reading the reader always had.
+  //   execution: SDK 1.24 to 1.x adds { taskSupport: 'forbidden' } to every McpServer tool; earlier 1.x and 2.x do not.
+  function semver(v) { const m = /(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(v || '')); return m ? [Number(m[1]), Number(m[2]), Number(m[3] || 0)] : null; }
+  function tsFlavour(src, sdk) {
+    sdk = sdk || {};
+    let kind = null;
+    if (/['"]@modelcontextprotocol\/server(?:\/[^'"]*)?['"]/.test(src)) kind = 'v2';
+    else if (/['"]@modelcontextprotocol\/sdk(?:\/[^'"]*)?['"]/.test(src)) kind = 'v1';
+    else if (sdk.kind === 'v1' || sdk.kind === 'v2') kind = sdk.kind;
+    let zod = /from\s+['"]zod\/v4['"]/.test(src) ? 4 : /from\s+['"]zod\/v3['"]/.test(src) ? 3 : (sdk.zod || null);
+    if (!zod) zod = kind === 'v2' ? 4 : 3;
+    const v = semver(sdk.version);
+    const sameKind = !sdk.kind || sdk.kind === kind;
+    return { kind, zod, dialect: kind === 'v2' ? '2020-12' : 'draft-07', closed: zod < 4, intBounds: zod >= 4, execution: kind === 'v1' && sameKind && !!v && v[0] === 1 && (v[1] >= 24) };
+  }
+  function extractJs(src, opts) {
+    opts = opts || {};
     const t = tokenize(src);
-    const ctx = { zodNames: zodNamesIn(src) }; ctx.zod = ctx.zodNames.size > 0;
+    const ctx = { zodNames: zodNamesIn(src), fl: tsFlavour(src, opts.sdk), globalConsts: opts.consts || null }; ctx.zod = ctx.zodNames.size > 0;
     // zod values also need their optional flag at shape level: patch parseValue result via ctx in zodShapeAt
     ctx.consts = collectConsts(t, ctx);
     const tools = []; const seen = new Set();
-    const add = (tool, fidelity, at) => {
+    const add = (tool, fidelity, at, extra) => {
       if (!tool || typeof tool.name !== 'string' || !tool.name || seen.has(tool.name)) return;
-      seen.add(tool.name); tools.push({ tool, fidelity, line: src.slice(0, at).split('\n').length });
+      seen.add(tool.name); tools.push(Object.assign({ tool, fidelity, line: src.slice(0, at).split('\n').length, offset: at }, extra || {}));
     };
     for (let i = 0; i < t.length; i++) {
       const tok = t[i];
@@ -331,8 +388,10 @@
         if (fn === 'registerTool' && t[j] && t[j].type === 'str' && isP(t[j + 1], ',') && t[j + 2] && (t[j + 2].type === 'str' || t[j + 2].type === 'tpl')) fn = 'tool'; // wrapper with the server.tool signature
         const nameTok = t[j];
         if (fn === 'addTool' && isP(nameTok, '{')) { // FastMCP (TS, punkpeye): addTool({ name, description, parameters: z.object(...), annotations, execute })
-          const o = parseObjectWithZod(t, j, ctx);
-          if (o.value && o.value.name) { const tool = { name: o.value.name }; if (o.value.description) tool.description = o.value.description; if (o.value.parameters) tool.inputSchema = o.value.parameters; else tool.inputSchema = { type: 'object', properties: {} }; if (o.value.annotations) tool.annotations = o.value.annotations; add(tool, 'derived', at); }
+          // FastMCP (TypeScript) lists its zod parameters draft-07 with closed objects, whatever SDK it sits on
+          const actx = Object.assign({}, ctx, { fl: Object.assign({}, ctx.fl, { dialect: 'draft-07', closed: true, execution: false }) });
+          const o = parseObjectWithZod(t, j, actx);
+          if (o.value && o.value.name) { const tool = { name: o.value.name }; if (o.value.description) tool.description = o.value.description; if (o.value.parameters) { tool.inputSchema = o.value.parameters; if (tool.inputSchema.type === 'object' && !tool.inputSchema.$schema) tool.inputSchema = Object.assign({}, tool.inputSchema, { $schema: DIALECT['draft-07'] }, tool.inputSchema.additionalProperties === undefined ? { additionalProperties: false } : {}); } else tool.inputSchema = { type: 'object', properties: {} }; if (o.value.annotations) tool.annotations = o.value.annotations; add(tool, 'derived', at); }
           continue;
         }
         if (!nameTok || nameTok.type !== 'str') continue;
@@ -348,7 +407,7 @@
           if (c.outputSchema) tool.outputSchema = c.outputSchema;
           if (c.annotations) tool.annotations = c.annotations;
           if (c._meta) tool._meta = c._meta;
-          tool.execution = { taskSupport: 'forbidden' };
+          if (ctx.fl.execution) tool.execution = { taskSupport: 'forbidden' };
           add(tool, 'derived', at); continue;
         }
         // server.tool(name, [description], [paramsSchema], [annotations], cb)
@@ -361,7 +420,7 @@
           else if (shape.schema && isAnnotations(shape.schema)) tool.annotations = shape.schema;
         }
         if (!tool.inputSchema) tool.inputSchema = { type: 'object', properties: {} };
-        tool.execution = { taskSupport: 'forbidden' }; // what TS SDK 1.2x-1.32 adds to every McpServer tool
+        if (ctx.fl.execution) tool.execution = { taskSupport: 'forbidden' }; // what TS SDK 1.24 to 1.x adds to every McpServer tool
         add(tool, 'derived', at); continue;
       }
       // 2. object literals with name + inputSchema (low-level Server with a tools array, or MCPB/snapshot-like data)
@@ -384,7 +443,8 @@
           const tool = { name: v.name }; ['title', 'description'].forEach((k) => { if (v[k] !== undefined) tool[k] = v[k]; });
           tool.inputSchema = schema;
           ['outputSchema', 'annotations', '_meta', 'icons', 'execution'].forEach((k) => { if (v[k] !== undefined) tool[k] = v[k]; });
-          add(tool, o.exact && !o.sawZod && (key === 'inputSchema' || key === 'input_schema') ? 'literal' : 'derived', tok.start);
+          const bound = isP(t[i - 1], '=') && t[i - 2] && t[i - 2].type === 'id' && t[i - 3] && /^(const|let|var)$/.test(t[i - 3].value) ? t[i - 2].value : null;
+          add(tool, o.exact && !o.sawZod && (key === 'inputSchema' || key === 'input_schema') ? 'literal' : 'derived', tok.start, { binding: bound, literal: true });
           i = o.end - 1;
         }
       }
@@ -398,16 +458,20 @@
     let sawZod = false;
     const c2 = Object.assign({}, ctx);
     const r = parseObject(t, i, c2);
-    // a zod value anywhere in the object makes it derived
-    for (let k = i; k < r.end; k++) if (t[k].type === 'id' && ctx.zodNames && ctx.zodNames.has(t[k].value) && isP(t[k + 1], '.')) { sawZod = true; break; }
+    // a zod value anywhere in the object (or the .shape of a zod constant) makes it derived
+    for (let k = i; k < r.end; k++) {
+      if (t[k].type === 'id' && ctx.zodNames && ctx.zodNames.has(t[k].value) && isP(t[k + 1], '.')) { sawZod = true; break; }
+      if (t[k].type === 'id' && t[k].value === 'shape' && isP(t[k - 1], '.') && t[k - 2] && t[k - 2].type === 'id' && ctx.consts && ctx.consts[t[k - 2].value] && ctx.consts[t[k - 2].value].zod) { sawZod = true; break; }
+    }
     // inputSchema given as a raw zod shape { a: z.string() } (registerTool): wrap as an object schema
     if (r.value && r.value !== SKIP) {
+      const fl = ctx.fl || FL_DEFAULT;
       ['inputSchema', 'outputSchema'].forEach((key) => {
         const s = r.value[key];
         if (sawZod && s && typeof s === 'object' && !s.type && !s.$ref && !s.anyOf && !s.oneOf) {
           // find the key in tokens to recover optional flags
-          for (let k = i + 1; k < r.end; k++) if ((t[k].type === 'id' || t[k].type === 'str') && t[k].value === key && isP(t[k + 1], ':') && isP(t[k + 2], '{')) { const sh = zodShapeAt(t, k + 2, ctx); if (sh.schema) r.value[key] = sh.schema; break; }
-        } else if (sawZod && s && s.type === 'object' && !s.$schema) { r.value[key] = Object.assign({}, s, { additionalProperties: s.additionalProperties === undefined ? false : s.additionalProperties, $schema: 'http://json-schema.org/draft-07/schema#' }); }
+          for (let k = i + 1; k < r.end; k++) if ((t[k].type === 'id' || t[k].type === 'str') && t[k].value === key && isP(t[k + 1], ':')) { const sh = zodShapeAt(t, k + 2, ctx); if (sh.schema) r.value[key] = sh.schema; break; }
+        } else if (sawZod && s && s.type === 'object' && !s.$schema) { r.value[key] = Object.assign({}, s, { $schema: DIALECT[fl.dialect] }, fl.closed && s.additionalProperties === undefined ? { additionalProperties: false } : {}); }
       });
     }
     r.sawZod = sawZod;
@@ -447,6 +511,7 @@
     if (/^-?\d*\.\d+(e-?\d+)?$/i.test(s)) return { v: parseFloat(s) };
     if (s === 'True' || s === 'False') return { v: s === 'True' };
     if (s === 'None') return { v: null };
+    if (/^[A-Za-z_]\w*$/.test(s) && Object.prototype.hasOwnProperty.call(PYC, s)) return { v: PYC[s] };
     if (/^\[.*\]$/.test(s)) { const items = splitTop(s.slice(1, -1), ',').map(pyLiteral); return items.every(Boolean) ? { v: items.map((x) => x.v) } : null; }
     return null;
   }
@@ -456,7 +521,7 @@
     let m;
     if ((m = /^Annotated\[([\s\S]+)\]$/.exec(tp))) {
       const parts = splitTop(m[1], ','); const s = pyType(parts[0]);
-      parts.slice(1).forEach((p) => { const f = /^(?:Field|pydantic\.Field)\(([\s\S]*)\)$/.exec(p); if (f) { const kw = pyKwargs(f[1]); const d = kw.description && pyLiteral(kw.description); if (d) s.schema.description = d.v; const pos = splitTop(f[1], ',')[0]; if (pos && !/=/.test(pos)) { const dv = pyLiteral(pos); if (dv && pos !== '...') { s.default = dv.v; } } if (kw.default) { const dv = pyLiteral(kw.default); if (dv) s.default = dv.v; } ['ge:minimum', 'le:maximum', 'gt:exclusiveMinimum', 'lt:exclusiveMaximum', 'min_length:minLength', 'max_length:maxLength'].forEach((pair) => { const [a, b] = pair.split(':'); if (kw[a]) { const n = pyLiteral(kw[a]); if (n) s.schema[b] = n.v; } }); } else if (/^["']/.test(p)) { const d = pyLiteral(p); if (d) s.schema.description = d.v; } });
+      parts.slice(1).forEach((p) => { const f = /^(?:Field|pydantic\.Field)\(([\s\S]*)\)$/.exec(p); if (f) { const kw = pyKwargs(f[1]); const d = kw.description && pyLiteral(kw.description); if (d) s.schema.description = d.v; const pos = splitTop(f[1], ',')[0]; if (pos && !/=/.test(pos)) { const dv = pyLiteral(pos); if (dv && pos !== '...') { s.default = dv.v; } } if (kw.default) { const dv = pyLiteral(kw.default); if (dv) s.default = dv.v; } pyConstraints(s.schema, kw); } else if (/^["']/.test(p)) { const d = pyLiteral(p); if (d) s.schema.description = d.v; } });
       return s;
     }
     if ((m = /^(?:Optional|typing\.Optional)\[([\s\S]+)\]$/.exec(tp))) { const s = pyType(m[1]); return { schema: { anyOf: [s.schema, { type: 'null' }] }, exact: s.exact, nullable: true }; }
@@ -472,7 +537,44 @@
     return { schema: {}, exact: false }; // a model or enum class: the SDK would emit a $ref into $defs
   }
   const CTX_TYPES = /^(Context|mcp\.server\.fastmcp\.Context|ServerContext|RequestContext)\b/;
-  function extractPy(src) {
+  // Module-level NAME = <literal> constants of a Python file, so Field(default=DEFAULT_X) and gt=MIN_X resolve.
+  let PYC = {};
+  function pyConsts(src) {
+    const out = {};
+    src.split('\n').forEach((l) => { const m = /^([A-Za-z_]\w*)\s*(?::\s*[^=]+?)?=\s*(.+?)\s*(?:#.*)?$/.exec(l); if (!m) return; const v = pyLiteral(m[2]); if (v) out[m[1]] = v.v; });
+    return out;
+  }
+  // The pydantic keyword constraints of Field(...) / Annotated[..., Field(...)] as JSON Schema keywords.
+  function pyConstraints(schema, kw) {
+    const arr = schema.type === 'array';
+    [['ge', 'minimum'], ['le', 'maximum'], ['gt', 'exclusiveMinimum'], ['lt', 'exclusiveMaximum'], ['min_length', arr ? 'minItems' : 'minLength'], ['max_length', arr ? 'maxItems' : 'maxLength'], ['multiple_of', 'multipleOf'], ['pattern', 'pattern']].forEach(([a, b]) => { if (kw[a] !== undefined) { const n = pyLiteral(kw[a]); if (n) schema[b] = n.v; } });
+  }
+  // Python flavours: the SDK's FastMCP/MCPServer ("sdk": titles on properties and on the argument model) and the standalone
+  // fastmcp package ("fastmcp": no titles, closed argument model, docstring Args become parameter descriptions, _meta.fastmcp.tags).
+  function pyFlavour(src, opts) {
+    const sdk = opts && opts.sdk && opts.sdk.py;
+    if (/^\s*from\s+mcp\.server\.(?:fastmcp|mcpserver)\b/m.test(src) || /^\s*from\s+mcp\b/m.test(src)) return 'sdk';
+    if (/^\s*(?:from\s+fastmcp\b|import\s+fastmcp\b)/m.test(src)) return 'fastmcp';
+    return sdk === 'fastmcp' ? 'fastmcp' : 'sdk';
+  }
+  // Google-style docstring: the text before "Args:" is the description; "name: text" lines under Args are parameter descriptions.
+  function pyDocSections(doc) {
+    const lines = String(doc || '').split('\n'); const head = []; const params = {}; let section = null; let cur = null;
+    for (const l of lines) {
+      const sec = /^(Args|Arguments|Parameters|Returns|Raises|Yields|Examples?|Notes?):\s*$/.exec(l.trim());
+      if (sec && !/^\s{2,}/.test(l.replace(/^\t/, '    ')) || (sec && section === null)) { section = sec[1]; cur = null; continue; }
+      if (section === null) { head.push(l); continue; }
+      if (/^(Args|Arguments|Parameters)$/.test(section)) {
+        const m = /^\s+(\w+)(?:\s*\([^)]*\))?\s*:\s*(.*)$/.exec(l);
+        if (m && (cur === null || l.search(/\S/) <= (cur.indent))) { cur = { name: m[1], text: m[2].trim(), indent: l.search(/\S/) }; params[m[1]] = cur; }
+        else if (cur && l.trim()) cur.text += '\n' + l.slice(cur.indent).replace(/\s+$/, '');
+      }
+    }
+    const out = {}; Object.keys(params).forEach((k) => { out[k] = params[k].text; });
+    return { description: head.join('\n').trim(), params: out, hasSections: section !== null };
+  }
+  function extractPy(src, opts) {
+    const flavour = pyFlavour(src, opts); const fmcp = flavour === 'fastmcp'; PYC = pyConsts(src);
     const tools = []; const lines = src.split('\n');
     const decoRe = /^(\s*)@(\w+)\.tool\s*(\(([\s\S]*?)\))?\s*$/;
     for (let i = 0; i < lines.length; i++) {
@@ -504,10 +606,23 @@
         exact = exact && ty.exact;
         const sch = Object.assign({}, ty.schema); const ordered = {};
         if (ty.default !== undefined) ordered.default = ty.default;
-        ordered.title = pyTitle(pn);
+        if (!fmcp) ordered.title = pyTitle(pn);
         const out = Object.assign({}, sch, ordered);
         let hasDefault = ty.default !== undefined;
-        if (def !== undefined) { const d = pyLiteral(def); if (d) out.default = d.v; else if (!/^Field\(/.test(def.trim())) exact = false; hasDefault = true; if (/^Field\(/.test(def.trim())) { const fk = pyKwargs(def.trim().slice(6, -1)); if (fk.description) { const dd = pyLiteral(fk.description); if (dd) out.description = dd.v; } if (fk.default) { const dv = pyLiteral(fk.default); if (dv) out.default = dv.v; } else { const pos = splitTop(def.trim().slice(6, -1), ',')[0]; if (pos === '...') hasDefault = false; else { const dv = pos && !/=/.test(pos) ? pyLiteral(pos) : null; if (dv) out.default = dv.v; } } } }
+        if (def !== undefined) {
+          const field = /^(?:Field|pydantic\.Field)\(([\s\S]*)\)$/.exec(def.trim());
+          if (!field) { const d = pyLiteral(def); if (d) out.default = d.v; else exact = false; hasDefault = true; } else {
+            // Field(...): a default is a first positional argument other than "..." or default= / default_factory=; without one the parameter is required.
+            const fk = pyKwargs(field[1]); const pos = splitTop(field[1], ',')[0]; const posArg = pos && !/^\w+\s*=/.test(pos) ? pos : null;
+            hasDefault = false;
+            if (posArg !== null) { if (posArg !== '...') { hasDefault = true; const dv = pyLiteral(posArg); if (dv) out.default = dv.v; else exact = false; } }
+            else if (fk.default !== undefined) { hasDefault = true; const dv = pyLiteral(fk.default); if (dv) out.default = dv.v; else exact = false; }
+            else if (fk.default_factory !== undefined) { hasDefault = true; exact = false; }
+            if (fk.description) { const dd = pyLiteral(fk.description); if (dd) out.description = dd.v; else exact = false; }
+            if (fk.title && !fmcp) { const tt = pyLiteral(fk.title); if (tt) out.title = tt.v; }
+            pyConstraints(out, fk);
+          }
+        }
         props[pn] = out; if (!hasDefault) required.push(pn);
       });
       const name = kw.name ? (pyLiteral(kw.name) || {}).v : fname;
@@ -515,17 +630,24 @@
       const tool = { name };
       const title = kw.title && pyLiteral(kw.title); if (title) tool.title = title.v;
       const desc = kw.description ? pyLiteral(kw.description) : null;
-      if (desc) tool.description = desc.v; else if (doc) tool.description = doc;
-      tool.inputSchema = { properties: props, required: required.length ? required : undefined, title: fname + 'Arguments', type: 'object' };
+      const ds = fmcp && doc ? pyDocSections(doc) : null;
+      if (desc) tool.description = desc.v; else if (doc) tool.description = ds ? ds.description : doc;
+      if (ds) Object.keys(props).forEach((pn) => { if (props[pn].description === undefined && ds.params[pn]) props[pn].description = ds.params[pn]; });
+      tool.inputSchema = fmcp ? { properties: props, required: required.length ? required : undefined, type: 'object', additionalProperties: false } : { properties: props, required: required.length ? required : undefined, title: fname + 'Arguments', type: 'object' };
       if (!required.length) delete tool.inputSchema.required;
       // Return annotation -> the SDK's structured output schema: {"result": <type>} wrapped as "<fn>Output".
       const ret = fm[3] && fm[3].trim();
       if (ret && !/^None$/.test(ret)) {
         const rt = pyType(ret.replace(/^(?:Awaitable|Coroutine)\[[\s\S]*,\s*([\s\S]+)\]$/, '$1'));
-        if (rt.exact && !(rt.schema.type === 'object')) tool.outputSchema = { properties: { result: Object.assign({}, rt.schema, { title: 'Result' }) }, required: ['result'], title: fname + 'Output', type: 'object' };
+        if (fmcp) {
+          if (rt.exact && rt.schema.type === 'object') tool.outputSchema = { additionalProperties: true, type: 'object' };
+          else if (rt.exact) tool.outputSchema = { properties: { result: rt.schema }, required: ['result'], type: 'object', 'x-fastmcp-wrap-result': true };
+          else exact = false;
+        } else if (rt.exact && !(rt.schema.type === 'object')) tool.outputSchema = { properties: { result: Object.assign({}, rt.schema, { title: 'Result' }) }, required: ['result'], title: fname + 'Output', type: 'object' };
         else if (!rt.exact) exact = false;
       }
       if (kw.annotations) { const a = pyAnnotations(kw.annotations); if (a) tool.annotations = a; else exact = false; }
+      if (fmcp) { if (kw.tags === undefined) tool._meta = { fastmcp: { tags: [] } }; else exact = false; }
       tools.push({ tool, fidelity: 'derived', exactTypes: exact, line: i + 1 });
       i = e;
     }
@@ -579,10 +701,251 @@
     return { exact, manifests, serverJson, src };
   }
 
-  function extractFromFile(path, text) {
-    if (/\.py$/.test(path)) return extractPy(text);
-    if (/\.(ts|mts|cts|js|mjs|cjs)$/.test(path)) return extractJs(text);
+  // opts: { sdk: { kind, version, zod, py }, consts } as detectSdk and collectGlobalConsts return them.
+  function extractFromFile(path, text, opts) {
+    if (/\.py$/.test(path)) return extractPy(text, opts);
+    if (/\.(ts|mts|cts|js|mjs|cjs)$/.test(path)) return extractJs(text, opts);
     return [];
+  }
+
+  // ------------------------------------------------------------ SDK detection, shared constants, whole-repository analysis
+  const META_FILE = /(^|\/)(package\.json|package-lock\.json|pyproject\.toml|requirements[^/]*\.txt|uv\.lock)$/;
+  // Which SDK a repository builds on, from its manifests. Imports in a file win over this (see tsFlavour, pyFlavour).
+  // Returns { kind: 'v1' | 'v2' | null, version, zod, py: 'sdk' | 'fastmcp' | null }. A lock file's exact version beats a range.
+  function detectSdk(files) {
+    const entries = files instanceof Map ? Array.from(files.entries()) : Object.keys(files || {}).map((k) => [k, files[k]]);
+    const depth = (p) => p.split('/').length;
+    const out = { kind: null, version: null, zod: null, py: null };
+    const pick = (name, dep, lock) => lock || dep || null;
+    const rank = (a, b) => depth(a[0]) - depth(b[0]);
+    const pkgs = entries.filter(([p]) => /(^|\/)package\.json$/.test(p) && !/node_modules/.test(p)).sort(rank);
+    const locks = entries.filter(([p]) => /(^|\/)package-lock\.json$/.test(p) && !/node_modules/.test(p)).sort(rank);
+    let server = null; let sdk = null; let zod = null;
+    pkgs.forEach(([, text]) => {
+      let j; try { j = JSON.parse(text); } catch (e) { return; }
+      const deps = Object.assign({}, j.devDependencies, j.peerDependencies, j.dependencies);
+      if (!server && deps['@modelcontextprotocol/server']) server = deps['@modelcontextprotocol/server'];
+      if (!sdk && deps['@modelcontextprotocol/sdk']) sdk = deps['@modelcontextprotocol/sdk'];
+      if (!zod && deps.zod) zod = deps.zod;
+    });
+    let lock = {};
+    locks.forEach(([, text]) => {
+      let j; try { j = JSON.parse(text); } catch (e) { return; }
+      const pk = j.packages || {};
+      ['@modelcontextprotocol/server', '@modelcontextprotocol/sdk', 'zod'].forEach((n) => { const e = pk['node_modules/' + n]; if (e && e.version && !lock[n]) lock[n] = e.version; });
+    });
+    const sv = pick('server', server, lock['@modelcontextprotocol/server']); const kv = pick('sdk', sdk, lock['@modelcontextprotocol/sdk']); const zv = pick('zod', zod, lock.zod);
+    if (sv) { out.kind = 'v2'; out.version = semver(sv) ? semver(sv).join('.') : null; } else if (kv) { const v = semver(kv); out.kind = v && v[0] >= 2 ? 'v2' : 'v1'; out.version = v ? v.join('.') : null; }
+    const zm = semver(zv); if (zm) out.zod = zm[0];
+    // Python: the standalone fastmcp package, or the SDK's own FastMCP.
+    let fast = false; let mcp = false;
+    entries.forEach(([p, text]) => {
+      if (!/(^|\/)(pyproject\.toml|requirements[^/]*\.txt)$/.test(p) || /(^|\/)(node_modules|\.venv|venv)\//.test(p)) return;
+      if (/^\s*["']?fastmcp\b/im.test(text) || /["']fastmcp[\s>=<~!;\[]/i.test(text)) fast = true;
+      if (/^\s*["']?mcp\b/im.test(text) || /["']mcp[\s>=<~!;\[]/i.test(text)) mcp = true;
+    });
+    out.py = fast && !mcp ? 'fastmcp' : fast || mcp ? 'sdk' : null;
+    return out;
+  }
+
+  // Top-level constants shared across files (a name defined once), so {...SHARED} and Schema.shape resolve across an import.
+  function collectGlobalConsts(srcFiles) {
+    const seen = {}; const dup = new Set();
+    const run = (seed) => {
+      const table = {};
+      srcFiles.forEach(([p, text]) => {
+        if (!/\.(ts|mts|cts|js|mjs|cjs)$/.test(p)) return;
+        let t; try { t = tokenize(text); } catch (e) { return; }
+        const zn = zodNamesIn(text); const ctx = { zodNames: zn, zod: zn.size > 0, fl: tsFlavour(text, null), globalConsts: seed };
+        let cs; try { cs = collectConsts(t, ctx); } catch (e) { return; }
+        Object.keys(cs).forEach((k) => {
+          if (seed && Object.prototype.hasOwnProperty.call(seed, k) && cs[k] === seed[k]) return;
+          const c = cs[k]; if (!c.top || !c.value || typeof c.value !== 'object' || Array.isArray(c.value)) return;
+          if (Object.prototype.hasOwnProperty.call(table, k)) { dup.add(k); return; }
+          table[k] = c;
+        });
+      });
+      dup.forEach((k) => { delete table[k]; });
+      return table;
+    };
+    const first = run(null);
+    const second = run(first);
+    Object.keys(first).forEach((k) => { if (!second[k]) second[k] = first[k]; });
+    void seen;
+    return second;
+  }
+
+  // Blocks of a JS/TS token stream: { open, close, kind: 'if' | 'else' | 'fn' | 'other', cond, name }.
+  function jsBlocks(src, t) {
+    const blocks = []; const stack = [];
+    const back = (i) => { let d = 0; for (let k = i; k >= 0; k--) { if (isP(t[k], ')')) d++; else if (isP(t[k], '(')) { d--; if (d === 0) return k; } } return -1; };
+    const typeish = (x) => x && (x.type === 'id' || (x.type === 'p' && ['.', '<', '>', '|', '&', '[', ']', ',', '?'].includes(x.value)));
+    // the ")" that closes a parameter list ending just before token k, allowing a ": ReturnType" between
+    const sigClose = (k) => {
+      if (k >= 0 && isP(t[k], ')')) return k;
+      for (let m = k, n = 0; m >= 1 && n < 40; m--, n++) { if (isP(t[m], ':') && isP(t[m - 1], ')')) return m - 1; if (!typeish(t[m])) break; }
+      return -1;
+    };
+    for (let i = 0; i < t.length; i++) {
+      if (isP(t[i], '{')) {
+        let kind = 'other'; let cond = null; let name = null; const pv = t[i - 1];
+        const arrow = pv && isP(pv, '=>');
+        const c = sigClose(arrow ? i - 2 : i - 1);
+        if (arrow || c >= 0) {
+          if (c >= 0) {
+            const m = back(c); const kw = m > 0 ? t[m - 1] : null;
+            if (!arrow && kw && kw.type === 'id' && kw.value === 'if') { kind = 'if'; cond = src.slice(t[m].start + 1, t[c].start).trim(); }
+            else if (!arrow && kw && kw.type === 'id' && /^(while|for|switch|catch|with)$/.test(kw.value)) kind = 'other';
+            else if (arrow) { kind = 'fn'; let k = m - 1; while (k >= 0 && t[k].type === 'id' && t[k].value === 'async') k--; if (k >= 1 && isP(t[k], '=') && t[k - 1].type === 'id') name = t[k - 1].value; }
+            else if (kw && kw.type === 'id') { kind = 'fn'; name = kw.value; }
+          } else if (arrow) { kind = 'fn'; let k = i - 2; if (t[k] && t[k].type === 'id') k--; while (k >= 0 && t[k].type === 'id' && t[k].value === 'async') k--; if (k >= 1 && isP(t[k], '=') && t[k - 1].type === 'id') name = t[k - 1].value; }
+        } else if (pv && pv.type === 'id' && pv.value === 'else') { kind = 'else'; cond = 'else'; }
+        stack.push({ open: i, kind, cond, name });
+      } else if (isP(t[i], '}')) {
+        const b = stack.pop(); if (b) { b.close = i; blocks.push(b); }
+      }
+    }
+    stack.forEach((b) => { b.close = t.length - 1; blocks.push(b); });
+    return blocks;
+  }
+  function enclosing(blocks, t, offset) {
+    return blocks.filter((b) => t[b.open].start < offset && (t[b.close] ? t[b.close].start : Infinity) > offset).sort((a, b) => a.open - b.open);
+  }
+  // Conditions around an offset, inside its innermost function: [{ kind, cond }] outermost first, plus that function's name.
+  function guardsAt(blocks, t, offset) {
+    const encl = enclosing(blocks, t, offset);
+    let fnIdx = -1; encl.forEach((b, i) => { if (b.kind === 'fn') fnIdx = i; });
+    const fn = fnIdx >= 0 ? encl[fnIdx] : null;
+    return { fn: fn ? fn.name : null, guards: encl.slice(fnIdx + 1).filter((b) => b.kind === 'if' || b.kind === 'else').map((b) => ({ kind: b.kind, cond: b.cond })) };
+  }
+  function pyGuards(lines, line) {
+    // indentation walk upwards from the decorator: the if/elif/else lines that enclose it
+    const guards = []; const indent = (l) => l.search(/\S/); let want = indent(lines[line - 1] || '');
+    for (let k = line - 2; k >= 0 && want > 0; k--) {
+      const l = lines[k]; if (!l.trim() || /^\s*#/.test(l)) continue;
+      const ind = indent(l); if (ind >= want) continue;
+      want = ind;
+      const m = /^\s*(if|elif|else)\b\s*(.*?):?\s*$/.exec(l);
+      if (m && /:\s*(#.*)?$/.test(l)) guards.unshift({ kind: m[1] === 'else' ? 'else' : 'if', cond: m[1] === 'else' ? 'else' : m[2].replace(/:$/, '') });
+    }
+    return guards;
+  }
+  const DISABLED_KEYS = [['enabled', false], ['defaultEnabled', false], ['enabledByDefault', false], ['disabled', true], ['hidden', true]];
+  const IDENT_RE = (n) => new RegExp('(^|[^\\w$.])' + n.replace(/[$]/g, '\\$') + '(?![\\w$])', 'g');
+
+  // Decorate and filter the tools found in a repository. Reasons that remove a tool from the list the server would send:
+  //   disabled-by-default    a literal table keyed by the tool's name says enabled: false (or disabled: true)
+  //   declares-conditions    the tool carries a non-empty conditions list (it is registered only when those flags are set)
+  //   alternate-server       the tool is only in one of several server modules that register overlapping tools (one is chosen by configuration)
+  //   unreferenced-declaration  a { name, description, inputSchema } constant that nothing else in the server mentions
+  // Reasons that only mark a tool (the reader cannot know which way the condition goes):
+  //   conditional-branch     the registration sits inside an if / else of its own function
+  //   conditional-caller     every call of the function that registers it sits inside an if / else
+  //   deprecated             the title or description starts by saying so
+  function markConditionals(found, files, dupes) {
+    const marks = new Map(found.map((f) => [f, []]));
+    const add = (f, reason, detail, exclude) => marks.get(f).push({ reason, detail: detail || null, exclude: !!exclude });
+    const srcs = new Map(); files.forEach(([p, text]) => srcs.set(p, text));
+    const tokCache = new Map(); const blkCache = new Map();
+    const tk = (p) => { if (!tokCache.has(p)) { try { tokCache.set(p, tokenize(srcs.get(p))); } catch (e) { tokCache.set(p, []); } } return tokCache.get(p); };
+    const bl = (p) => { if (!blkCache.has(p)) blkCache.set(p, jsBlocks(srcs.get(p), tk(p))); return blkCache.get(p); };
+    const isJs = (p) => /\.(ts|mts|cts|js|mjs|cjs)$/.test(p);
+    const names = new Set(found.map((f) => f.tool.name));
+
+    // branch / caller conditions
+    const callSites = new Map();
+    const callersOf = (fname) => {
+      if (callSites.has(fname)) return callSites.get(fname);
+      const out = [];
+      srcs.forEach((text, p) => {
+        if (!isJs(p) || text.indexOf(fname) < 0) return;
+        const t = tk(p);
+        for (let i = 0; i < t.length - 1; i++) {
+          if (t[i].type === 'id' && t[i].value === fname && isP(t[i + 1], '(') && !(t[i - 1] && t[i - 1].type === 'id' && /^(function|async)$/.test(t[i - 1].value))) {
+            // a declaration "NAME(args) {" of a method is not a call
+            const close = matchClose(t, i + 1);
+            if (isP(t[close + 1], '{') ) continue;
+            out.push({ p, guards: guardsAt(bl(p), t, t[i].start).guards });
+          }
+        }
+      });
+      callSites.set(fname, out); return out;
+    };
+    found.forEach((f) => {
+      if (isJs(f.path) && f.offset !== undefined) {
+        const t = tk(f.path); const g = guardsAt(bl(f.path), t, f.offset);
+        if (g.guards.length) add(f, 'conditional-branch', g.guards.map((x) => x.cond).join(' && ').slice(0, 120));
+        else if (g.fn) { const calls = callersOf(g.fn); if (calls.length && calls.every((c) => c.guards.length)) add(f, 'conditional-caller', calls[0].guards.map((x) => x.cond).join(' && ').slice(0, 120)); }
+      } else if (/\.py$/.test(f.path) && f.line) {
+        const gs = pyGuards(srcs.get(f.path).split('\n'), f.line);
+        if (gs.length) add(f, 'conditional-branch', gs.map((x) => x.cond).join(' and ').slice(0, 120));
+      }
+      const a = f.tool.annotations; const conds = (a && Array.isArray(a.conditions) ? a.conditions : null) || (Array.isArray(f.tool.conditions) ? f.tool.conditions : null);
+      if (conds && conds.length) add(f, 'declares-conditions', conds.join(', ').slice(0, 120), true);
+      const text = String(f.tool.title || '') + ' ' + String(f.tool.description || '').slice(0, 80);
+      if (/\bdeprecated\b/i.test(String(f.tool.title || '')) || /^\s*(\(?deprecated\b|\[deprecated\])/i.test(String(f.tool.description || '')) || /\bis deprecated\b/i.test(String(f.tool.description || '').slice(0, 120))) add(f, 'deprecated', null); void text;
+    });
+
+    // a literal table keyed by tool names that switches tools off
+    srcs.forEach((text, p) => {
+      if (!isJs(p) || !/\b(enabled|defaultEnabled|enabledByDefault|disabled|hidden)\b/.test(text)) return;
+      const t = tk(p); const ctx = { consts: {}, zodNames: new Set() };
+      for (let i = 0; i < t.length - 2; i++) {
+        if (!(t[i].type === 'id' || t[i].type === 'str') || !names.has(String(t[i].value)) || !isP(t[i + 1], ':') || !isP(t[i + 2], '{')) continue;
+        let o; try { o = parseObject(t, i + 2, ctx); } catch (e) { continue; }
+        if (!o.value || o.value === SKIP) continue;
+        const hit = DISABLED_KEYS.find(([k, v]) => o.value[k] === v);
+        if (hit) found.forEach((f) => { if (f.tool.name === String(t[i].value)) add(f, 'disabled-by-default', hit[0] + ': ' + hit[1] + ' in ' + p, true); });
+      }
+    });
+
+    // Several modules registering the same tool names are alternatives (one is chosen by configuration at start): keep the
+    // module with the most tools, drop the tools only the others have. dupes: the registrations that lost the name to an earlier file.
+    const reg = found.map((f) => ({ f, path: f.path, name: f.tool.name })).concat((dupes || []).map((d) => ({ f: null, path: d.path, name: d.name })));
+    const filesOf = new Map(); const namesIn = new Map();
+    reg.forEach((r) => { if (!filesOf.has(r.name)) filesOf.set(r.name, new Set()); filesOf.get(r.name).add(r.path); if (!namesIn.has(r.path)) namesIn.set(r.path, new Set()); namesIn.get(r.path).add(r.name); });
+    const parent = new Map(); const find = (x) => { if (!parent.has(x)) parent.set(x, x); while (parent.get(x) !== x) { parent.set(x, parent.get(parent.get(x))); x = parent.get(x); } return x; };
+    filesOf.forEach((set) => { const a = Array.from(set); a.slice(1).forEach((x) => parent.set(find(x), find(a[0]))); });
+    const comps = new Map(); namesIn.forEach((_, p) => { const r = find(p); if (!comps.has(r)) comps.set(r, []); comps.get(r).push(p); });
+    comps.forEach((paths) => {
+      if (paths.length < 2) return;
+      paths.sort((x, y) => namesIn.get(y).size - namesIn.get(x).size || x.length - y.length || (x < y ? -1 : 1));
+      const keep = namesIn.get(paths[0]);
+      found.forEach((f) => { if (paths.includes(f.path) && !keep.has(f.tool.name)) add(f, 'alternate-server', f.path + ' is an alternative to ' + paths[0], true); });
+    });
+
+    // a literal declaration that no other file or line mentions
+    found.forEach((f) => {
+      if (!f.literal || !f.binding) return;
+      let uses = 0;
+      srcs.forEach((text) => { const m = text.match(IDENT_RE(f.binding)); if (m) uses += m.length; });
+      if (uses <= 1) add(f, 'unreferenced-declaration', f.binding, true);
+    });
+    return marks;
+  }
+
+  // Everything the reader does with a repository's files: SDK and constants, extraction, marking, exclusion.
+  // files: Map(path -> text) or [[path, text]]. Returns { found, tools, excluded, sdk }.
+  function analyseRepo(files, opts) {
+    opts = opts || {};
+    const all = files instanceof Map ? Array.from(files.entries()) : files;
+    const paths = all.map(([p]) => p);
+    const plan = planFiles(paths);
+    const text = new Map(all);
+    const sdk = Object.assign({}, detectSdk(text), opts.sdk || {});
+    const srcList = plan.src.slice(0, opts.maxSourceFiles || 600).map((p) => [p, text.get(p)]).filter(([, x]) => typeof x === 'string' && x.length <= 600000);
+    const consts = collectGlobalConsts(srcList);
+    const found = []; const byName = new Set();
+    const dupes = [];
+    srcList.forEach(([p, t]) => {
+      let ts = []; try { ts = extractFromFile(p, t, { sdk, consts }); } catch (e) { ts = []; }
+      ts.forEach((x) => { if (!byName.has(x.tool.name)) { byName.add(x.tool.name); found.push(Object.assign({ path: p }, x)); } else dupes.push({ path: p, name: x.tool.name }); });
+    });
+    const marks = markConditionals(found, srcList, dupes);
+    found.forEach((f) => { f.marks = marks.get(f); f.excluded = f.marks.some((m) => m.exclude); });
+    // Never return an empty list because of exclusions: the marks stay, the exclusion does not apply.
+    if (found.length && found.every((f) => f.excluded)) found.forEach((f) => { f.excluded = false; f.marks.forEach((m) => { m.exclude = false; }); });
+    return { found, tools: found.filter((f) => !f.excluded), excluded: found.filter((f) => f.excluded), sdk, plan, files: srcList.length };
   }
 
   // ------------------------------------------------------------ network
@@ -666,13 +1029,18 @@
     exactFiles.filter(([p, t]) => t && !/__toolsnaps__/.test(p)).forEach(([p, t]) => { const ts = toolsFromJson(t); if (ts && ts.length) candidates.push({ kind: 'committed', fidelity: 'exact', path: p, tools: ts }); });
     for (const [p, t] of await fetchMany(plan.manifests.slice(0, 10), 4)) { const m = t && fromMcpbManifest(t); if (m) candidates.push({ kind: 'mcpb', fidelity: m.fidelity, path: p, tools: m.tools, generated: m.generated }); }
     for (const [p, t] of await fetchMany(plan.serverJson.slice(0, 5), 4)) { try { const d = JSON.parse(t); if (d && d.name) hints.serverJson.push({ path: p, name: d.name, remotes: d.remotes || [], packages: d.packages || [] }); } catch (e) { /* ignore */ } }
-    // source extraction
+    // source extraction: the manifests (SDK and zod versions), then the sources, then one analysis over all of them
+    const metaPaths = paths.filter((p) => META_FILE.test(p) && !SKIP_DIR.test(p) && p.split('/').length <= (ref.subdir ? ref.subdir.split('/').length : 0) + 2).slice(0, 8);
+    const rootMeta = listing.paths.filter((p) => /^(package\.json|package-lock\.json|pyproject\.toml)$/.test(p) && !paths.includes(p));
+    const metaFiles = await fetchMany(metaPaths.concat(rootMeta).slice(0, 10), 4);
     const srcFiles = await fetchMany(plan.src.slice(0, maxSrc), 8);
-    const found = []; const byName = new Set();
-    srcFiles.forEach(([p, t]) => { if (!t || t.length > 600000) return; let ts = []; try { ts = extractFromFile(p, t); } catch (e) { ts = []; } ts.forEach((x) => { if (!byName.has(x.tool.name)) { byName.add(x.tool.name); found.push(Object.assign({ path: p }, x)); } }); });
+    const repoFiles = new Map(); metaFiles.concat(srcFiles).forEach(([p, t]) => { if (t) repoFiles.set(p, t); });
+    const an = analyseRepo(repoFiles, { maxSourceFiles: maxSrc });
+    const found = an.tools;
     if (found.length) {
       const allLiteral = found.every((x) => x.fidelity === 'literal');
-      candidates.push({ kind: 'source', fidelity: allLiteral ? 'literal' : 'derived', path: null, files: Array.from(new Set(found.map((x) => x.path))), tools: found.map((x) => x.tool), where: found.map((x) => ({ name: x.tool.name, path: x.path, line: x.line, fidelity: x.fidelity })) });
+      const marked = an.found.filter((x) => x.marks.length).map((x) => ({ name: x.tool.name, reasons: x.marks.map((m) => m.reason), excluded: x.excluded }));
+      candidates.push({ kind: 'source', fidelity: allLiteral ? 'literal' : 'derived', path: null, files: Array.from(new Set(found.map((x) => x.path))), tools: found.map((x) => x.tool), where: found.map((x) => ({ name: x.tool.name, path: x.path, line: x.line, fidelity: x.fidelity })), excluded: an.excluded.map((x) => ({ name: x.tool.name, path: x.path, line: x.line, reasons: x.marks.filter((m) => m.exclude).map((m) => m.reason + (m.detail ? ' (' + m.detail + ')' : '')) })), marked, sdk: an.sdk });
     }
     const rank = { exact: 0, literal: 1, derived: 2, names: 3 };
     candidates.sort((a, b) => rank[a.fidelity] - rank[b.fidelity] || b.tools.length - a.tools.length);
@@ -701,5 +1069,5 @@
     return null;
   }
 
-  return { fromGitHub, fromRegistry, extractFromFile, extractJs, extractPy, planFiles, parseRepoRef, toolsFromJson, fromMcpbManifest, tokenize, commandFor };
+  return { fromGitHub, fromRegistry, extractFromFile, extractJs, extractPy, planFiles, detectSdk, collectGlobalConsts, analyseRepo, markConditionals, parseRepoRef, toolsFromJson, fromMcpbManifest, tokenize, commandFor };
 });

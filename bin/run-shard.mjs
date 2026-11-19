@@ -101,14 +101,19 @@ export function shuffled(list, seedHex) {
   return a;
 }
 
-/** The env names a probe sets: the list's own, the registry's required ones, and the README's. Values are dummies. */
+/**
+ * The env names a probe sets: the list's own, the registry's required ones, and the README's secret-named ones
+ * (keys, tokens, passwords). A README also names switches and paths (LOG_LEVEL, *_PATH, *_URL, *_ENABLED); a dummy
+ * value for those changes how the server starts without standing in for a credential, so they are recorded but not set.
+ * Values are dummies.
+ */
 export function envPlan(launch, registry, stat) {
   const fromList = Object.keys((launch && launch.env) || {});
   const fromRegistry = ((registry && registry.env) || []).filter((e) => e.required).map((e) => e.name);
   const fromReadme = (stat && stat.env_refs && stat.env_refs.readme) || [];
   const fromSource = (stat && stat.env_refs && stat.env_refs.source) || [];
   const ok = (n) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(n) && !/^(PATH|HOME|TMPDIR|LD_.*|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|PYTHON.*|HTTPS?_PROXY|ALL_PROXY|NO_PROXY|SSL_CERT_.*|DOCKER_.*|GITHUB_.*|ACTIONS_.*|RUNNER_.*|SURFACE_.*|CORPUS_.*)$/i.test(n);
-  const used = [...new Set([...fromList, ...fromRegistry, ...fromReadme])].filter(ok).slice(0, MAX_ENV);
+  const used = [...new Set([...fromList, ...fromRegistry, ...fromReadme.filter(isSecretName)])].filter(ok).slice(0, MAX_ENV);
   const env = {};
   for (const n of used) { const v = launch && launch.env ? launch.env[n] : undefined; env[n] = typeof v === 'string' ? v : dummyValue(n); }
   return { env, names: { list: fromList, registry: fromRegistry, readme: fromReadme, source: fromSource, used } };

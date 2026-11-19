@@ -24,6 +24,8 @@ const SEMVER = /^[0-9]+(?:\.[0-9A-Za-z-]+){0,3}(?:[-+.][0-9A-Za-z.+-]{1,60})?$/;
 const GO_VERSION = /^(?:v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]{1,80})?|[0-9a-f]{12,40})$/;
 const BIN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
 const IMAGE = /^[a-z0-9][a-z0-9./_-]{0,200}(?::[A-Za-z0-9._-]{1,120})?@sha256:[0-9a-f]{64}$/;
+// A version constraint on a dependency of a pypi target: name, optional comparison(s). No extras, markers, URLs or paths.
+const PIP_CONSTRAINT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,80}[A-Za-z0-9])?(?:(?:==|!=|<=|>=|~=|<|>)[0-9][0-9A-Za-z.*+!-]{0,40})(?:,(?:==|!=|<=|>=|~=|<|>)[0-9][0-9A-Za-z.*+!-]{0,40}){0,3}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const REGISTRY_NAME = /^[A-Za-z0-9][A-Za-z0-9.-]{0,120}\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/;
 // Names the harness or the runtime owns: a list may not set them.
@@ -65,10 +67,11 @@ export function validateLaunch(l, what) {
     if (l.install_scripts !== undefined && typeof l.install_scripts !== 'boolean') fail(`${what}.launch.install_scripts must be true or false`);
     if (l.node !== undefined && !['22', '24'].includes(l.node)) fail(`${what}.launch.node must be "22" or "24"`);
   } else if (l.kind === 'pypi') {
-    only(l, [...common, 'package', 'version', 'entry'], `${what}.launch`);
+    only(l, [...common, 'package', 'version', 'entry', 'constraints'], `${what}.launch`);
     if (typeof l.package !== 'string' || !PYPI_NAME.test(l.package)) fail(`${what}.launch.package is not a PyPI project name`);
     if (!(l.version === 'latest' || (typeof l.version === 'string' && SEMVER.test(l.version)))) fail(`${what}.launch.version must be an exact version or "latest"`);
     if (l.entry !== undefined && !(typeof l.entry === 'string' && BIN.test(l.entry))) fail(`${what}.launch.entry is not a console-script name`);
+    if (l.constraints !== undefined && !(Array.isArray(l.constraints) && l.constraints.length <= 10 && l.constraints.every((c) => typeof c === 'string' && PIP_CONSTRAINT.test(c)))) fail(`${what}.launch.constraints must be at most 10 version constraints such as "mcp<2"`);
   } else if (l.kind === 'go') {
     only(l, [...common, 'module', 'version'], `${what}.launch`);
     if (typeof l.module !== 'string' || !GO_MODULE.test(l.module)) fail(`${what}.launch.module is not a Go package path`);
@@ -168,7 +171,7 @@ export function launchPlan(l) {
       registries: ['pypi.org', 'files.pythonhosted.org'],
       install: [
         { name: 'venv', cmd: ['python', '-m', 'venv', `${P.work}/venv`] },
-        { name: 'install', cmd: [`${P.work}/venv/bin/python`, '-m', 'pip', 'install', '--no-input', '--disable-pip-version-check', '--no-warn-script-location', spec] },
+        { name: 'install', cmd: [`${P.work}/venv/bin/python`, '-m', 'pip', 'install', '--no-input', '--disable-pip-version-check', '--no-warn-script-location', spec, ...(l.constraints ?? [])] },
         { name: 'freeze', cmd: ['sh', '-c', 'mkdir -p /work/lock && /work/venv/bin/python -m pip freeze --all > /work/lock/freeze.txt'] },
       ],
       locks: [{ path: `${P.work}/lock/freeze.txt`, name: 'freeze.txt' }],
