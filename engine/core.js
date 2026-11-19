@@ -442,6 +442,10 @@
   const CREATE_V = set('create add send post insert upload comment reply publish invite submit order pay charge book schedule transfer refund new make register enqueue queue start trigger launch fork clone copy duplicate import share notify email message tweet attach subscribe generate dispatch deploy provision spawn open draft compose');
   const UPDATE_V = set('update edit set patch put rename move assign unassign merge close reopen archive unarchive write upsert modify change toggle approve reject label tag untag lock unlock pin unpin star unstar mark restore transition sync save configure enable rotate grant resolve apply commit push link unlink scale restart stop pause resume promote demote');
   const JOB_V = set('start trigger launch queue enqueue schedule dispatch kick spawn deploy provision');
+  // "open" reads (open_nodes, open_file) when its object is something that exists already; open_issue and open_pull_request create.
+  const OPEN_READ = set('node nodes file files page pages url urls link links document documents doc docs tab tabs entity entities graph resource resources path paths directory folder');
+  // Operations on two operands (source and target) or one state change: not a replacement of the whole object.
+  const REWIRE_V = set('move rename assign unassign transition merge restore sync');
 
   function verbClass(tok) {
     if (DELETE_V.has(tok)) return 'delete';
@@ -454,6 +458,7 @@
   function kindOf(name) {
     const tk = tokens(name);
     if (!tk.length) return null;
+    if (tk[0] === 'open' && tk.length > 1 && OPEN_READ.has(tk[1])) return 'read';
     const first = verbClass(tk[0]);
     if (first) return first;
     const last = verbClass(tk[tk.length - 1]);
@@ -1035,7 +1040,7 @@
       // MWS section 4: a tool whose schema requires every field is in full-replace mode.
       const sc = schemaOf(t);
       const req = isObj(sc) && Array.isArray(sc.required) ? sc.required : [];
-      const allRequired = kind === 'update' && nonId.length >= 2 && nonId.every((k) => req.includes(k)) && !keys.some((k) => isObj(p[k]) && p[k].type === 'object');
+      const allRequired = kind === 'update' && !REWIRE_V.has(lv) && nonId.length >= 2 && nonId.every((k) => req.includes(k)) && !keys.some((k) => isObj(p[k]) && p[k].type === 'object');
       if ((['replace', 'overwrite', 'put'].includes(lv) || allRequired) && !keys.some((k) => MASK_ARG.test(norm(k)))) {
         notes.push('full replacement without a field mask');
         push('surface-full-replace', null, (['replace', 'overwrite', 'put'].includes(lv) ? 'The name reads as "' + lv + '"' : 'Every one of its ' + nonId.length + ' field arguments is required') + ', and it takes no field mask.');

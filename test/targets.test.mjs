@@ -36,6 +36,7 @@ test('launch blocks: exact versions, digest-pinned images, no reserved env names
   ok({ kind: 'npm', package: '@scope/pkg', version: '1.2.3', args: ['--stdio'], env: { API_KEY: null, REGION: 'eu' } });
   ok({ kind: 'npm', package: 'pkg', version: 'latest', node: '22' });
   ok({ kind: 'pypi', package: 'mcp-server-x', version: '2026.1.1', entry: 'mcp-x' });
+  ok({ kind: 'pypi', package: 'mcp-server-x', version: '1.0.0', constraints: ['mcp<2', 'pydantic>=2,<3'] });
   ok({ kind: 'go', module: 'github.com/o/n/cmd/server', version: 'v1.2.3' });
   ok({ kind: 'docker', image: `ghcr.io/o/n@sha256:${'a'.repeat(64)}`, transport: 'http', http: { port: 8080, path: '/mcp' } });
   const no = (launch, re) => bad(base({ launch }), re);
@@ -44,6 +45,7 @@ test('launch blocks: exact versions, digest-pinned images, no reserved env names
   no({ kind: 'npm', package: 'pkg; rm -rf /', version: '1.0.0' }, /npm package name/);
   no({ kind: 'npm', package: 'pkg', version: '1.0.0', command: 'node x' }, /unknown field/);
   no({ kind: 'pypi', package: 'x', version: '1.0', entry: '../../bin/sh' }, /console-script/);
+  for (const c of [['--index-url=http://x'], ['mcp @ https://x/y.whl'], ['mcp'], ['mcp<2; python_version>"3"'], '<2', Array(11).fill('a<2')]) no({ kind: 'pypi', package: 'x', version: '1.0', constraints: c }, /version constraints/);
   no({ kind: 'docker', image: 'ghcr.io/o/n:latest' }, /pinned by digest/);
   no({ kind: 'go', module: 'not a module', version: 'v1.0.0' }, /Go package path/);
   no({ kind: 'npm', package: 'pkg', version: '1.0.0', env: { PATH: '/x' } }, /not a name a target may set/);
@@ -86,6 +88,9 @@ test('launch plans: install with scripts off, run without npx or a shell, lock f
   assert.equal(py.image, 'python');
   assert.ok(py.install[1].cmd.includes('mcp-x==1.2'));
   assert.deepEqual(py.run(), ['/work/venv/bin/mcp-x-server']);
+  assert.equal(py.install[1].cmd.at(-1), 'mcp-x==1.2');
+  const pc = launchPlan({ kind: 'pypi', package: 'mcp-x', version: '1.2', constraints: ['mcp<2'] });
+  assert.deepEqual(pc.install[1].cmd.slice(-2), ['mcp-x==1.2', 'mcp<2']);
   assert.equal(py.locks[0].name, 'freeze.txt');
   const go = launchPlan({ kind: 'go', module: 'github.com/o/n/cmd/srv', version: 'v1.0.0' });
   assert.deepEqual([go.image, go.runImage], ['go', 'node24']);

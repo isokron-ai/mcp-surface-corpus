@@ -104,7 +104,7 @@ export function buildRow({ id, publicExit, launch, facts, registry, stat, bare, 
     const r = runs[key];
     if (!r) continue;
     if (!r.ok) { row.engine_error[k] = String(r.error_type || 'error').slice(0, 40); continue; }
-    row.checks[k] = Object.fromEntries(Object.entries(r.matrix).filter(([, v]) => v.findings > 0).map(([cid, v]) => [cid, [v.findings, v.tools]]));
+    row.checks[k] = Object.fromEntries(Object.entries(r.matrix).filter(([, v]) => v.findings > 0).map(([cid, v]) => [cid, [v.findings, v.tools, v.sev ?? null]]));
     row.grades[k] = Object.fromEntries(Object.entries(r.grades).map(([s, g]) => [s, { grade: g.grade, score: g.score, ready: g.ready }]));
     if (A.features && A.features[key]) row.features[k] = A.features[key];
   }

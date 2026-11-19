@@ -178,3 +178,20 @@ test('bin/aggregate: a cell size under 5 needs --example, which marks the output
   assert.deepEqual(build({ ...o, partial: false }).diff.gone, ['s002']);
   assert.deepEqual(privateCalibration(rows, checks).per_check[C1].live, ['s001', 's002']);
 });
+
+test('a check is labelled with the severity its findings carried, not the check default', () => {
+  const rows = rows100();
+  for (const r of rows) { if (r.checks.live) r.checks.live[C1][2] = 'advice'; r.checks.static[C1][2] = 'advice'; }
+  for (const r of rows.slice(0, 30)) if (r.checks.live && r.checks.live[C2]) r.checks.live[C2][2] = 'attention';
+  for (const r of rows.slice(30, 40)) if (r.checks.live && r.checks.live[C2]) r.checks.live[C2][2] = 'blocking';
+  const agg = aggregate(rows, { checks });
+  const L = agg.checks.live.per_check;
+  assert.deepEqual(Object.keys(L[C1].severity_seen.by), ['advice']);
+  assert.deepEqual(Object.keys(L[C2].severity_seen.by), ['attention', 'blocking']);
+  assert.equal(L[C1].severity, checks[0].severity, 'the default stays in the table');
+  assert.equal(agg.calibration.live.fires_on_almost_all.find((x) => x.id === C1).severity, 'advice');
+  assert.match(calibrationMarkdown(agg), new RegExp(`\`${C1}\` \\(advice\\): 100%`));
+  // rows from before the field existed fall back to the default
+  const old = aggregate(rows100(), { checks });
+  assert.equal(old.calibration.live.fires_on_almost_all.find((x) => x.id === C1).severity, checks[0].severity);
+});

@@ -129,3 +129,15 @@ test('env names: read from source and README, never values; dummy values are sha
   assert.equal(dummyValue('GITHUB_TOKEN'), 'surface-dummy-not-a-credential');
   assert.ok(isSecretName('GITHUB_TOKEN') && isSecretName('OPENAI_API_KEY') && !isSecretName('LOG_DIR'));
 });
+
+test('static reader: the pinned SDK decides the listed form, and a tool declaration nothing registers is left out and counted', () => {
+  const lock = JSON.stringify({ name: 'demo', lockfileVersion: 3, packages: { '': { name: 'demo' }, 'node_modules/@modelcontextprotocol/sdk': { version: '1.32.2' }, 'node_modules/zod': { version: '3.25.0' } } });
+  const out = analyseArchive(tarGz({ 'src/index.ts': TS, 'src/dead.ts': 'export const dead = { name: "dead_tool", description: "Never registered anywhere.", inputSchema: { type: "object", properties: { a: { type: "string" } } } };\n', 'package.json': JSON.stringify({ name: 'demo-mcp', version: '1.0.0', dependencies: { '@modelcontextprotocol/sdk': '^1.32.0', zod: '^3.25.0' } }), 'package-lock.json': lock }));
+  const names = out.static.candidates[0].tools.map((t) => t.name).sort();
+  assert.deepEqual(names, ['delete_item', 'list_items']);
+  assert.deepEqual(out.static.left_out, { tools: 1, reasons: ['unreferenced-declaration'] });
+  const t = out.static.candidates[0].tools.find((x) => x.name === 'list_items');
+  assert.equal(t.inputSchema.additionalProperties, false, 'SDK 1.x with zod 3 closes objects');
+  assert.deepEqual(t.execution, { taskSupport: 'forbidden' }, 'SDK 1.24+ adds execution');
+  assert.ok(out.static.sdk_read && out.static.sdk_read.kind === 'v1');
+});

@@ -30,10 +30,11 @@ test('images.json: every image pinned by digest; a mirror changes the host, neve
   assert.throws(() => D.loadImages(f, 'evil.example/x y'), /not a host name/);
 });
 
-test('the env a probe sets: names from the list, the registry (required) and the README; values are dummies', () => {
-  const p = D.envPlan({ env: { API_KEY: null, REGION: 'eu-west-1' } }, { env: [{ name: 'ORG_ID', required: true }, { name: 'OPTIONAL_X', required: false }] }, { env_refs: { readme: ['SERVICE_URL', 'PATH', 'NODE_OPTIONS', 'GITHUB_TOKEN'], source: ['DEBUG_X'] } });
-  assert.deepEqual(p.names.used, ['API_KEY', 'REGION', 'ORG_ID', 'SERVICE_URL']);
-  assert.deepEqual(p.env, { API_KEY: 'surface-dummy-not-a-credential', REGION: 'eu-west-1', ORG_ID: 'surface-dummy-not-a-credential', SERVICE_URL: 'http://127.0.0.1:9/' });
+test('the env a probe sets: names from the list, the registry (required) and the README (secret-named only); values are dummies', () => {
+  const p = D.envPlan({ env: { API_KEY: null, REGION: 'eu-west-1' } }, { env: [{ name: 'ORG_ID', required: true }, { name: 'OPTIONAL_X', required: false }] }, { env_refs: { readme: ['SERVICE_API_KEY', 'SERVICE_URL', 'LOG_LEVEL', 'DATA_PATH', 'FEATURE_ENABLED', 'PATH', 'NODE_OPTIONS', 'GITHUB_TOKEN'], source: ['DEBUG_X'] } });
+  assert.deepEqual(p.names.used, ['API_KEY', 'REGION', 'ORG_ID', 'SERVICE_API_KEY']);
+  assert.deepEqual(p.env, { API_KEY: 'surface-dummy-not-a-credential', REGION: 'eu-west-1', ORG_ID: 'surface-dummy-not-a-credential', SERVICE_API_KEY: 'surface-dummy-not-a-credential' });
+  assert.deepEqual(p.names.readme.slice(0, 5), ['SERVICE_API_KEY', 'SERVICE_URL', 'LOG_LEVEL', 'DATA_PATH', 'FEATURE_ENABLED']);
   assert.deepEqual(p.names.source, ['DEBUG_X']);
   assert.deepEqual(D.envPlan(null, null, null).names.used, []);
 });

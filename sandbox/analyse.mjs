@@ -21,6 +21,7 @@ const M = require('../engine/core.js');
 export const FORMAT = 'isokron-surface-analysis/1';
 
 /** One engine run, kept whole (every check, every finding with its evidence), plus a compact matrix. */
+const SEV_RANK = { advice: 0, attention: 1, blocking: 2 };
 export function runEngine(input) {
   const text = typeof input === 'string' ? input : JSON.stringify(input);
   const t0 = Date.now();
@@ -30,11 +31,13 @@ export function runEngine(input) {
   try { r = M.analyse(parsed); } catch (e) { return { ok: false, error: `engine threw: ${String(e.message).slice(0, 300)}`, error_type: 'engine_exception', ms: Date.now() - t0 }; }
   const findings = M.allFindings(r);
   const matrix = {};
-  for (const c of M.CHECKS) matrix[c.id] = { findings: 0, tools: 0 };
+  for (const c of M.CHECKS) matrix[c.id] = { findings: 0, tools: 0, sev: null };
   const toolsHit = {};
   for (const f of findings) {
     const m = (matrix[f.id] ||= { findings: 0, tools: 0 });
     m.findings++;
+    // The severity a finding carries, not the check's default: an envelope check is advice for a server of the earlier era.
+    if (!m.sev || (SEV_RANK[f.severity] ?? -1) > (SEV_RANK[m.sev] ?? -1)) m.sev = f.severity;
     if (f.tool) (toolsHit[f.id] ||= new Set()).add(f.tool);
   }
   for (const [id, s] of Object.entries(toolsHit)) matrix[id].tools = s.size;

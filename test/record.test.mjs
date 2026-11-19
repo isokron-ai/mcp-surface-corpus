@@ -127,3 +127,11 @@ test('a row for a server that never started still records the static layer and w
   assert.ok(row.checks.static && !row.checks.live);
   assert.equal(row.repo.has_lockfile, true);
 });
+
+test('the engine run records the severity each check\'s findings carried: a live answer without 2026-07-28 fields is advice, one with some of them is attention', () => {
+  const legacy = runEngine([page([tool('get_item')])]);
+  assert.deepEqual([legacy.matrix['spec-envelope-result-type'].sev, legacy.matrix['spec-envelope-cache'].sev], ['advice', 'advice']);
+  const next = runEngine([page([tool('get_item')], { ttlMs: 1000, cacheScope: 'private' })]);
+  assert.equal(next.matrix['spec-envelope-result-type'].sev, 'attention');
+  assert.equal(legacy.matrix['spec-name-charset'].sev, null, 'no finding, no severity');
+});
