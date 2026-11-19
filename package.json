@@ -1,0 +1,14 @@
+{
+  "name": "mcp-surface-corpus",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Runs IsoKron's MCP checker over the real tool lists of open-source MCP servers and publishes aggregates only.",
+  "license": "MIT",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "vendor:verify": "node scripts/vendor-engine.mjs --verify",
+    "example": "node bin/run-shard.mjs --targets targets/example.targets.json --out out/example"
+  }
+}

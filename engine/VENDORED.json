@@ -1,0 +1,33 @@
+{
+  "from": "isokron-ai/mcp-check",
+  "commit": "f7ee9d6aa6b87efa23121fb4d95da7bec2d944ec",
+  "rubric_version": "2.1.0",
+  "checks": 76,
+  "files": [
+    {
+      "path": "engine/core.js",
+      "source": "engine/core.js",
+      "sha256": "17bd7f7ed48e2ffe915275a378227daadc8bbe6a9404ea4bcb99366574a234c9"
+    },
+    {
+      "path": "engine/vendor/ajv2020.min.js",
+      "source": "engine/vendor/ajv2020.min.js",
+      "sha256": "d2f97a24636c44135e1ffffeea29656c06a1c1f71b315e958c88d0e8126c2100"
+    },
+    {
+      "path": "engine/vendor/AJV-LICENSE.txt",
+      "source": "engine/vendor/AJV-LICENSE.txt",
+      "sha256": "b48fc4370d9d3d3794f5c368b54ad097847f62a43663085832316376ec1193d0"
+    },
+    {
+      "path": "engine/vendor/THIRD-PARTY-LICENSES.txt",
+      "source": "engine/vendor/THIRD-PARTY-LICENSES.txt",
+      "sha256": "989430e06b114f008a165ce303ac68c5cbc8b4c28ce1fe41950599b29bc719bd"
+    },
+    {
+      "path": "engine/repo-source.cjs",
+      "source": "src/inputs/repo-source.cjs",
+      "sha256": "fc187636713ce49a5babfa79ded914891ba212b7aebdf7711e7115acec6a7257"
+    }
+  ]
+}

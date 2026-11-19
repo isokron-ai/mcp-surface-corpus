@@ -1,0 +1,6080 @@
+{
+ "format": "isokron-surface-aggregate/1",
+ "generated_at": "2026-11-19T08:11:30.102Z",
+ "example": true,
+ "min_cell": 1,
+ "disclosure": "Counts over servers only. A count of 1 to min_cell-1 servers, or one whose complement is that small, is withheld; small categories are merged into \"other\"; a table over all but a few servers carries rates without counts. No target is named.",
+ "engine": {
+  "rubric_version": "2.1.0",
+  "spec_version": "2026-07-28",
+  "checks": 76,
+  "commit": "f7ee9d6aa6b87efa23121fb4d95da7bec2d944ec"
+ },
+ "shards": 1,
+ "targets": {
+  "total": 3,
+  "public_exit": {
+   "of": 3,
+   "by": {
+    "0": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  }
+ },
+ "acquisition": {
+  "best_layer": {
+   "of": 3,
+   "by": {
+    "live": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "registry_looked_up": {
+   "n": 2,
+   "of": 3,
+   "rate": 0.6667
+  },
+  "registry_found": {
+   "n": 0,
+   "of": 2,
+   "rate": 0
+  },
+  "registry_carries_tools": {
+   "n": 0,
+   "of": 0,
+   "rate": null
+  },
+  "live_attempted": {
+   "n": 3,
+   "of": 3,
+   "rate": 1
+  },
+  "live_ok": {
+   "n": 3,
+   "of": 3,
+   "rate": 1
+  },
+  "live_ok_by_launch_kind": {
+   "npm": {
+    "n": 2,
+    "of": 2,
+    "rate": 1
+   },
+   "pypi": {
+    "n": 1,
+    "of": 1,
+    "rate": 1
+   }
+  },
+  "live_failure": {
+   "of": 0,
+   "by": {}
+  },
+  "static_any": {
+   "n": 1,
+   "of": 3,
+   "rate": 0.3333
+  },
+  "static_fidelity": {
+   "of": 3,
+   "by": {
+    "none": {
+     "n": 2,
+     "rate": 0.6667
+    },
+    "derived": {
+     "n": 1,
+     "rate": 0.3333
+    }
+   }
+  },
+  "static_kind": {
+   "of": 3,
+   "by": {
+    "none": {
+     "n": 2,
+     "rate": 0.6667
+    },
+    "source": {
+     "n": 1,
+     "rate": 0.3333
+    }
+   }
+  },
+  "readme_any": {
+   "n": 2,
+   "of": 3,
+   "rate": 0.6667
+  },
+  "static_when_live_ok": {
+   "n": 1,
+   "of": 3,
+   "rate": 0.3333
+  },
+  "static_when_live_failed": {
+   "n": 0,
+   "of": 0,
+   "rate": null
+  }
+ },
+ "live": {
+  "n": 3,
+  "counts_withheld": false,
+  "transport": {
+   "of": 3,
+   "by": {
+    "stdio": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "era": {
+   "of": 3,
+   "by": {
+    "legacy": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "protocol_version": {
+   "of": 3,
+   "by": {
+    "2025-11-25": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "capabilities": {
+   "tools": {
+    "n": 3,
+    "of": 3,
+    "rate": 1
+   },
+   "prompts": {
+    "n": 2,
+    "of": 3,
+    "rate": 0.6667
+   },
+   "resources": {
+    "n": 3,
+    "of": 3,
+    "rate": 1
+   },
+   "logging": {
+    "n": 1,
+    "of": 3,
+    "rate": 0.3333
+   },
+   "completions": {
+    "n": 1,
+    "of": 3,
+    "rate": 0.3333
+   },
+   "experimental": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "tasks": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "other": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   }
+  },
+  "list_changed": {
+   "tools": {
+    "n": 2,
+    "of": 3,
+    "rate": 0.6667
+   },
+   "prompts": {
+    "n": 1,
+    "of": 3,
+    "rate": 0.3333
+   },
+   "resources": {
+    "n": 2,
+    "of": 3,
+    "rate": 0.6667
+   }
+  },
+  "starts_without_env": {
+   "n": 3,
+   "of": 3,
+   "rate": 1
+  },
+  "needs_env_to_start": {
+   "n": 0,
+   "of": 0,
+   "rate": null
+  },
+  "env_changes_list": {
+   "n": 0,
+   "of": 0,
+   "rate": null
+  },
+  "paginated": {
+   "n": 0,
+   "of": 3,
+   "rate": 0
+  },
+  "has_prompts": {
+   "n": 1,
+   "of": 3,
+   "rate": 0.3333
+  },
+  "has_resources": {
+   "n": 1,
+   "of": 3,
+   "rate": 0.3333
+  },
+  "has_resource_templates": {
+   "n": 2,
+   "of": 3,
+   "rate": 0.6667
+  },
+  "instructions": {
+   "n": 1,
+   "of": 3,
+   "rate": 0.3333
+  },
+  "instructions_chars": {
+   "n": null,
+   "p25": 3538,
+   "p50": 3538,
+   "p75": 3538,
+   "mean": 3538
+  },
+  "server_info": {
+   "title": {
+    "n": 1,
+    "of": 3,
+    "rate": 0.3333
+   },
+   "version": {
+    "n": 3,
+    "of": 3,
+    "rate": 1
+   },
+   "icons": {
+    "n": 1,
+    "of": 3,
+    "rate": 0.3333
+   }
+  },
+  "writes_stderr": {
+   "n": 2,
+   "of": 3,
+   "rate": 0.6667
+  },
+  "non_json_on_stdout": {
+   "n": 0,
+   "of": 3,
+   "rate": 0
+  },
+  "sends_notifications": {
+   "n": 0,
+   "of": 3,
+   "rate": 0
+  },
+  "asks_client": {
+   "ping": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "roots/list": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "sampling/createMessage": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "elicitation/create": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   }
+  },
+  "advertised_but_not_answered": {
+   "prompts/list": {
+    "n": 0,
+    "of": 2,
+    "rate": 0
+   },
+   "resources/list": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "resources/templates/list": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   }
+  },
+  "answered_but_not_advertised": {
+   "prompts/list": {
+    "n": 0,
+    "of": 1,
+    "rate": 0
+   },
+   "resources/list": {
+    "n": 0,
+    "of": 0,
+    "rate": null
+   },
+   "resources/templates/list": {
+    "n": 0,
+    "of": 0,
+    "rate": null
+   }
+  },
+  "startup_ms": {
+   "n": 3,
+   "p25": 511,
+   "p50": 817,
+   "p75": 3974,
+   "mean": 2717.67,
+   "histogram": {
+    "buckets": [
+     {
+      "range": "<250",
+      "n": 1
+     },
+     {
+      "range": "500-999",
+      "n": 1
+     },
+     {
+      "range": "5000-14999",
+      "n": 1
+     }
+    ]
+   }
+  },
+  "tools_list_ms": {
+   "n": 3,
+   "p25": 7,
+   "p50": 10,
+   "p75": 38.5,
+   "mean": 27
+  },
+  "prompts": {
+   "n": 2,
+   "p25": 1,
+   "p50": 2,
+   "p75": 3,
+   "mean": 2
+  },
+  "resources": {
+   "n": 3,
+   "p25": 0,
+   "p50": 0,
+   "p75": 4,
+   "mean": 2.67
+  }
+ },
+ "size": {
+  "n": 3,
+  "counts_withheld": false,
+  "from": {
+   "of": 3,
+   "by": {
+    "live": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "tools": {
+   "n": 3,
+   "p25": 9.5,
+   "p50": 16,
+   "p75": 16,
+   "mean": 11.67,
+   "histogram": {
+    "buckets": [
+     {
+      "range": "<5",
+      "n": 1
+     },
+     {
+      "range": "10-19",
+      "n": 2
+     }
+    ]
+   }
+  },
+  "bytes": {
+   "n": 3,
+   "p25": 11840,
+   "p50": 19379,
+   "p75": 22550,
+   "mean": 16467
+  },
+  "tokens": {
+   "bytes_div_4": {
+    "n": 3,
+    "p25": 2960,
+    "p50": 4845,
+    "p75": 5637.5,
+    "mean": 4116.67,
+    "histogram": {
+     "buckets": [
+      {
+       "range": "1000-2499",
+       "n": 1
+      },
+      {
+       "range": "2500-4999",
+       "n": 1
+      },
+      {
+       "range": "5000-9999",
+       "n": 1
+      }
+     ]
+    }
+   },
+   "bpe_approx": {
+    "n": 3,
+    "p25": 3458.5,
+    "p50": 5573,
+    "p75": 6806,
+    "mean": 4985.33,
+    "histogram": {
+     "buckets": [
+      {
+       "range": "1000-2499",
+       "n": 1
+      },
+      {
+       "range": "5000-9999",
+       "n": 2
+      }
+     ]
+    }
+   },
+   "claude_approx": {
+    "n": 3,
+    "p25": 3587.5,
+    "p50": 5872,
+    "p75": 6833,
+    "mean": 4989.67,
+    "histogram": {
+     "buckets": [
+      {
+       "range": "1000-2499",
+       "n": 1
+      },
+      {
+       "range": "5000-9999",
+       "n": 2
+      }
+     ]
+    }
+   }
+  },
+  "bytes_per_tool": {
+   "n": 3,
+   "p25": 1322.43,
+   "p50": 1433.67,
+   "p75": 1520.61,
+   "mean": 1417.47
+  },
+  "bpe_over_bytes_div_4": {
+   "n": 3,
+   "p25": 1.2,
+   "p50": 1.25,
+   "p75": 1.25,
+   "mean": 1.22
+  }
+ },
+ "checks": {
+  "live": {
+   "n": 3,
+   "enough": true,
+   "counts_withheld": false,
+   "per_check": {
+    "spec-tool-shape": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-input-schema-missing": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-input-schema-field-name": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-input-schema-root-object": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-schema-valid": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-schema-dialect": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-ref-remote": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-composition-bounds": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-name-length": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-name-charset": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-name-unique": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-x-mcp-header": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-x-mcp-header-sensitive": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-field-types": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-annotation-key-case": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-icon-scheme": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-meta-key": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-meta-reserved": {
+     "section": "spec",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-envelope-result-type": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 3,
+      "of": 3,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0,
+      "p50": 0,
+      "p75": 0,
+      "mean": 0
+     }
+    },
+    "spec-envelope-cache": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 3,
+      "of": 3,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0,
+      "p50": 0,
+      "p75": 0,
+      "mean": 0
+     }
+    },
+    "spec-pagination-partial": {
+     "section": "spec",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-execution-legacy": {
+     "section": "spec",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-title": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 1,
+      "p50": 1,
+      "p75": 1,
+      "mean": 1
+     }
+    },
+    "anthropic-hint": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-hint-platforms-differ": {
+     "section": "anthropic",
+     "severity": "attention",
+     "servers": {
+      "n": 2,
+      "of": 3,
+      "rate": 0.6667
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.19,
+      "p50": 0.19,
+      "p75": 0.19,
+      "mean": 0.19
+     }
+    },
+    "anthropic-name-length": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-read-write-split": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-api-docs": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-description": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 2,
+      "of": 3,
+      "rate": 0.6667
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.31,
+      "p50": 0.43,
+      "p75": 0.55,
+      "mean": 0.43
+     }
+    },
+    "anthropic-conversation-data": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-unsupported-use": {
+     "section": "anthropic",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-hints-explicit": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-description": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-name-unique": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-name-promotional": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-name-opaque": {
+     "section": "openai",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-retry": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 2,
+      "of": 3,
+      "rate": 0.6667
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.14,
+      "p50": 0.16,
+      "p75": 0.17,
+      "mean": 0.16
+     }
+    },
+    "openai-conversation-input": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-restricted-input": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-precise-location": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.06,
+      "p50": 0.06,
+      "p75": 0.06,
+      "mean": 0.06
+     }
+    },
+    "openai-generic-executor": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-readonly-starts-job": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.25,
+      "p50": 0.25,
+      "p75": 0.25,
+      "mean": 0.25
+     }
+    },
+    "openai-readonly-destructive": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "annot-delete-marked-safe": {
+     "section": "annotations",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "annot-write-marked-readonly": {
+     "section": "annotations",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-invisible-encoding": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-bidi-controls": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-zero-width": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-control-chars": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-homoglyph": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-html-comment": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-instruction-markup": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-instruction-phrases": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-cross-tool-steering": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-encoded-blob": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-external-instructions": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-secret-seeking": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-param-description": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-enum-missing": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-required-unknown": {
+     "section": "quality",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-additional-properties": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 3,
+      "of": 3,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.97,
+      "p50": 1,
+      "p75": 1,
+      "mean": 0.98
+     }
+    },
+    "schema-vague-param": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.06,
+      "p50": 0.06,
+      "p75": 0.06,
+      "mean": 0.06
+     }
+    },
+    "schema-pagination": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.25,
+      "p50": 0.25,
+      "p75": 0.25,
+      "mean": 0.25
+     }
+    },
+    "schema-response-format": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.06,
+      "p50": 0.06,
+      "p75": 0.06,
+      "mean": 0.06
+     }
+    },
+    "schema-output-schema": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.69,
+      "p50": 0.69,
+      "p75": 0.69,
+      "mean": 0.69
+     }
+    },
+    "schema-oneof-branch-types": {
+     "section": "quality",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-open-object": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "design-use-when": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 3,
+      "of": 3,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.88,
+      "p50": 1,
+      "p75": 1,
+      "mean": 0.92
+     }
+    },
+    "design-near-duplicate": {
+     "section": "quality",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "design-namespace": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0,
+      "p50": 0,
+      "p75": 0,
+      "mean": 0
+     }
+    },
+    "design-handle-lifetime": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "surface-retry-key": {
+     "section": "surface",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "surface-version-guard": {
+     "section": "surface",
+     "severity": "attention",
+     "servers": {
+      "n": 2,
+      "of": 3,
+      "rate": 0.6667
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.14,
+      "p50": 0.16,
+      "p75": 0.17,
+      "mean": 0.16
+     }
+    },
+    "surface-delete-guard": {
+     "section": "surface",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "surface-full-replace": {
+     "section": "surface",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 3,
+      "rate": 0.3333
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.06,
+      "p50": 0.06,
+      "p75": 0.06,
+      "mean": 0.06
+     }
+    },
+    "surface-bulk-delete": {
+     "section": "surface",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 3,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    }
+   }
+  },
+  "static": {
+   "n": 1,
+   "enough": true,
+   "counts_withheld": false,
+   "per_check": {
+    "spec-tool-shape": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-input-schema-missing": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-input-schema-field-name": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-input-schema-root-object": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-schema-valid": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-schema-dialect": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-ref-remote": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-composition-bounds": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-name-length": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-name-charset": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-name-unique": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-x-mcp-header": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-x-mcp-header-sensitive": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-field-types": {
+     "section": "spec",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-annotation-key-case": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-icon-scheme": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-meta-key": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-meta-reserved": {
+     "section": "spec",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-envelope-result-type": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-envelope-cache": {
+     "section": "spec",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-pagination-partial": {
+     "section": "spec",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "spec-execution-legacy": {
+     "section": "spec",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 1,
+      "p50": 1,
+      "p75": 1,
+      "mean": 1
+     }
+    },
+    "anthropic-title": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-hint": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-hint-platforms-differ": {
+     "section": "anthropic",
+     "severity": "attention",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.19,
+      "p50": 0.19,
+      "p75": 0.19,
+      "mean": 0.19
+     }
+    },
+    "anthropic-name-length": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-read-write-split": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-api-docs": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-description": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-conversation-data": {
+     "section": "anthropic",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "anthropic-unsupported-use": {
+     "section": "anthropic",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-hints-explicit": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-description": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-name-unique": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-name-promotional": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-name-opaque": {
+     "section": "openai",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-retry": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.19,
+      "p50": 0.19,
+      "p75": 0.19,
+      "mean": 0.19
+     }
+    },
+    "openai-conversation-input": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-restricted-input": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-precise-location": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-generic-executor": {
+     "section": "openai",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-readonly-starts-job": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "openai-readonly-destructive": {
+     "section": "openai",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "annot-delete-marked-safe": {
+     "section": "annotations",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "annot-write-marked-readonly": {
+     "section": "annotations",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-invisible-encoding": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-bidi-controls": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-zero-width": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-control-chars": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-homoglyph": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-html-comment": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-instruction-markup": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-instruction-phrases": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-cross-tool-steering": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-encoded-blob": {
+     "section": "security",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-external-instructions": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "sec-secret-seeking": {
+     "section": "security",
+     "severity": "blocking",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-param-description": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-enum-missing": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-required-unknown": {
+     "section": "quality",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-additional-properties": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 1,
+      "p50": 1,
+      "p75": 1,
+      "mean": 1
+     }
+    },
+    "schema-vague-param": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-pagination": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.25,
+      "p50": 0.25,
+      "p75": 0.25,
+      "mean": 0.25
+     }
+    },
+    "schema-response-format": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.06,
+      "p50": 0.06,
+      "p75": 0.06,
+      "mean": 0.06
+     }
+    },
+    "schema-output-schema": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.63,
+      "p50": 0.63,
+      "p75": 0.63,
+      "mean": 0.63
+     }
+    },
+    "schema-oneof-branch-types": {
+     "section": "quality",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "schema-open-object": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "design-use-when": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.75,
+      "p50": 0.75,
+      "p75": 0.75,
+      "mean": 0.75
+     }
+    },
+    "design-near-duplicate": {
+     "section": "quality",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "design-namespace": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "design-handle-lifetime": {
+     "section": "quality",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "surface-retry-key": {
+     "section": "surface",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "surface-version-guard": {
+     "section": "surface",
+     "severity": "attention",
+     "servers": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "tool_share_when_fired": {
+      "n": null,
+      "p25": 0.19,
+      "p50": 0.19,
+      "p75": 0.19,
+      "mean": 0.19
+     }
+    },
+    "surface-delete-guard": {
+     "section": "surface",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "surface-full-replace": {
+     "section": "surface",
+     "severity": "advice",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    },
+    "surface-bulk-delete": {
+     "section": "surface",
+     "severity": "attention",
+     "servers": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "tool_share_when_fired": {
+      "n": 0
+     }
+    }
+   }
+  }
+ },
+ "grades": {
+  "live": {
+   "spec": {
+    "grade": {
+     "of": 3,
+     "by": {
+      "A": {
+       "n": 3,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "score": {
+     "n": 3,
+     "p25": 98,
+     "p50": 98,
+     "p75": 98,
+     "mean": 98
+    }
+   },
+   "anthropic": {
+    "grade": {
+     "of": 3,
+     "by": {
+      "A": {
+       "n": 2,
+       "rate": 0.6667
+      },
+      "D": {
+       "n": 1,
+       "rate": 0.3333
+      }
+     }
+    },
+    "ready": {
+     "n": 2,
+     "of": 3,
+     "rate": 0.6667
+    },
+    "score": {
+     "n": 3,
+     "p25": 74.5,
+     "p50": 96,
+     "p75": 97,
+     "mean": 82.33
+    }
+   },
+   "openai": {
+    "grade": {
+     "of": 3,
+     "by": {
+      "A": {
+       "n": 3,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "score": {
+     "n": 3,
+     "p25": 97,
+     "p50": 98,
+     "p75": 99,
+     "mean": 98
+    }
+   },
+   "security": {
+    "grade": {
+     "of": 3,
+     "by": {
+      "A": {
+       "n": 3,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "score": {
+     "n": 3,
+     "p25": 100,
+     "p50": 100,
+     "p75": 100,
+     "mean": 100
+    }
+   },
+   "quality": {
+    "grade": {
+     "of": 3,
+     "by": {
+      "A": {
+       "n": 3,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "score": {
+     "n": 3,
+     "p25": 92.5,
+     "p50": 94,
+     "p75": 94,
+     "mean": 93
+    }
+   },
+   "surface": {
+    "grade": {
+     "of": 3,
+     "by": {
+      "D": {
+       "n": 1,
+       "rate": 0.3333
+      },
+      "F": {
+       "n": 1,
+       "rate": 0.3333
+      },
+      "none": {
+       "n": 1,
+       "rate": 0.3333
+      }
+     }
+    },
+    "ready": {
+     "n": 0,
+     "of": 0,
+     "rate": null
+    },
+    "score": {
+     "n": 2,
+     "p25": 12.5,
+     "p50": 25,
+     "p75": 37.5,
+     "mean": 25
+    }
+   }
+  },
+  "static": {
+   "spec": {
+    "grade": {
+     "of": 1,
+     "by": {
+      "A": {
+       "n": 1,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "score": {
+     "n": 1,
+     "p25": 97,
+     "p50": 97,
+     "p75": 97,
+     "mean": 97
+    }
+   },
+   "anthropic": {
+    "grade": {
+     "of": 1,
+     "by": {
+      "A": {
+       "n": 1,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "score": {
+     "n": 1,
+     "p25": 98,
+     "p50": 98,
+     "p75": 98,
+     "mean": 98
+    }
+   },
+   "openai": {
+    "grade": {
+     "of": 1,
+     "by": {
+      "A": {
+       "n": 1,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "score": {
+     "n": 1,
+     "p25": 98,
+     "p50": 98,
+     "p75": 98,
+     "mean": 98
+    }
+   },
+   "security": {
+    "grade": {
+     "of": 1,
+     "by": {
+      "A": {
+       "n": 1,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "score": {
+     "n": 1,
+     "p25": 100,
+     "p50": 100,
+     "p75": 100,
+     "mean": 100
+    }
+   },
+   "quality": {
+    "grade": {
+     "of": 1,
+     "by": {
+      "A": {
+       "n": 1,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "score": {
+     "n": 1,
+     "p25": 92,
+     "p50": 92,
+     "p75": 92,
+     "mean": 92
+    }
+   },
+   "surface": {
+    "grade": {
+     "of": 1,
+     "by": {
+      "D": {
+       "n": 1,
+       "rate": 1
+      }
+     }
+    },
+    "ready": {
+     "n": 0,
+     "of": 0,
+     "rate": null
+    },
+    "score": {
+     "n": 1,
+     "p25": 50,
+     "p50": 50,
+     "p75": 50,
+     "mean": 50
+    }
+   }
+  }
+ },
+ "engine_errors": {
+  "live": {
+   "of": 0,
+   "by": {}
+  },
+  "static": {
+   "of": 0,
+   "by": {}
+  }
+ },
+ "features": {
+  "live": {
+   "n": 3,
+   "counts_withheld": false,
+   "annotations": {
+    "any_tool": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "every_tool": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "share_of_tools": {
+     "n": 3,
+     "p25": 1,
+     "p50": 1,
+     "p75": 1,
+     "mean": 1
+    },
+    "all_four_hints_every_tool": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "title_in_annotations_any": {
+     "n": 0,
+     "of": 3,
+     "rate": 0
+    },
+    "unknown_keys_any": {
+     "n": 0,
+     "of": 3,
+     "rate": 0
+    },
+    "hints": {
+     "readOnlyHint": {
+      "any_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 3,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 3,
+       "p25": 0.72,
+       "p50": 0.81,
+       "p75": 0.91,
+       "mean": 0.81
+      }
+     },
+     "destructiveHint": {
+      "any_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 3,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 3,
+       "p25": 0,
+       "p50": 0,
+       "p75": 0.09,
+       "mean": 0.06
+      }
+     },
+     "idempotentHint": {
+      "any_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 3,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 3,
+       "p25": 0.78,
+       "p50": 0.81,
+       "p75": 0.91,
+       "mean": 0.85
+      }
+     },
+     "openWorldHint": {
+      "any_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 3,
+       "of": 3,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 3,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 3,
+       "p25": 0,
+       "p50": 0,
+       "p75": 0.03,
+       "mean": 0.02
+      }
+     }
+    }
+   },
+   "title": {
+    "any_tool": {
+     "n": 2,
+     "of": 3,
+     "rate": 0.6667
+    },
+    "every_tool": {
+     "n": 2,
+     "of": 3,
+     "rate": 0.6667
+    },
+    "share_of_tools": {
+     "n": 3,
+     "p25": 0.5,
+     "p50": 1,
+     "p75": 1,
+     "mean": 0.67
+    }
+   },
+   "description": {
+    "any_missing": {
+     "n": 0,
+     "of": 3,
+     "rate": 0
+    },
+    "median_length": {
+     "n": 3,
+     "p25": 124.5,
+     "p50": 210,
+     "p75": 267,
+     "mean": 191
+    }
+   },
+   "output_schema": {
+    "any_tool": {
+     "n": 3,
+     "of": 3,
+     "rate": 1
+    },
+    "every_tool": {
+     "n": 2,
+     "of": 3,
+     "rate": 0.6667
+    },
+    "share_of_tools": {
+     "n": 3,
+     "p25": 0.56,
+     "p50": 1,
+     "p75": 1,
+     "mean": 0.71
+    }
+   },
+   "input_schema": {
+    "any_missing": {
+     "n": 0,
+     "of": 3,
+     "rate": 0
+    },
+    "additional_properties_false_every_tool": {
+     "n": 0,
+     "of": 3,
+     "rate": 0
+    },
+    "declares_dialect_any": {
+     "n": 2,
+     "of": 3,
+     "rate": 0.6667
+    },
+    "param_description_share": {
+     "n": 3,
+     "p25": 1,
+     "p50": 1,
+     "p75": 1,
+     "mean": 1
+    },
+    "max_depth": {
+     "n": 3,
+     "p25": 3.5,
+     "p50": 4,
+     "p75": 5,
+     "mean": 4.33
+    },
+    "median_properties": {
+     "n": 3,
+     "p25": 1.5,
+     "p50": 2,
+     "p75": 2.5,
+     "mean": 2
+    }
+   },
+   "meta_any": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "icons_any": {
+    "n": 1,
+    "of": 3,
+    "rate": 0.3333
+   },
+   "execution_any": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   },
+   "name_style": {
+    "of": 3,
+    "by": {
+     "snake": {
+      "n": 2,
+      "rate": 0.6667
+     },
+     "kebab": {
+      "n": 1,
+      "rate": 0.3333
+     }
+    }
+   },
+   "mixed_name_styles": {
+    "n": 0,
+    "of": 3,
+    "rate": 0
+   }
+  },
+  "static": {
+   "n": 1,
+   "counts_withheld": false,
+   "annotations": {
+    "any_tool": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "every_tool": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "share_of_tools": {
+     "n": 1,
+     "p25": 1,
+     "p50": 1,
+     "p75": 1,
+     "mean": 1
+    },
+    "all_four_hints_every_tool": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "title_in_annotations_any": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "unknown_keys_any": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "hints": {
+     "readOnlyHint": {
+      "any_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 1,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 1,
+       "p25": 0.63,
+       "p50": 0.63,
+       "p75": 0.63,
+       "mean": 0.63
+      }
+     },
+     "destructiveHint": {
+      "any_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 1,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 1,
+       "p25": 0.19,
+       "p50": 0.19,
+       "p75": 0.19,
+       "mean": 0.19
+      }
+     },
+     "idempotentHint": {
+      "any_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 1,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 1,
+       "p25": 0.81,
+       "p50": 0.81,
+       "p75": 0.81,
+       "mean": 0.81
+      }
+     },
+     "openWorldHint": {
+      "any_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "every_tool_sets_it": {
+       "n": 1,
+       "of": 1,
+       "rate": 1
+      },
+      "share_of_tools_setting_it": {
+       "n": 1,
+       "p25": 1,
+       "p50": 1,
+       "p75": 1,
+       "mean": 1
+      },
+      "share_of_tools_true": {
+       "n": 1,
+       "p25": 0,
+       "p50": 0,
+       "p75": 0,
+       "mean": 0
+      }
+     }
+    }
+   },
+   "title": {
+    "any_tool": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "every_tool": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "share_of_tools": {
+     "n": 1,
+     "p25": 1,
+     "p50": 1,
+     "p75": 1,
+     "mean": 1
+    }
+   },
+   "description": {
+    "any_missing": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "median_length": {
+     "n": 1,
+     "p25": 324,
+     "p50": 324,
+     "p75": 324,
+     "mean": 324
+    }
+   },
+   "output_schema": {
+    "any_tool": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "every_tool": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "share_of_tools": {
+     "n": 1,
+     "p25": 0,
+     "p50": 0,
+     "p75": 0,
+     "mean": 0
+    }
+   },
+   "input_schema": {
+    "any_missing": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "additional_properties_false_every_tool": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "declares_dialect_any": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "param_description_share": {
+     "n": 0
+    },
+    "max_depth": {
+     "n": 1,
+     "p25": 1,
+     "p50": 1,
+     "p75": 1,
+     "mean": 1
+    },
+    "median_properties": {
+     "n": 1,
+     "p25": 0,
+     "p50": 0,
+     "p75": 0,
+     "mean": 0
+    }
+   },
+   "meta_any": {
+    "n": 0,
+    "of": 1,
+    "rate": 0
+   },
+   "icons_any": {
+    "n": 0,
+    "of": 1,
+    "rate": 0
+   },
+   "execution_any": {
+    "n": 1,
+    "of": 1,
+    "rate": 1
+   },
+   "name_style": {
+    "of": 1,
+    "by": {
+     "snake": {
+      "n": 1,
+      "rate": 1
+     }
+    }
+   },
+   "mixed_name_styles": {
+    "n": 0,
+    "of": 1,
+    "rate": 0
+   }
+  }
+ },
+ "sdk": {
+  "detected": {
+   "n": 3,
+   "of": 3,
+   "rate": 1
+  },
+  "by_sdk": {
+   "of": 3,
+   "by": {
+    "typescript-sdk-server": {
+     "n": 2,
+     "rate": 0.6667
+    },
+    "python-sdk": {
+     "n": 1,
+     "rate": 0.3333
+    }
+   }
+  },
+  "by_sdk_minor": {
+   "of": 3,
+   "by": {
+    "typescript-sdk-server@2.4": {
+     "n": 2,
+     "rate": 0.6667
+    },
+    "python-sdk@2.3": {
+     "n": 1,
+     "rate": 0.3333
+    }
+   }
+  },
+  "version_source": {
+   "of": 3,
+   "by": {
+    "installed": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "by_language": {
+   "of": 3,
+   "by": {
+    "typescript": {
+     "n": 2,
+     "rate": 0.6667
+    },
+    "python": {
+     "n": 1,
+     "rate": 0.3333
+    }
+   }
+  },
+  "by_ecosystem": {
+   "of": 3,
+   "by": {
+    "npm": {
+     "n": 2,
+     "rate": 0.6667
+    },
+    "pypi": {
+     "n": 1,
+     "rate": 0.3333
+    }
+   }
+  },
+  "per_sdk": {
+   "typescript-sdk-server": {
+    "servers": 2,
+    "live_ok": {
+     "n": 2,
+     "of": 2,
+     "rate": 1
+    },
+    "tools": {
+     "n": null,
+     "p25": 16,
+     "p50": 16,
+     "p75": 16,
+     "mean": 16
+    },
+    "tokens_bpe_approx": {
+     "n": null,
+     "p25": 6189.5,
+     "p50": 6806,
+     "p75": 7422.5,
+     "mean": 6806
+    },
+    "startup_ms": {
+     "n": null,
+     "p25": 358,
+     "p50": 511,
+     "p75": 664,
+     "mean": 511
+    },
+    "annotations_any_tool": {
+     "n": 2,
+     "of": 2,
+     "rate": 1
+    },
+    "output_schema_any_tool": {
+     "n": 2,
+     "of": 2,
+     "rate": 1
+    },
+    "checks_live": {
+     "spec-tool-shape": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-input-schema-missing": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-input-schema-field-name": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-input-schema-root-object": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-schema-valid": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-schema-dialect": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-ref-remote": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-composition-bounds": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-name-length": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-name-charset": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-name-unique": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-x-mcp-header": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-x-mcp-header-sensitive": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-field-types": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-annotation-key-case": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-icon-scheme": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-meta-key": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-meta-reserved": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-envelope-result-type": {
+      "n": 2,
+      "of": 2,
+      "rate": 1
+     },
+     "spec-envelope-cache": {
+      "n": 2,
+      "of": 2,
+      "rate": 1
+     },
+     "spec-pagination-partial": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "spec-execution-legacy": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "anthropic-title": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "anthropic-hint": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "anthropic-hint-platforms-differ": {
+      "n": 2,
+      "of": 2,
+      "rate": 1
+     },
+     "anthropic-name-length": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "anthropic-read-write-split": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "anthropic-api-docs": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "anthropic-description": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "anthropic-conversation-data": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "anthropic-unsupported-use": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-hints-explicit": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-description": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-name-unique": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-name-promotional": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-name-opaque": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-retry": {
+      "n": 2,
+      "of": 2,
+      "rate": 1
+     },
+     "openai-conversation-input": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-restricted-input": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-precise-location": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "openai-generic-executor": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "openai-readonly-starts-job": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "openai-readonly-destructive": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "annot-delete-marked-safe": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "annot-write-marked-readonly": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-invisible-encoding": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-bidi-controls": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-zero-width": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-control-chars": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-homoglyph": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-html-comment": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-instruction-markup": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-instruction-phrases": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-cross-tool-steering": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-encoded-blob": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-external-instructions": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "sec-secret-seeking": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "schema-param-description": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "schema-enum-missing": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "schema-required-unknown": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "schema-additional-properties": {
+      "n": 2,
+      "of": 2,
+      "rate": 1
+     },
+     "schema-vague-param": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "schema-pagination": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "schema-response-format": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "schema-output-schema": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "schema-oneof-branch-types": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "schema-open-object": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "design-use-when": {
+      "n": 2,
+      "of": 2,
+      "rate": 1
+     },
+     "design-near-duplicate": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "design-namespace": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "design-handle-lifetime": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "surface-retry-key": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "surface-version-guard": {
+      "n": 2,
+      "of": 2,
+      "rate": 1
+     },
+     "surface-delete-guard": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     },
+     "surface-full-replace": {
+      "n": 1,
+      "of": 2,
+      "rate": 0.5
+     },
+     "surface-bulk-delete": {
+      "n": 0,
+      "of": 2,
+      "rate": 0
+     }
+    }
+   },
+   "python-sdk": {
+    "servers": 1,
+    "live_ok": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "tools": {
+     "n": null,
+     "p25": 3,
+     "p50": 3,
+     "p75": 3,
+     "mean": 3
+    },
+    "tokens_bpe_approx": {
+     "n": null,
+     "p25": 1344,
+     "p50": 1344,
+     "p75": 1344,
+     "mean": 1344
+    },
+    "startup_ms": {
+     "n": null,
+     "p25": 7131,
+     "p50": 7131,
+     "p75": 7131,
+     "mean": 7131
+    },
+    "annotations_any_tool": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "output_schema_any_tool": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "checks_live": {
+     "spec-tool-shape": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-input-schema-missing": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-input-schema-field-name": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-input-schema-root-object": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-schema-valid": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-schema-dialect": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-ref-remote": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-composition-bounds": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-name-length": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-name-charset": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-name-unique": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-x-mcp-header": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-x-mcp-header-sensitive": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-field-types": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-annotation-key-case": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-icon-scheme": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-meta-key": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-meta-reserved": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-envelope-result-type": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "spec-envelope-cache": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "spec-pagination-partial": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "spec-execution-legacy": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "anthropic-title": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "anthropic-hint": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "anthropic-hint-platforms-differ": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "anthropic-name-length": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "anthropic-read-write-split": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "anthropic-api-docs": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "anthropic-description": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "anthropic-conversation-data": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "anthropic-unsupported-use": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-hints-explicit": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-description": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-name-unique": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-name-promotional": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-name-opaque": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-retry": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-conversation-input": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-restricted-input": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-precise-location": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-generic-executor": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-readonly-starts-job": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "openai-readonly-destructive": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "annot-delete-marked-safe": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "annot-write-marked-readonly": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-invisible-encoding": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-bidi-controls": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-zero-width": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-control-chars": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-homoglyph": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-html-comment": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-instruction-markup": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-instruction-phrases": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-cross-tool-steering": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-encoded-blob": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-external-instructions": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "sec-secret-seeking": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-param-description": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-enum-missing": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-required-unknown": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-additional-properties": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "schema-vague-param": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-pagination": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-response-format": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-output-schema": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-oneof-branch-types": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "schema-open-object": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "design-use-when": {
+      "n": 1,
+      "of": 1,
+      "rate": 1
+     },
+     "design-near-duplicate": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "design-namespace": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "design-handle-lifetime": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "surface-retry-key": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "surface-version-guard": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "surface-delete-guard": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "surface-full-replace": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     },
+     "surface-bulk-delete": {
+      "n": 0,
+      "of": 1,
+      "rate": 0
+     }
+    }
+   }
+  }
+ },
+ "repo": {
+  "licence": {
+   "of": 3,
+   "by": {
+    "MIT": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "licence_from": {
+   "of": 3,
+   "by": {
+    "file": {
+     "n": 3,
+     "rate": 1
+    }
+   }
+  },
+  "stars": {
+   "n": 0
+  },
+  "commit_age_days": {
+   "n": 3,
+   "p25": 1,
+   "p50": 1,
+   "p75": 1,
+   "mean": 1,
+   "histogram": {
+    "buckets": [
+     {
+      "range": "<7",
+      "n": 3
+     }
+    ]
+   }
+  },
+  "archived": {
+   "n": 0,
+   "of": 0,
+   "rate": null
+  },
+  "pinned": {
+   "n": 3,
+   "of": 3,
+   "rate": 1
+  },
+  "has_server_json": {
+   "n": 0,
+   "of": 3,
+   "rate": 0
+  },
+  "has_lockfile": {
+   "n": 3,
+   "of": 3,
+   "rate": 1
+  }
+ },
+ "env": {
+  "probe_set_env": {
+   "n": 0,
+   "of": 3,
+   "rate": 0
+  },
+  "credential_named": {
+   "n": 0,
+   "of": 3,
+   "rate": 0
+  },
+  "source_reads_credential_named": {
+   "n": 0,
+   "of": 3,
+   "rate": 0
+  },
+  "registry_declares_env": {
+   "n": 0,
+   "of": 0,
+   "rate": null
+  },
+  "env_names_used": {
+   "n": 0
+  },
+  "source_env_refs": {
+   "n": 3,
+   "p25": 0,
+   "p50": 0,
+   "p75": 2,
+   "mean": 1.33
+  }
+ },
+ "static_vs_live": {
+  "n": 1,
+  "enough": true,
+  "counts_withheld": false,
+  "fidelity": {
+   "of": 1,
+   "by": {
+    "derived": {
+     "n": 1,
+     "rate": 1
+    }
+   }
+  },
+  "same_names": {
+   "n": 1,
+   "of": 1,
+   "rate": 1
+  },
+  "name_jaccard": {
+   "n": 1,
+   "p25": 1,
+   "p50": 1,
+   "p75": 1,
+   "mean": 1
+  },
+  "static_misses_tools": {
+   "n": 0,
+   "of": 1,
+   "rate": 0
+  },
+  "static_has_extra_tools": {
+   "n": 0,
+   "of": 1,
+   "rate": 0
+  },
+  "description_agreement": {
+   "n": 1,
+   "p25": 1,
+   "p50": 1,
+   "p75": 1,
+   "mean": 1
+  },
+  "schema_agreement": {
+   "n": 1,
+   "p25": 0,
+   "p50": 0,
+   "p75": 0,
+   "mean": 0
+  },
+  "param_names_agreement": {
+   "n": 1,
+   "p25": 0,
+   "p50": 0,
+   "p75": 0,
+   "mean": 0
+  },
+  "annotations_agreement": {
+   "n": 1,
+   "p25": 1,
+   "p50": 1,
+   "p75": 1,
+   "mean": 1
+  },
+  "readme_name_jaccard": {
+   "n": null,
+   "p25": 0.48,
+   "p50": 0.48,
+   "p75": 0.48,
+   "mean": 0.48
+  },
+  "per_check": {
+   "spec-tool-shape": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-input-schema-missing": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-input-schema-field-name": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-input-schema-root-object": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-schema-valid": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-schema-dialect": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-ref-remote": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-composition-bounds": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-name-length": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-name-charset": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-name-unique": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-x-mcp-header": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-x-mcp-header-sensitive": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-field-types": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-annotation-key-case": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-icon-scheme": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-meta-key": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-meta-reserved": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-envelope-result-type": {
+    "agree": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "live_only": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-envelope-cache": {
+    "agree": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "live_only": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-pagination-partial": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "spec-execution-legacy": {
+    "agree": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    }
+   },
+   "anthropic-title": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-hint": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-hint-platforms-differ": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-name-length": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-read-write-split": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-api-docs": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-description": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-conversation-data": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "anthropic-unsupported-use": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-hints-explicit": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-description": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-name-unique": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-name-promotional": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-name-opaque": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-retry": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-conversation-input": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-restricted-input": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-precise-location": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-generic-executor": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-readonly-starts-job": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "openai-readonly-destructive": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "annot-delete-marked-safe": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "annot-write-marked-readonly": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-invisible-encoding": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-bidi-controls": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-zero-width": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-control-chars": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-homoglyph": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-html-comment": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-instruction-markup": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-instruction-phrases": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-cross-tool-steering": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-encoded-blob": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-external-instructions": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "sec-secret-seeking": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-param-description": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-enum-missing": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-required-unknown": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-additional-properties": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-vague-param": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-pagination": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-response-format": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-output-schema": {
+    "agree": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    }
+   },
+   "schema-oneof-branch-types": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "schema-open-object": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "design-use-when": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "design-near-duplicate": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "design-namespace": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "design-handle-lifetime": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "surface-retry-key": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "surface-version-guard": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "surface-delete-guard": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "surface-full-replace": {
+    "agree": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "live_only": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   },
+   "surface-bulk-delete": {
+    "agree": {
+     "n": 1,
+     "of": 1,
+     "rate": 1
+    },
+    "live_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    },
+    "static_only": {
+     "n": 0,
+     "of": 1,
+     "rate": 0
+    }
+   }
+  }
+ },
+ "diff": null,
+ "calibration": {
+  "almost_all_threshold": 0.9,
+  "disagree_threshold": 0.2,
+  "live": {
+   "n": 3,
+   "enough": true,
+   "fires_on_almost_all": [
+    {
+     "id": "spec-envelope-result-type",
+     "severity": "attention",
+     "servers": 3,
+     "rate": 1
+    },
+    {
+     "id": "spec-envelope-cache",
+     "severity": "attention",
+     "servers": 3,
+     "rate": 1
+    },
+    {
+     "id": "schema-additional-properties",
+     "severity": "advice",
+     "servers": 3,
+     "rate": 1
+    },
+    {
+     "id": "design-use-when",
+     "severity": "advice",
+     "servers": 3,
+     "rate": 1
+    }
+   ],
+   "never_fires": [
+    "spec-tool-shape",
+    "spec-input-schema-missing",
+    "spec-input-schema-field-name",
+    "spec-input-schema-root-object",
+    "spec-schema-valid",
+    "spec-schema-dialect",
+    "spec-ref-remote",
+    "spec-composition-bounds",
+    "spec-name-length",
+    "spec-name-charset",
+    "spec-name-unique",
+    "spec-x-mcp-header",
+    "spec-x-mcp-header-sensitive",
+    "spec-field-types",
+    "spec-annotation-key-case",
+    "spec-icon-scheme",
+    "spec-meta-key",
+    "spec-meta-reserved",
+    "spec-pagination-partial",
+    "spec-execution-legacy",
+    "anthropic-hint",
+    "anthropic-name-length",
+    "anthropic-read-write-split",
+    "anthropic-api-docs",
+    "anthropic-conversation-data",
+    "anthropic-unsupported-use",
+    "openai-hints-explicit",
+    "openai-description",
+    "openai-name-unique",
+    "openai-name-promotional",
+    "openai-name-opaque",
+    "openai-conversation-input",
+    "openai-restricted-input",
+    "openai-generic-executor",
+    "openai-readonly-destructive",
+    "annot-delete-marked-safe",
+    "annot-write-marked-readonly",
+    "sec-invisible-encoding",
+    "sec-bidi-controls",
+    "sec-zero-width",
+    "sec-control-chars",
+    "sec-homoglyph",
+    "sec-html-comment",
+    "sec-instruction-markup",
+    "sec-instruction-phrases",
+    "sec-cross-tool-steering",
+    "sec-encoded-blob",
+    "sec-external-instructions",
+    "sec-secret-seeking",
+    "schema-param-description",
+    "schema-enum-missing",
+    "schema-required-unknown",
+    "schema-oneof-branch-types",
+    "schema-open-object",
+    "design-near-duplicate",
+    "design-handle-lifetime",
+    "surface-retry-key",
+    "surface-delete-guard",
+    "surface-bulk-delete"
+   ],
+   "withheld": [],
+   "fires": [
+    {
+     "id": "spec-envelope-result-type",
+     "rate": 1
+    },
+    {
+     "id": "spec-envelope-cache",
+     "rate": 1
+    },
+    {
+     "id": "schema-additional-properties",
+     "rate": 1
+    },
+    {
+     "id": "design-use-when",
+     "rate": 1
+    },
+    {
+     "id": "anthropic-hint-platforms-differ",
+     "rate": 0.6667
+    },
+    {
+     "id": "anthropic-description",
+     "rate": 0.6667
+    },
+    {
+     "id": "openai-retry",
+     "rate": 0.6667
+    },
+    {
+     "id": "surface-version-guard",
+     "rate": 0.6667
+    },
+    {
+     "id": "anthropic-title",
+     "rate": 0.3333
+    },
+    {
+     "id": "openai-precise-location",
+     "rate": 0.3333
+    },
+    {
+     "id": "openai-readonly-starts-job",
+     "rate": 0.3333
+    },
+    {
+     "id": "schema-vague-param",
+     "rate": 0.3333
+    },
+    {
+     "id": "schema-pagination",
+     "rate": 0.3333
+    },
+    {
+     "id": "schema-response-format",
+     "rate": 0.3333
+    },
+    {
+     "id": "schema-output-schema",
+     "rate": 0.3333
+    },
+    {
+     "id": "design-namespace",
+     "rate": 0.3333
+    },
+    {
+     "id": "surface-full-replace",
+     "rate": 0.3333
+    }
+   ]
+  },
+  "static": {
+   "n": 1,
+   "enough": true,
+   "fires_on_almost_all": [
+    {
+     "id": "spec-execution-legacy",
+     "severity": "advice",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "anthropic-hint-platforms-differ",
+     "severity": "attention",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "openai-retry",
+     "severity": "attention",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "schema-additional-properties",
+     "severity": "advice",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "schema-pagination",
+     "severity": "advice",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "schema-response-format",
+     "severity": "advice",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "schema-output-schema",
+     "severity": "advice",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "design-use-when",
+     "severity": "advice",
+     "servers": 1,
+     "rate": 1
+    },
+    {
+     "id": "surface-version-guard",
+     "severity": "attention",
+     "servers": 1,
+     "rate": 1
+    }
+   ],
+   "never_fires": [
+    "spec-tool-shape",
+    "spec-input-schema-missing",
+    "spec-input-schema-field-name",
+    "spec-input-schema-root-object",
+    "spec-schema-valid",
+    "spec-schema-dialect",
+    "spec-ref-remote",
+    "spec-composition-bounds",
+    "spec-name-length",
+    "spec-name-charset",
+    "spec-name-unique",
+    "spec-x-mcp-header",
+    "spec-x-mcp-header-sensitive",
+    "spec-field-types",
+    "spec-annotation-key-case",
+    "spec-icon-scheme",
+    "spec-meta-key",
+    "spec-meta-reserved",
+    "spec-envelope-result-type",
+    "spec-envelope-cache",
+    "spec-pagination-partial",
+    "anthropic-title",
+    "anthropic-hint",
+    "anthropic-name-length",
+    "anthropic-read-write-split",
+    "anthropic-api-docs",
+    "anthropic-description",
+    "anthropic-conversation-data",
+    "anthropic-unsupported-use",
+    "openai-hints-explicit",
+    "openai-description",
+    "openai-name-unique",
+    "openai-name-promotional",
+    "openai-name-opaque",
+    "openai-conversation-input",
+    "openai-restricted-input",
+    "openai-precise-location",
+    "openai-generic-executor",
+    "openai-readonly-starts-job",
+    "openai-readonly-destructive",
+    "annot-delete-marked-safe",
+    "annot-write-marked-readonly",
+    "sec-invisible-encoding",
+    "sec-bidi-controls",
+    "sec-zero-width",
+    "sec-control-chars",
+    "sec-homoglyph",
+    "sec-html-comment",
+    "sec-instruction-markup",
+    "sec-instruction-phrases",
+    "sec-cross-tool-steering",
+    "sec-encoded-blob",
+    "sec-external-instructions",
+    "sec-secret-seeking",
+    "schema-param-description",
+    "schema-enum-missing",
+    "schema-required-unknown",
+    "schema-vague-param",
+    "schema-oneof-branch-types",
+    "schema-open-object",
+    "design-near-duplicate",
+    "design-namespace",
+    "design-handle-lifetime",
+    "surface-retry-key",
+    "surface-delete-guard",
+    "surface-full-replace",
+    "surface-bulk-delete"
+   ],
+   "withheld": [],
+   "fires": [
+    {
+     "id": "spec-execution-legacy",
+     "rate": 1
+    },
+    {
+     "id": "anthropic-hint-platforms-differ",
+     "rate": 1
+    },
+    {
+     "id": "openai-retry",
+     "rate": 1
+    },
+    {
+     "id": "schema-additional-properties",
+     "rate": 1
+    },
+    {
+     "id": "schema-pagination",
+     "rate": 1
+    },
+    {
+     "id": "schema-response-format",
+     "rate": 1
+    },
+    {
+     "id": "schema-output-schema",
+     "rate": 1
+    },
+    {
+     "id": "design-use-when",
+     "rate": 1
+    },
+    {
+     "id": "surface-version-guard",
+     "rate": 1
+    }
+   ]
+  },
+  "never_fires_anywhere": [
+   "spec-tool-shape",
+   "spec-input-schema-missing",
+   "spec-input-schema-field-name",
+   "spec-input-schema-root-object",
+   "spec-schema-valid",
+   "spec-schema-dialect",
+   "spec-ref-remote",
+   "spec-composition-bounds",
+   "spec-name-length",
+   "spec-name-charset",
+   "spec-name-unique",
+   "spec-x-mcp-header",
+   "spec-x-mcp-header-sensitive",
+   "spec-field-types",
+   "spec-annotation-key-case",
+   "spec-icon-scheme",
+   "spec-meta-key",
+   "spec-meta-reserved",
+   "spec-pagination-partial",
+   "anthropic-hint",
+   "anthropic-name-length",
+   "anthropic-read-write-split",
+   "anthropic-api-docs",
+   "anthropic-conversation-data",
+   "anthropic-unsupported-use",
+   "openai-hints-explicit",
+   "openai-description",
+   "openai-name-unique",
+   "openai-name-promotional",
+   "openai-name-opaque",
+   "openai-conversation-input",
+   "openai-restricted-input",
+   "openai-generic-executor",
+   "openai-readonly-destructive",
+   "annot-delete-marked-safe",
+   "annot-write-marked-readonly",
+   "sec-invisible-encoding",
+   "sec-bidi-controls",
+   "sec-zero-width",
+   "sec-control-chars",
+   "sec-homoglyph",
+   "sec-html-comment",
+   "sec-instruction-markup",
+   "sec-instruction-phrases",
+   "sec-cross-tool-steering",
+   "sec-encoded-blob",
+   "sec-external-instructions",
+   "sec-secret-seeking",
+   "schema-param-description",
+   "schema-enum-missing",
+   "schema-required-unknown",
+   "schema-oneof-branch-types",
+   "schema-open-object",
+   "design-near-duplicate",
+   "design-handle-lifetime",
+   "surface-retry-key",
+   "surface-delete-guard",
+   "surface-bulk-delete"
+  ],
+  "static_vs_live_disagree": [
+   {
+    "id": "spec-envelope-result-type",
+    "disagree_rate": 1,
+    "live_only": 1,
+    "static_only": 0
+   },
+   {
+    "id": "spec-envelope-cache",
+    "disagree_rate": 1,
+    "live_only": 1,
+    "static_only": 0
+   },
+   {
+    "id": "spec-execution-legacy",
+    "disagree_rate": 1,
+    "live_only": 0,
+    "static_only": 1
+   },
+   {
+    "id": "schema-output-schema",
+    "disagree_rate": 1,
+    "live_only": 0,
+    "static_only": 1
+   },
+   {
+    "id": "surface-full-replace",
+    "disagree_rate": 1,
+    "live_only": 1,
+    "static_only": 0
+   }
+  ],
+  "static_vs_live_withheld": 0
+ }
+}

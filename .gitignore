@@ -1,0 +1,8 @@
+node_modules/
+out/
+# The target list is never in the repository in clear text. Only the public example is.
+targets/*.json
+!targets/example.targets.json
+*.key
+*.tmp
+.DS_Store

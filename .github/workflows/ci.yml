@@ -1,0 +1,119 @@
+# Tests every pull request and every push to main on GitHub's free runners.
+#
+#   test        the unit tests on Node 22 and 24 (target list, sandbox flags, probe, static reader,
+#               aggregate and its disclosure rules, the workflows themselves), the engine's vendored
+#               hashes, and shellcheck over scripts/ and bin/
+#   example     the sandbox tests against the runner's Docker, then the whole pipeline, end to end, on
+#               the public example list (three reference servers from modelcontextprotocol/servers):
+#               real containers, the allowlist proxy, the probe, the engine, encryption to
+#               recipients.txt, the aggregate. No secret is used
+#   ci-ok       passes only if every job above succeeded: the one required status check
+#
+# No secrets, a read-only token, no pull_request_target: a pull request from a fork runs with the
+# same permissions as any other. The example's results are public by design (its three targets are
+# named in targets/example.targets.json); the real list never runs here.
+
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  AGE_URL: https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
+  AGE_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          package-manager-cache: false
+      # The script tests encrypt and decrypt with keys made on the spot; without age they skip themselves.
+      - name: Install age
+        run: scripts/install-age.sh
+      - name: Unit tests
+        run: node --test test/*.test.mjs
+      - name: Engine files match engine/VENDORED.json
+        run: node scripts/vendor-engine.mjs --verify
+      - name: Shell scripts
+        if: matrix.node == '22'
+        run: shellcheck -S warning scripts/*.sh bin/*.sh
+
+  example:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install age
+        run: scripts/install-age.sh
+      - name: Guard the container networks
+        run: sudo scripts/net-guard.sh
+      # The sandbox against the runner's Docker: stdio, http, a server that needs an env value, a server
+      # that tries to reach the network and write to its root, and one that hangs. No network is needed
+      # beyond pulling the pinned image.
+      - name: Sandbox tests
+        env:
+          SURFACE_DOCKER_TESTS: '1'
+        run: node --test test/driver.test.mjs
+      - name: Run the example list
+        env:
+          # Read-only token, for the GitHub API's rate limit; sent to api.github.com only.
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/run-example.sh
+      - name: Upload the example's public aggregate
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: example-aggregate
+          path: ${{ runner.temp }}/example/public/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Job summary
+        if: always()
+        run: |
+          f="$RUNNER_TEMP/example/public/calibration.md"
+          if [ -f "$f" ]; then cat "$f" >> "$GITHUB_STEP_SUMMARY"; else echo "The example produced no report." >> "$GITHUB_STEP_SUMMARY"; fi
+
+  # The required status check (branch protection names this job, not the others).
+  ci-ok:
+    needs: [test, example]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job succeeded
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "results: $RESULTS"
+          n=0
+          for r in $RESULTS; do
+            n=$((n + 1))
+            [ "$r" = success ] || { echo "::error::a required job ended $r"; exit 1; }
+          done
+          [ "$n" -eq 2 ] || { echo "::error::expected 2 job results, got $n"; exit 1; }

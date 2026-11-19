@@ -1,0 +1,28 @@
+{
+  "format": "isokron-surface-targets/1",
+  "about": "Public example: three reference servers from modelcontextprotocol/servers. The real list has this format and lives encrypted in targets/targets.json.age.",
+  "defaults": { "timeout_s": 600 },
+  "targets": [
+    {
+      "id": "s001",
+      "repo": "modelcontextprotocol/servers",
+      "commit": "c799c8552b0f27b7a33a7b9233773da144dddcf5",
+      "subdir": "src/everything",
+      "launch": { "kind": "npm", "package": "@modelcontextprotocol/server-everything", "version": "2.3.1", "args": ["stdio"] }
+    },
+    {
+      "id": "s002",
+      "repo": "modelcontextprotocol/servers",
+      "commit": "c799c8552b0f27b7a33a7b9233773da144dddcf5",
+      "subdir": "src/filesystem",
+      "launch": { "kind": "npm", "package": "@modelcontextprotocol/server-filesystem", "version": "2.4.0", "args": ["/tmp"] }
+    },
+    {
+      "id": "s003",
+      "repo": "modelcontextprotocol/servers",
+      "commit": "c799c8552b0f27b7a33a7b9233773da144dddcf5",
+      "subdir": "src/time",
+      "launch": { "kind": "pypi", "package": "mcp-server-time", "version": "2026.11.18" }
+    }
+  ]
+}

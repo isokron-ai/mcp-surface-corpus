@@ -1,0 +1,16 @@
+IsoKron MCP surface corpus
+Copyright (c) 2026 Stormhaven Enterprises LLC, doing business as IsoKron, and Joshua Bryan.
+Licensed under the MIT License (see LICENSE).
+
+"IsoKron" is a name of Stormhaven Enterprises LLC. The MIT License does not grant rights to it.
+
+engine/ is vendored, unchanged, from @isokron/mcp-check (github.com/isokron-ai/mcp-check, v1.0.0,
+commit f7ee9d6): the checker engine (core.js, rubric 2.1.0, the same file as isokron.ai/mcp-check) and the
+static source reader (repo-source.cjs). engine/VENDORED.json records the sha256 of every file.
+
+engine/vendor/ajv2020.min.js is Ajv 8.17.1 (MIT License, Copyright (c) 2015-2021 Evgeny Poberezkin),
+with fast-deep-equal 3.1.3 (MIT), fast-uri 3.0.1 (BSD-3-Clause) and json-schema-traverse 1.0.0 (MIT).
+Full texts: engine/vendor/THIRD-PARTY-LICENSES.txt.
+
+scripts/net-guard.sh and scripts/install-age.sh are copied from isokron-ai/mcp-writecheck-action
+(corpus/), same owner.
