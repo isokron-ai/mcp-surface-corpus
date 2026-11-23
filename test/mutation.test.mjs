@@ -37,7 +37,7 @@ test('each container mutation takes out exactly its one protection', () => {
   const e = mutateCaseArgs(a, 'env-filter', can);
   assert.ok(e.includes('GITHUB_TOKEN=isk-canary-1'));
   assert.ok(e.indexOf('GITHUB_TOKEN=isk-canary-1') < e.indexOf(IMG), 'before the image, so docker reads it as an option');
-  for (const m of ['firewall-forward', 'firewall-input', 'internal-net']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
+  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'internal-net']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
   assert.deepEqual(a, caseArgs(), 'the original arguments are not changed');
 });
 
@@ -46,6 +46,9 @@ test('the host mutations go through sudo -n and say whether they worked', () => 
   assert.equal(mutateHost('firewall-input', (cmd, argv) => { seen.push([cmd, ...argv].join(' ')); return { status: 0 }; }), true);
   assert.deepEqual(seen, ['sudo -n iptables -D INPUT -i docker0 -j ISK-SBX-IN', 'sudo -n iptables -D INPUT -i br-+ -j ISK-SBX-IN']);
   assert.equal(mutateHost('firewall-forward', () => ({ status: 1 })), false);
+  const order = [];
+  mutateHost('firewall-order', (cmd, argv) => { order.push([cmd, ...argv].join(' ')); return { status: 0 }; });
+  assert.deepEqual(order, ['sudo -n iptables -I DOCKER-USER 1 -s 10.213.52.0/22 -j ACCEPT']);
   assert.equal(mutateHost('cap-drop', () => { throw new Error('no host change'); }), true);
 });
 
@@ -77,6 +80,7 @@ test('R-MUT-00 a mutated run counts only when it failed for the reason its prote
   assert.equal(checkMutation(mutated('runtime-runc', { ev: runc }), 'runtime-runc').ok, true);
   // The firewall: the preflight refused.
   assert.equal(checkMutation(mutated('firewall-input', { preflight: 'the firewall is not the one net-guard.sh makes: iptables INPUT lacks: -A INPUT -i br-+ -j ISK-SBX-IN' }), 'firewall-input').ok, true);
+  assert.equal(checkMutation(mutated('firewall-order', { preflight: 'the firewall is not the one net-guard.sh makes: iptables DOCKER-USER: -A DOCKER-USER -s 10.213.52.0/22 -j ISK-SBX comes after -A DOCKER-USER -s 10.213.52.0/22 -j ACCEPT' }), 'firewall-order').ok, true);
   assert.equal(checkMutation(mutated('firewall-forward', { preflight: 'the firewall is not the one net-guard.sh makes: iptables ISK-SBX is not the chain net-guard.sh makes (0 rules; rule 1: missing)' }), 'firewall-forward').ok, true);
   // Capabilities, environment, root, network: the named case on its evidence.
   const caps = GOOD['raw-socket'](); caps.inspect.mismatches = ['capabilities are not all dropped'];

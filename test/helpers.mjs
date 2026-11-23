@@ -79,9 +79,10 @@ export function row(i, o = {}) {
 /**
  * The host as install-runsc.sh and net-guard.sh leave it, for the strict preflight: `iptables -S` /
  * `ip6tables -S` of our chains and jumps (as iptables prints them) and `runsc --version`. `drop`
- * removes rules: { 'iptables INPUT': [rule, ...] } or a whole chain with true.
+ * removes rules: { 'iptables INPUT': [rule, ...] } or a whole chain with true. `top` puts rules first:
+ * { 'iptables DOCKER-USER': [rule, ...] }.
  */
-export function fakeHostRun(cfg, { drop = {}, version = null } = {}) {
+export function fakeHostRun(cfg, { drop = {}, top = {}, version = null } = {}) {
   const v4 = {
     'ISK-SBX': ['-A ISK-SBX -s 10.213.53.0/24 -d 10.213.53.0/24 -j RETURN', '-A ISK-SBX -s 10.213.54.0/24 -d 10.213.54.0/24 -j RETURN', '-A ISK-SBX -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-fwd: " --log-level 4', '-A ISK-SBX -j DROP'],
     'ISK-SBX-IN': ['-A ISK-SBX-IN -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-in: "', '-A ISK-SBX-IN -j DROP'],
@@ -102,6 +103,6 @@ export function fakeHostRun(cfg, { drop = {}, version = null } = {}) {
     if (!t || a[0] !== '-S' || !t[a[1]]) return { status: 1, stdout: '' };
     const gone = drop[`${tool} ${a[1]}`];
     if (gone === true) return { status: 1, stdout: '' };
-    return { status: 0, stdout: [`-N ${a[1]}`, ...t[a[1]].filter((l) => !(gone || []).includes(l))].join('\n') };
+    return { status: 0, stdout: [`-N ${a[1]}`, ...(top[`${tool} ${a[1]}`] || []), ...t[a[1]].filter((l) => !(gone || []).includes(l))].join('\n') };
   };
 }

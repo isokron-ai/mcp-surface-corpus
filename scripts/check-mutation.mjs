@@ -24,6 +24,7 @@ export const EXPECT = {
   'runtime-runc': { case: 'direct-ip', why: /not run under gVisor \(runtime runc\)/, blocked: false },
   'firewall-forward': { preflight: /the firewall is not the one net-guard\.sh makes: .*ISK-SBX/ },
   'firewall-input': { preflight: /the firewall is not the one net-guard\.sh makes: .*INPUT lacks/ },
+  'firewall-order': { preflight: /the firewall is not the one net-guard\.sh makes: .*DOCKER-USER: -A DOCKER-USER -[sd] 10\.213\.52\.0\/22 -j ISK-SBX comes after -A DOCKER-USER -s 10\.213\.52\.0\/22 -j ACCEPT/ },
   'cap-drop': { case: 'raw-socket', why: /capabilities are not all dropped/, blocked: false },
   'env-filter': { case: 'env-token', why: /a token reached the target/, blocked: false },
   'read-only': { case: 'write-outside', why: /a write outside the work folder worked/, blocked: false, logged: true },

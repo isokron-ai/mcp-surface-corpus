@@ -112,9 +112,24 @@ function ruleLines(tool, chain, run) {
 }
 
 /**
+ * Problems with where our rules sit in a chain we share (DOCKER-USER, INPUT, the IPv6 FORWARD): each
+ * must come before any other rule that could let a packet past it, that is any rule of someone else
+ * that ends in ACCEPT, RETURN or a jump to another chain. A last rule `-A CHAIN -j RETURN` (Docker's
+ * own end of DOCKER-USER) is fine, and so are other rules that drop, reject or log.
+ */
+export function jumpOrderProblems(tool, chain, got, want) {
+  const mine = new Set(want);
+  const lets = (l, i) => !mine.has(l) && /-j (?!DROP$|REJECT\b|LOG\b)\S+/.test(l) && !(i === got.length - 1 && l === `-A ${chain} -j RETURN`);
+  const first = got.findIndex(lets);
+  if (first < 0) return [];
+  return want.filter((w) => got.indexOf(w) > first).map((w) => `${tool} ${chain}: ${w} comes after ${String(got[first]).slice(0, 120)}`);
+}
+
+/**
  * Whether net-guard.sh's firewall is live on this host now: each of our chains holds exactly the
- * rules it makes, DOCKER-USER, INPUT and the IPv6 FORWARD hold our jumps, and in FORWARD the jump to
- * DOCKER-USER comes before any ACCEPT. Returns the problems; an empty list means live.
+ * rules it makes, DOCKER-USER, INPUT and the IPv6 FORWARD hold our jumps ahead of any rule that could
+ * let a packet past them (jumpOrderProblems), and in FORWARD the jump to DOCKER-USER comes before any
+ * ACCEPT. Returns the problems; an empty list means live.
  */
 export function firewallProblems(run = spawnSync) {
   const out = [];
@@ -129,6 +144,7 @@ export function firewallProblems(run = spawnSync) {
       const got = ruleLines(tool, chain, run);
       if (got === null) { out.push(`${tool} ${chain} cannot be read`); continue; }
       for (const w of want) if (!got.includes(w)) out.push(`${tool} ${chain} lacks: ${w}`);
+      out.push(...jumpOrderProblems(tool, chain, got, want));
     }
   }
   const fwd = ruleLines('iptables', 'FORWARD', run);
