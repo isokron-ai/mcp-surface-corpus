@@ -28,6 +28,7 @@ export function checkSelftest(file, cases = CASES) {
   for (const s of records.filter((r) => r.type === 'skip')) problems.push(`skipped: ${s.reason} (${s.detail})`.slice(0, 200));
   const end = records.filter((r) => r.type === 'run_end');
   if (end.length !== 1 || end[0].ok !== true) problems.push('the run did not end ok');
+  else if (end[0].telemetry_dropped !== 0) problems.push(`${Number.isInteger(end[0].telemetry_dropped) ? end[0].telemetry_dropped : 'an unknown number of'} record(s) of evidence were refused by the schema and left out`);
   for (const p of problems) lines.push(`telemetry: ${p}`);
 
   let passed = 0;

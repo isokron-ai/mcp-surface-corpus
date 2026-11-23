@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Telemetry, TelemetryError, TYPES, SOURCES, ROLES, SKIP_REASONS, TELEMETRY_VERSION, validateRecord, readTelemetry, fromNetlog, fromProxy, fromDrop, newRunId } from '../src/telemetry.mjs';
+import { Telemetry, TelemetryError, TYPES, SOURCES, ROLES, SKIP_REASONS, TELEMETRY_VERSION, validateRecord, readTelemetry, fromNetlog, fromProxy, fromDrop, newRunId, clampPort } from '../src/telemetry.mjs';
+import { decide } from '../sandbox/egress-proxy.mjs';
+import { fitSummary, SUMMARY_MAX } from '../src/trace-summary.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
 const tmp = () => mkdtempSync(join(tmpdir(), 'tel-'));
@@ -84,4 +86,40 @@ test('docs/TELEMETRY.md documents every record type, field, source, role and ski
     for (const k of Object.keys(fields)) assert.match(section, new RegExp(`\`${k}\``), `${type}.${k}`);
   }
   for (const s of [...SOURCES, ...ROLES, ...SKIP_REASONS]) assert.match(doc, new RegExp(`\`${s}\``), s);
+});
+
+test('a container cannot stop the telemetry: its numbers are clamped, a refused record is counted and left out', () => {
+  // CONNECT a.b:99999 through the proxy: the port is kept as null, and the record is valid.
+  assert.equal(decide('a.b:99999', new Set()).port, null);
+  const [t, f] = fromProxy({ host: 'a.b', port: 99999, allowed: false, error: 'port', up: -1 });
+  assert.equal(f.port, null); assert.equal('up' in f, false);
+  assert.equal(fromNetlog({ kind: 'conn', from: '10.213.53.3', proto: 'tcp', port: 70000, bytes: -5 })[1].port, null);
+  assert.equal(fromDrop({ chain: 'input', family: 4, proto: 'TCP', src: null, dst: null, dpt: 1e9 })[1].dpt, null);
+  assert.deepEqual([clampPort(0), clampPort(65535), clampPort(65536), clampPort('80'), clampPort(-1)], [0, 65535, null, null, null]);
+  const file = join(mkdtempSync(join(tmpdir(), 'tel-')), 't.jsonl');
+  const tel = new Telemetry(file, { run: '20261121t100000-000001' });
+  assert.ok(tel.tryWrite(t, f, { source: 'proxy' }));
+  assert.equal(tel.tryWrite('connection', { from: 'not an ip!', proto: 'tcp', port: 1, bytes: 0 }, { source: 'netlog' }), null);
+  assert.ok(tel.tryWrite('connection', { from: '10.213.53.3', proto: 'tcp', port: 1, bytes: 0 }, { source: 'netlog' }), 'the records after a refused one are still written');
+  assert.throws(() => tel.write('connection', { from: 'not an ip!', proto: 'tcp', port: 1, bytes: 0 }), TelemetryError, 'write() still refuses loudly');
+  const end = tel.end(true);
+  assert.equal(end.telemetry_dropped, 1);
+  const back = readTelemetry(file);
+  assert.deepEqual([back.bad.length, back.records.length], [0, 3]);
+});
+
+test('a trace summary is cut to fit a record, least telling lists first, by its JSON size', () => {
+  const ent = (i) => ({ path: `/x/${'\u0001'.repeat(190)}${i}`, op: 'write', call: 'openat', n: 1, failed: 1, errno: 13 });
+  const big = (n) => Array.from({ length: n }, (_, i) => ent(i));
+  const s = { format: 'isokron-trace-summary/1', opens_outside: big(160), credential_paths: big(40), exec: big(40), network: { sockets: [], connects: big(40), sends: big(40), binds: [], dns_names: [] }, privileged: [], omitted: {} };
+  assert.ok(JSON.stringify(s).length > 256 * 1024);
+  const r = fitSummary(s);
+  assert.ok(JSON.stringify(r).length <= SUMMARY_MAX);
+  assert.equal(r.shrunk, true);
+  assert.ok(r.omitted.opens_outside > 0);
+  assert.equal(r.credential_paths.length, 40, 'credential reads are cut last');
+  assert.equal(r.exec.length, 40);
+  assert.equal(r.network.connects.length, 40);
+  const file = join(mkdtempSync(join(tmpdir(), 'tel-')), 't.jsonl');
+  assert.ok(new Telemetry(file, { run: '20261121t100000-000001' }).write('trace_summary', { summary: r }, { source: 'runsc' }));
 });

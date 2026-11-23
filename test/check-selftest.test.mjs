@@ -14,7 +14,7 @@ const fixed = () => new Date('2026-11-21T10:00:00.000Z');
 const hex = (c) => c.repeat(64);
 
 /** A synthetic self test run: every case blocked and logged, unless `tweak` changes a case. */
-function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit = [] } = {}) {
+function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit = [], dropped = 0 } = {}) {
   const f = join(mkdtempSync(join(tmpdir(), 'chk-')), 'telemetry.jsonl');
   const tel = new Telemetry(f, { run: '20261121t100000-000001', clock: fixed });
   tel.write('run_start', { kind: 'selftest', lane: 'ci', node: 'v22.0.0', platform: 'linux/x64', runtime: 'runsc', gvisor_release: '20261116.0' });
@@ -31,6 +31,7 @@ function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit
       tel.write('bypass_result', { case: name, blocked, logged, pass: blocked && logged, evidence: ['trace: x'], detail: 'ok' }, meta);
     }
   }
+  tel.dropped = dropped;
   tel.end(endOk);
   return f;
 }
@@ -87,4 +88,10 @@ test('check-selftest: the command line prints one line per case and exits 1 on a
   assert.equal(run(join(tmpdir(), 'no-such-file.jsonl')).status, 1);
   writeFileSync(join(tmpdir(), 'chk-empty.jsonl'), '');
   assert.equal(run(join(tmpdir(), 'chk-empty.jsonl')).status, 1);
+});
+
+test('check-selftest: evidence the schema refused and left out fails the run', () => {
+  const r = checkSelftest(telemetry({ dropped: 2 }));
+  assert.equal(r.ok, false);
+  assert.ok(r.lines.some((l) => /2 record\(s\) of evidence were refused/.test(l)), r.lines.join('\n'));
 });

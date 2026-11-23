@@ -113,7 +113,7 @@ async function smoke(dk, { cfg, image, cmd, expect, tel, labels, deadlineMs, tra
     if (exit !== 0 || out.stdout.toString().trim() !== expect) return { ok: false, reason: 'runtime_unavailable', detail: `the smoke container under runsc did not run as ${expect} (exit ${exit})` };
     const trace = await takeTrace(cfg, id, { waitMs: traceWaitMs });
     if (!trace || !(trace.syscalls > 0)) return { ok: false, reason: 'trace_unavailable', detail: `runsc wrote no syscall trace for the smoke container (expected in ${cfg.log_dir})` };
-    tel.write('trace_summary', { summary: trace }, { source: 'runsc', role: 'smoke' });
+    tel.tryWrite('trace_summary', { summary: trace }, { source: 'runsc', role: 'smoke' });
     return { ok: true };
   } finally {
     await dk.kill(name);
@@ -190,7 +190,7 @@ export function writeNetlog(tel, lines, { subject = null, roles = {} } = {}) {
   for (const o of lines) {
     const rec = fromNetlog(o);
     if (!rec) continue;
-    try { tel.write(rec[0], rec[1], { source: 'netlog', subject, role: roles[o.from] ?? null }); records++; } catch { invalid++; }
+    if (tel.tryWrite(rec[0], rec[1], { source: 'netlog', subject, role: roles[o.from] ?? null })) records++; else invalid++;
   }
   return { records, invalid, stopped: lines.find((o) => o.kind === 'stopped') ?? null };
 }
@@ -212,7 +212,7 @@ export function writeDrops(tel, groups, { subject = null, roles = {} } = {}) {
   let n = 0;
   for (const g of groups) {
     const [type, f] = fromDrop(g);
-    try { tel.write(type, f, { source: 'host', subject, role: roles[g.src] ?? null }); n++; } catch { /* a line the schema refuses is left out */ }
+    if (tel.tryWrite(type, f, { source: 'host', subject, role: roles[g.src] ?? null })) n++; // a line the schema refuses is left out and counted
   }
   return n;
 }

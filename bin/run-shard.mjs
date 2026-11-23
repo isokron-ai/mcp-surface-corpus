@@ -197,7 +197,7 @@ async function recordContainer(ctx, { id, ins = null, t0, exit = null, signal = 
   const runtime = ins && ins.HostConfig && ins.HostConfig.Runtime ? String(ins.HostConfig.Runtime).slice(0, 20) : summary ? RUNTIME : 'unknown';
   const code = st ? (st.Running ? null : st.ExitCode) : exit;
   ctx.tel.write('container', { runtime, exit: Number.isInteger(code) ? code : null, signal: signal ? String(signal).slice(0, 20) : null, timed_out: !!timedOut, oom_killed: st ? !!st.OOMKilled : null, ms: Date.now() - t0 }, meta);
-  if (summary) ctx.tel.write('trace_summary', { summary }, { source: 'runsc', ...meta });
+  if (summary) ctx.tel.tryWrite('trace_summary', { summary }, { source: 'runsc', ...meta });
   else ctx.tel.write('skip', { reason: 'trace_unavailable', detail: 'runsc wrote no syscall trace for this container' }, meta);
 }
 
@@ -349,36 +349,46 @@ async function runTarget(t, list, ctx, dk) {
           // it, the proxy at .3 is the only door, the install container is .4.
           const inNet = await dk.network(`surface-${ctx.runId}-${id}-in`, true, id, { sandbox: 'install' });
           const netlog = await startNetlogOn(tdk, { net: 'install', network: inNet, image: ctx.images.node24, toolsVol: ctx.toolsVol, labels: lbl, target: id });
-          // The proxy alone runs under runc: it looks registry names up through the daemon's DNS on
-          // its egress network, which gVisor's own network stack does not reach. It is our code, it
-          // runs no target code, and it gets the same user, capabilities and read-only root.
+          let okAll = false;
+          let proxyUp = false;
           const proxy = dk.name(id, 'proxy');
-          const proxyArgs = helperRunArgs({ name: proxy, image: ctx.images.node24, runtime: 'runc', network: ctx.outNet, detach: true, labels: lbl, memory: '256m', mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...plan.registries] });
-          writeSettings(ctx, proxyArgs, { subject: id, role: 'proxy' });
-          await dk.must(tdk.d(proxyArgs), 'egress proxy');
-          await dk.must(tdk.d(['network', 'connect', '--ip', NETS.install.proxy, inNet, proxy]), 'egress proxy network');
-          let okAll = true;
-          for (const step of plan.install) {
-            if (timedOut()) { okAll = false; break; }
-            const s1 = Date.now();
-            const name = dk.name(id, 'i');
-            const cidfile = join(ctx.cidDir, `${name}.cid`);
-            const argv = sandboxRunArgs({ name, image, network: inNet, ip: NETS.install.target, resolv: 'install', cidfile, labels: lbl, cpus: ctx.cpus, workdir: P.work, mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: installEnv(ctx, step.env || {}), cmd: step.cmd });
-            writeSettings(ctx, argv, { subject: id, role: 'install' });
-            const r = await tdk.d(argv, { deadline: left(), keepStdout: !!step.out, logStdout: !step.out, cap: 1024 * 1024, onTimeout: () => dk.kill(name) });
-            await recordContainer(ctx, { id: readCid(cidfile), t0: s1, exit: r.exit, signal: r.signal, timedOut: r.timed_out, meta: { subject: id, role: 'install' } });
-            const s = { name: step.name, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - s1 };
-            if (step.out) { const j = safeParse(r.stdout); if (step.name === 'entry') entry = j && typeof j.script === 'string' && j.script.startsWith(`${P.work}/pkg/`) && !/[\u0000\n]/.test(j.script) ? j : null; s.result = j; }
-            inst.steps.push(s);
-            if (r.exit !== 0 || (step.name === 'entry' && !entry)) { okAll = false; break; }
+          try {
+            // The proxy alone runs under runc: it looks registry names up through the daemon's DNS on
+            // its egress network, which gVisor's own network stack does not reach. It is our code, it
+            // runs no target code, and it gets the same user, capabilities and read-only root.
+            const proxyArgs = helperRunArgs({ name: proxy, image: ctx.images.node24, runtime: 'runc', network: ctx.outNet, detach: true, labels: lbl, memory: '256m', mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...plan.registries] });
+            writeSettings(ctx, proxyArgs, { subject: id, role: 'proxy' });
+            await dk.must(tdk.d(proxyArgs), 'egress proxy');
+            proxyUp = true;
+            await dk.must(tdk.d(['network', 'connect', '--ip', NETS.install.proxy, inNet, proxy]), 'egress proxy network');
+            okAll = true;
+            for (const step of plan.install) {
+              if (timedOut()) { okAll = false; break; }
+              const s1 = Date.now();
+              const name = dk.name(id, 'i');
+              const cidfile = join(ctx.cidDir, `${name}.cid`);
+              const argv = sandboxRunArgs({ name, image, network: inNet, ip: NETS.install.target, resolv: 'install', cidfile, labels: lbl, cpus: ctx.cpus, workdir: P.work, mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: installEnv(ctx, step.env || {}), cmd: step.cmd });
+              writeSettings(ctx, argv, { subject: id, role: 'install' });
+              const r = await tdk.d(argv, { deadline: left(), keepStdout: !!step.out, logStdout: !step.out, cap: 1024 * 1024, onTimeout: () => dk.kill(name) });
+              await recordContainer(ctx, { id: readCid(cidfile), t0: s1, exit: r.exit, signal: r.signal, timedOut: r.timed_out, meta: { subject: id, role: 'install' } });
+              const s = { name: step.name, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - s1 };
+              if (step.out) { const j = safeParse(r.stdout); if (step.name === 'entry') entry = j && typeof j.script === 'string' && j.script.startsWith(`${P.work}/pkg/`) && !/[\u0000\n]/.test(j.script) ? j : null; s.result = j; }
+              inst.steps.push(s);
+              if (r.exit !== 0 || (step.name === 'entry' && !entry)) { okAll = false; break; }
+            }
+          } finally {
+            // What the install looked up and reached, then what it asked the proxy for: written whatever
+            // happened above, the logger's lines first, and each record on its own, so a line the schema
+            // refuses is counted and left out instead of taking the others with it.
+            try { writeNetlog(ctx.tel, await stopNetlog(tdk, netlog), { subject: id, roles: rolesOn('install') }); } finally { await dk.kill(netlog); }
+            if (proxyUp) {
+              const pl = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024 });
+              inst.egress = pl.stdout.toString('utf8').split('\n').filter(Boolean).slice(0, 5000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+              inst.egress_refused = inst.egress.filter((e) => e && e.allowed === false && e.host).length;
+              for (const e of inst.egress) { const x = fromProxy(e); if (x) ctx.tel.tryWrite(x[0], x[1], { source: 'proxy', subject: id, role: 'proxy' }); }
+            }
+            await dk.kill(proxy);
           }
-          // What the install tried to reach, allowed or refused: part of the record and of the telemetry.
-          const pl = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024 });
-          inst.egress = pl.stdout.toString('utf8').split('\n').filter(Boolean).slice(0, 5000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-          inst.egress_refused = inst.egress.filter((e) => e.allowed === false && e.host).length;
-          for (const e of inst.egress) { const x = fromProxy(e); if (x) ctx.tel.write(x[0], x[1], { source: 'proxy', subject: id, role: 'proxy' }); }
-          await dk.kill(proxy);
-          try { writeNetlog(ctx.tel, await stopNetlog(tdk, netlog), { subject: id, roles: rolesOn('install') }); } finally { await dk.kill(netlog); }
           inst.ok = okAll;
           // Lock files, read out through a helper with no network (target-written: data only, size-capped).
           for (const lk of plan.locks) {

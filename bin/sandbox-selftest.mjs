@@ -170,7 +170,7 @@ async function runCase(name, ctx) {
     ev.conns = mine.filter(([t]) => t === 'connection').map(([, f]) => f);
 
     ev.trace = await takeTrace(cfg, id);
-    if (ev.trace) tel.write('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
+    if (ev.trace) tel.tryWrite('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
     else tel.write('skip', { reason: 'trace_unavailable', detail: 'runsc wrote no syscall trace for the case container' }, meta);
 
     ev.canaryHits = canary.hits();

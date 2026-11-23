@@ -35,7 +35,9 @@ Every record has these fields:
 | `subject` | string or null | What it is about: a corpus target id (`s001`), a self test case (`case:direct-ip`), or null for the run as a whole (preflight, smoke container, baseline). `[a-z0-9:_-]{1,48}`. |
 | `role` | string or null | The part the container or address had (see [Roles](#roles)), or null. |
 
-A record is at most 256 KiB as JSON. Strings that came from a target (names it looked up, paths
+A record is at most 256 KiB as JSON. Numbers that came from a container are clamped to the schema
+(a port outside 0 to 65535 is null), and a record built from a container's data that the schema
+still refuses is left out and counted in `run_end` (`telemetry_dropped`), so it cannot stop the run. Strings that came from a target (names it looked up, paths
 it opened, bytes it sent) are cut to a fixed length and kept as printable text, with every other
 byte written as `\xHH`. Treat them as untrusted data.
 
@@ -241,6 +243,7 @@ The last record of a file.
 | `records` | integer | Records in the file, this one included. |
 | `skipped` | integer | How many `skip` records were written. |
 | `ok` | boolean | The run finished without a harness error (corpus) or with every case passed (self test). |
+| `telemetry_dropped` | integer, optional | Records built from a container's data (network logger, proxy, trace, firewall lines) that the schema refused and that were left out. A self test fails when it is not 0. |
 
 ## Example
 

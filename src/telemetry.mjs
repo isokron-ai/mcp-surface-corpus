@@ -23,6 +23,11 @@ const hex64 = (v) => typeof v === 'string' && /^[0-9a-f]{64}$/.test(v);
 const ip = (v) => typeof v === 'string' && v.length <= 64 && /^[0-9a-fA-F:.]+$/.test(v);
 const ipOrNull = (v) => v === null || ip(v);
 const port = (v) => v === null || (Number.isInteger(v) && v >= 0 && v <= 65535);
+/** A port from a container's output: an integer 0 to 65535, anything else null. */
+export const clampPort = (v) => (Number.isInteger(v) && v >= 0 && v <= 65535 ? v : null);
+/** A count from a container's output: a whole number, anything else 0. */
+const count = (v) => (Number.isInteger(v) && v >= 0 ? v : 0);
+export const MAX_RECORD = 256 * 1024;
 
 /** Required fields per record type (optional fields are listed in docs/TELEMETRY.md). */
 export const TYPES = {
@@ -54,7 +59,7 @@ export function validateRecord(r) {
   if (!(r.subject === null || (typeof r.subject === 'string' && /^[a-z0-9:_-]{1,48}$/.test(r.subject)))) errs.push('subject');
   if (!(r.role === null || ROLES.includes(r.role))) errs.push('role');
   for (const [k, ok] of Object.entries(TYPES[r.type])) if (!ok(r[k])) errs.push(`${r.type}.${k}`);
-  if (JSON.stringify(r).length > 256 * 1024) errs.push('record over 256 KiB');
+  if (JSON.stringify(r).length > MAX_RECORD) errs.push('record over 256 KiB');
   return errs;
 }
 
@@ -63,7 +68,20 @@ export class TelemetryError extends Error {}
 /** Appends records to one JSON Lines file. */
 export class Telemetry {
   constructor(file, { run, clock = () => new Date() }) {
-    this.file = file; this.run = run; this.clock = clock; this.seq = 0; this.counts = {};
+    this.file = file; this.run = run; this.clock = clock; this.seq = 0; this.counts = {}; this.dropped = 0; this.droppedBy = {};
+  }
+
+  /**
+   * write() for a record that carries data a container produced (its network lines, its trace, its
+   * proxy requests): a record the schema refuses is dropped and counted, never thrown, so one bad
+   * line cannot end the run or take the records after it with it. run_end reports the count.
+   */
+  tryWrite(type, fields = {}, meta = {}) {
+    try { return this.write(type, fields, meta); } catch (e) {
+      if (!(e instanceof TelemetryError)) throw e;
+      this.dropped++; this.droppedBy[type] = (this.droppedBy[type] ?? 0) + 1;
+      return null;
+    }
   }
 
   write(type, fields = {}, { source = 'harness', subject = null, role = null } = {}) {
@@ -76,7 +94,7 @@ export class Telemetry {
     return r;
   }
 
-  end(ok) { return this.write('run_end', { records: this.seq + 1, skipped: this.counts.skip ?? 0, ok }); }
+  end(ok) { return this.write('run_end', { records: this.seq + 1, skipped: this.counts.skip ?? 0, ok, telemetry_dropped: this.dropped }); }
 }
 
 /** Reads a telemetry file back; lines that are not valid records are reported, not dropped silently. */
@@ -99,7 +117,7 @@ export function newRunId(now = new Date(), rand = Math.random) {
 
 /** A grouped host firewall drop (src/sandbox-net.mjs groupDrops) as a record. */
 export function fromDrop(d) {
-  const f = { chain: d.chain, family: d.family, proto: String(d.proto).slice(0, 12), src: d.src ?? null, dst: d.dst ?? null, dpt: d.dpt ?? null, n: Number.isInteger(d.n) ? d.n : 1 };
+  const f = { chain: d.chain, family: d.family, proto: String(d.proto).slice(0, 12), src: d.src ?? null, dst: d.dst ?? null, dpt: clampPort(d.dpt), n: Number.isInteger(d.n) && d.n >= 0 ? d.n : 1 };
   if (Number.isInteger(d.icmp_type)) f.icmp_type = d.icmp_type;
   return ['host_drop', f];
 }
@@ -109,7 +127,7 @@ export function fromNetlog(o) {
   if (!obj(o)) return null;
   if (o.kind === 'dns') return ['dns_query', { from: o.from ?? null, proto: o.proto, qname: String(o.qname).slice(0, 253), qtype: String(o.qtype).slice(0, 10), answer: o.answer }];
   if (o.kind === 'conn') {
-    const f = { from: o.from ?? null, proto: o.proto, port: o.port ?? null, bytes: Number.isInteger(o.bytes) ? o.bytes : 0 };
+    const f = { from: o.from ?? null, proto: o.proto, port: clampPort(o.port), bytes: count(o.bytes) };
     if (typeof o.sni === 'string') f.sni = o.sni.slice(0, 253);
     if (obj(o.http)) f.http = { method: String(o.http.method).slice(0, 16), host: String(o.http.host ?? '').slice(0, 253), path: String(o.http.path ?? '').slice(0, 200) };
     if (typeof o.first_hex === 'string') f.first_hex = o.first_hex.slice(0, 64);
@@ -121,8 +139,8 @@ export function fromNetlog(o) {
 /** An egress proxy line (sandbox/egress-proxy.mjs) as a record, or null (its "listening" line). */
 export function fromProxy(o) {
   if (!obj(o) || typeof o.allowed !== 'boolean') return null;
-  const f = { host: String(o.host ?? '').slice(0, 260), port: Number.isInteger(o.port) ? o.port : null, allowed: o.allowed };
-  for (const k of ['up', 'down', 'ms']) if (Number.isInteger(o[k])) f[k] = o[k];
+  const f = { host: String(o.host ?? '').slice(0, 260), port: clampPort(o.port), allowed: o.allowed };
+  for (const k of ['up', 'down', 'ms']) if (Number.isInteger(o[k]) && o[k] >= 0) f[k] = o[k];
   if (typeof o.error === 'string') f.error = o.error.slice(0, 80);
   if (typeof o.method === 'string') f.method = o.method.slice(0, 16);
   return ['egress', f];

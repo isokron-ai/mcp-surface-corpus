@@ -217,10 +217,36 @@ export class TraceSummary {
   }
 }
 
+/** The largest summary kept, as JSON: well under a telemetry record's 256 KiB. */
+export const SUMMARY_MAX = 192 * 1024;
+/** The lists a summary gives up first when it is too big; credential reads, programs run and connections last. */
+const SHRINK_ORDER = [[null, 'opens_outside'], ['network', 'dns_names'], ['network', 'binds'], ['network', 'sends'], ['network', 'sockets'], [null, 'privileged'], ['network', 'connects'], [null, 'exec'], [null, 'credential_paths']];
+
+/**
+ * Cuts a summary down to `max` bytes of JSON by halving its lists, least telling first, and counts
+ * what it cut in `omitted`. Paths and names a target chose can be mostly escaped bytes (six
+ * characters each in JSON), so the size is measured, not assumed. Sets `shrunk` when it cut.
+ */
+export function fitSummary(s, max = SUMMARY_MAX) {
+  let size = JSON.stringify(s).length;
+  if (size <= max) return s;
+  s.shrunk = true;
+  for (const [parent, key] of SHRINK_ORDER) {
+    const o = parent ? s[parent] : s;
+    while (size > max && o && Array.isArray(o[key]) && o[key].length) {
+      const keep = Math.floor(o[key].length / 2);
+      s.omitted[key] = (s.omitted[key] ?? 0) + (o[key].length - keep);
+      o[key] = o[key].slice(0, keep);
+      size = JSON.stringify(s).length;
+    }
+  }
+  return s;
+}
+
 export function summarizeTrace(text, cfg, opts) {
   const s = new TraceSummary(cfg, opts);
   for (const l of String(text).split('\n')) if (l) s.add(l);
-  return s.result();
+  return fitSummary(s.result());
 }
 
 /** Streams a trace file (at most maxBytes of it) into a summary; null when the file cannot be read. */
@@ -233,5 +259,5 @@ export async function summarizeTraceFile(file, cfg, { maxBytes = 512 * 1024 * 10
   } catch { return null; }
   const r = s.result();
   r.bytes = bytes; r.truncated = bytes >= maxBytes;
-  return r;
+  return fitSummary(r);
 }
