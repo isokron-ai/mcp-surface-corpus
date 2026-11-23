@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Checks the corpus workflow's inputs and derives the shard count from them. Reads nothing but
-# ONLY_IN and SHARDS_IN (and, in the shard jobs, PLAN_SHARDS, SHARD, JOB_INDEX, JOB_TOTAL): never a secret.
+# ONLY_IN, SHARDS_IN and SLOTS_IN (and, in the shard jobs, PLAN_SHARDS, SHARD, JOB_INDEX, JOB_TOTAL):
+# never a secret.
 #
 #   scripts/check-batch.sh output "$GITHUB_OUTPUT"   # plan job: shards=K, matrix=[1,...,K]
 #   scripts/check-batch.sh env "$GITHUB_ENV"         # shard job: SURFACE_ONLY=..., SURFACE_SHARDS=K
@@ -8,6 +9,8 @@
 # ONLY_IN: empty (every target; a scheduled run has no inputs) or comma-separated target ids such as
 # s001,s014, each once (compared by number), at most MAX_IDS. SHARDS_IN: empty or 1 to MAX_SHARDS.
 # K = SHARDS_IN, or DEFAULT_SHARDS for the whole list, or min(MAX_SHARDS, number of ids).
+# SLOTS_IN: the loop guard's slot count (LOOP_SLOTS), 1 to 999; K is never more than it. Empty means
+# no cap (local runs); on CI the plan job passes the guard's output and the shard jobs the plan's.
 # The whole value must match (a bash regex, not grep: grep -x matches line by line, so a value with
 # a newline could add lines to GITHUB_ENV). Every check runs before anything is written. In env
 # mode the plan's K must equal the K derived here and the matrix itself must agree: JOB_TOTAL
@@ -64,6 +67,16 @@ fi
 # Never more shards than ids: an empty shard would start a runner for nothing.
 if [ "$n" -gt 0 ] && [ "$shards" -gt "$n" ]; then shards=$n; fi
 
+slots=${SLOTS_IN-}
+if [ -n "$slots" ]; then
+  if ! [[ "$slots" =~ ^[0-9]{1,3}$ ]] || [ "$((10#$slots))" -lt 1 ]; then
+    echo "::error::slots must be a whole number from 1 to 999"
+    exit 1
+  fi
+  # Never more shard jobs at once than the loop may use.
+  if [ "$shards" -gt "$((10#$slots))" ]; then shards=$((10#$slots)); fi
+fi
+
 if [ "$mode" = env ]; then
   if [ "${PLAN_SHARDS-}" != "$shards" ]; then
     echo "::error::the planned shard count does not match the inputs"
@@ -83,7 +96,9 @@ if [ "$mode" = env ]; then
     echo "SURFACE_SHARDS=$shards"
   } >>"$file"
 else
-  matrix=$(seq -s, 1 "$shards")
+  # Built by hand: `seq -s,` ends with a stray comma on BSD and macOS.
+  matrix=1
+  for ((i = 2; i <= shards; i++)); do matrix="$matrix,$i"; done
   {
     echo "shards=$shards"
     echo "matrix=[$matrix]"

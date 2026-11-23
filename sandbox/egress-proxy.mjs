@@ -21,8 +21,10 @@ export function decide(target, allowed) {
   const m = /^([A-Za-z0-9.-]{1,253}):([0-9]{1,5})$/.exec(String(target));
   if (!m) return { ok: false, why: 'not host:port' };
   const host = m[1].toLowerCase().replace(/\.$/, '');
-  if (isIP(host)) return { ok: false, host, port: Number(m[2]), why: 'IP literal' };
-  if (Number(m[2]) !== 443) return { ok: false, host, port: Number(m[2]), why: 'port' };
+  const p = Number(m[2]);
+  const port = p <= 65535 ? p : null;
+  if (isIP(host)) return { ok: false, host, port, why: 'IP literal' };
+  if (p !== 443) return { ok: false, host, port, why: 'port' };
   if (!allowed.has(host)) return { ok: false, host, port: 443, why: 'host not on the allowlist' };
   return { ok: true, host, port: 443 };
 }

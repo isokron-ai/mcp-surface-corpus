@@ -29,6 +29,23 @@ test('check-batch: the matrix comes from validated inputs only', () => {
   assert.equal(env({ PLAN_SHARDS: '8', SHARD: '9', JOB_INDEX: '8', JOB_TOTAL: '8' }), 'exit 1');
 });
 
+test('check-batch: never more shards than the loop has slots (SLOTS_IN, from the loop guard)', () => {
+  const d = mkdtempSync(join(tmpdir(), 'batch-'));
+  const plan = (env) => { const f = join(d, `o${Math.random()}`); const r = sh('scripts/check-batch.sh', ['output', f], env); return r.status === 0 ? readFileSync(f, 'utf8').trim().split('\n') : `exit ${r.status}: ${r.stdout.trim()}`; };
+  assert.deepEqual(plan({ SLOTS_IN: '3' }), ['shards=3', 'matrix=[1,2,3]'], 'the whole list on 3 slots');
+  assert.deepEqual(plan({ SLOTS_IN: '20' }), ['shards=8', 'matrix=[1,2,3,4,5,6,7,8]'], 'more slots than shards: no change');
+  assert.deepEqual(plan({ SHARDS_IN: '16', SLOTS_IN: '4' }), ['shards=4', 'matrix=[1,2,3,4]']);
+  assert.deepEqual(plan({ ONLY_IN: 's001,s002', SLOTS_IN: '1' }), ['shards=1', 'matrix=[1]']);
+  assert.deepEqual(plan({ SLOTS_IN: '007' }), ['shards=7', 'matrix=[1,2,3,4,5,6,7]'], 'read as decimal');
+  assert.deepEqual(plan({ SLOTS_IN: '' }), ['shards=8', 'matrix=[1,2,3,4,5,6,7,8]'], 'empty: no cap (local runs)');
+  for (const bad of ['0', '000', 'x', '-1', '1\n2', '1000', ' 2', '2 ', '$(id)']) assert.match(plan({ SLOTS_IN: bad }), /^exit 1: ::error::slots/, JSON.stringify(bad));
+  const env = (e) => { const f = join(d, `e${Math.random()}`); const r = sh('scripts/check-batch.sh', ['env', f], e); return r.status === 0 ? readFileSync(f, 'utf8').trim().split('\n') : `exit ${r.status}`; };
+  assert.deepEqual(env({ SLOTS_IN: '3', PLAN_SHARDS: '3', SHARD: '3', JOB_INDEX: '2', JOB_TOTAL: '3' }), ['SURFACE_ONLY=', 'SURFACE_SHARDS=3']);
+  assert.equal(env({ PLAN_SHARDS: '3', SHARD: '3', JOB_INDEX: '2', JOB_TOTAL: '3' }), 'exit 1', 'the shard job derives the cap again: without it, 8 != 3');
+  assert.equal(env({ SLOTS_IN: '2', PLAN_SHARDS: '3', SHARD: '3', JOB_INDEX: '2', JOB_TOTAL: '3' }), 'exit 1');
+  assert.equal(env({ SLOTS_IN: '0', PLAN_SHARDS: '3', SHARD: '3', JOB_INDEX: '2', JOB_TOTAL: '3' }), 'exit 1');
+});
+
 test('encrypt-results: two ciphertexts leave, rows readable by the CI key, everything else by the archive key only; no clear text stays', { skip: skipAge }, () => {
   const t = mkdtempSync(join(tmpdir(), 'enc-'));
   const c = join(t, 'corpus');

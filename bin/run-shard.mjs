@@ -20,28 +20,45 @@
  *
  * Isolation. No target code runs on the host. The host does three things with target data: it
  * fetches bytes from fixed hosts (GitHub, the MCP Registry), pipes them into containers, and parses
- * JSON that containers print. Target code runs only in `sandboxRunArgs` containers: user 10001,
- * every capability dropped, no-new-privileges, read-only root, memory, pid and CPU limits, named
- * volumes only. The install step is on an --internal network and reaches the package registry only
- * through our allowlist proxy; the server itself runs with --network none (stdio) or on an
- * --internal network shared with our probe container only (http). At a time limit the container is
- * removed, which ends every process in it. Nothing is called: no tool, no prompt, no resource read.
+ * JSON that containers print. Target code runs only in `sandboxRunArgs` containers: under gVisor
+ * (runsc), user 65534, every capability dropped, no-new-privileges, read-only root, memory, pid and
+ * CPU limits, named volumes only, an environment made from names the harness sets. The install
+ * step is on the internal install network and reaches the package registry only through our
+ * allowlist proxy; the server runs on the internal run network (stdio and http alike), shared with
+ * our probe container only. On both networks every name resolves to our network logger, which logs
+ * each query and connection, and the host firewall (scripts/net-guard.sh) logs and drops anything
+ * that tries to leave. At a time limit the container is removed, which ends every process in it.
+ * Nothing is called: no tool, no prompt, no resource read.
+ *
+ * Before any of that the shard checks the sandbox (src/sandbox-run.mjs preflight): the daemon's runsc
+ * with the flags gvisor.json gives, net-guard.sh's resolv.conf files, a smoke container under runsc
+ * as 65534 with its syscall trace. If anything is missing the shard records a `skip` with the reason
+ * and reports a harness error; nothing falls back to runc. The run telemetry (docs/TELEMETRY.md:
+ * settings, containers, syscall trace summaries, DNS queries, connections, egress, host drops) is
+ * _shard/telemetry.jsonl, encrypted with the rest of --out.
  *
  * Public output (stdout): one "run finished, exit N" line per target, in an order shuffled per run,
  * with no target id or name. N: 0 the target ran to completion (whatever the layers found), 124 it
  * hit its time limit, 125 harness error. The process exits 0 when every N is 0.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statfsSync } from 'node:fs';
 import { arch, platform, release } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { lookup } from 'node:dns/promises';
 import { ID, P, idNumber, launchPlan, shardTargets, timeoutOf, validateList } from '../src/targets.mjs';
 import { githubFacts, registryEntry, sourceArchive } from '../src/sources.mjs';
 import { dummyValue, isSecretName } from '../src/env-refs.mjs';
+import { envNameAllowed, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
+import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
+import { NETS, readHostLog } from '../src/sandbox-net.mjs';
+import { Telemetry, fromProxy } from '../src/telemetry.mjs';
+import { jsonLines, diskProblem, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { sdkFromFile } from '../src/sdk.mjs';
 import { buildRow, buildState, RECORD_FORMAT } from '../src/record.mjs';
 import { probeStdio, listed, PROTOCOL_OFFERED } from '../sandbox/probe.mjs';
@@ -112,7 +129,8 @@ export function envPlan(launch, registry, stat) {
   const fromRegistry = ((registry && registry.env) || []).filter((e) => e.required).map((e) => e.name);
   const fromReadme = (stat && stat.env_refs && stat.env_refs.readme) || [];
   const fromSource = (stat && stat.env_refs && stat.env_refs.source) || [];
-  const ok = (n) => /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(n) && !/^(PATH|HOME|TMPDIR|LD_.*|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|PYTHON.*|HTTPS?_PROXY|ALL_PROXY|NO_PROXY|SSL_CERT_.*|DOCKER_.*|GITHUB_.*|ACTIONS_.*|RUNNER_.*|SURFACE_.*|CORPUS_.*)$/i.test(n);
+  // envNameAllowed: the names sandboxRunArgs refuses (runner, Actions, token, loader names) are never offered.
+  const ok = (n) => envNameAllowed(n) && !/^(PATH|HOME|TMPDIR|LD_.*|NODE_OPTIONS|NODE_EXTRA_CA_CERTS|PYTHON.*|HTTPS?_PROXY|ALL_PROXY|NO_PROXY|SSL_CERT_.*|DOCKER_.*|GITHUB_.*|ACTIONS_.*|RUNNER_.*|SURFACE_.*|CORPUS_.*)$/i.test(n);
   const used = [...new Set([...fromList, ...fromRegistry, ...fromReadme.filter(isSecretName)])].filter(ok).slice(0, MAX_ENV);
   const env = {};
   for (const n of used) { const v = launch && launch.env ? launch.env[n] : undefined; env[n] = typeof v === 'string' ? v : dummyValue(n); }
@@ -125,7 +143,7 @@ const safeParse = (buf) => { try { const j = JSON.parse(buf.toString('utf8')); r
 
 async function prepare(ctx, dk) {
   const v = await dk.d(['version', '--format', '{{.Server.Version}} {{.Server.Os}}/{{.Server.Arch}}'], { keepStdout: true });
-  if (v.exit !== 0) throw new HarnessError('docker is not available');
+  if (v.exit !== 0) throw Object.assign(new HarnessError('docker is not available'), { reason: 'runtime_unavailable' });
   const [ver, osArch] = v.stdout.toString().trim().split(' ');
   checkDockerVersion(ver);
   if (!String(osArch).startsWith('linux/')) throw new HarnessError('containers must be Linux');
@@ -133,6 +151,10 @@ async function prepare(ctx, dk) {
   const ncpu = Number((await dk.d(['info', '--format', '{{.NCPU}}'], { keepStdout: true, logStdout: false })).stdout.toString().trim());
   ctx.cpus = Number.isInteger(ncpu) && ncpu >= 1 ? Math.min(LIMITS.cpus, ncpu) : 1;
   ctx.imageIds = { node24: await dk.image(ctx.images.node24, 'node24') };
+}
+
+/** After the sandbox check: our tools volume, the install CA (local only) and the proxies' egress network. */
+async function prepareTools(ctx, dk) {
   // Our in-container code (sandbox/, src/, engine/), read-only in every container. Copied through
   // stdin into a named volume: no host path is ever mounted.
   ctx.toolsVol = await dk.volume(`surface-${ctx.runId}-tools`);
@@ -154,21 +176,117 @@ async function prepare(ctx, dk) {
   ctx.outNet = await dk.network(`surface-${ctx.runId}-out`, false);
 }
 
+/** The settings of a container, read back from its exact `docker run` arguments, as a `settings` record. */
+function writeSettings(ctx, argv, meta) {
+  const manifest = settingsManifest(argv, { role: meta.role });
+  ctx.tel.write('settings', { digest: settingsDigest(manifest), manifest }, meta);
+}
+
+/**
+ * The registries' public IPv4 addresses, resolved on the host, as [name, ip] pairs for the egress
+ * proxy's fixed host entries (at most 8 each). A name with no public address is a harness error.
+ */
+export async function resolveRegistries(names, resolveHost) {
+  const out = [];
+  for (const n of names) {
+    let addrs = [];
+    try { addrs = (await resolveHost(n)).map((a) => (typeof a === 'string' ? a : a.address)); } catch { /* reported below */ }
+    const pub = [...new Set(addrs.filter(isPublicIp4))].slice(0, 8);
+    if (!pub.length) throw new HarnessError(`the registry ${String(n).slice(0, 60)} has no public IPv4 address`);
+    out.push(...pub.map((ip) => [n, ip]));
+  }
+  return out;
+}
+
+/** A container's id from its cidfile (docker writes it at create), or null. */
+function readCid(file) {
+  try { const s = readFileSync(file, 'utf8').trim(); return /^[0-9a-f]{64}$/.test(s) ? s : null; } catch { return null; }
+}
+
+/**
+ * After a target container ended: its `container` record and the summary of the syscall trace runsc
+ * wrote for it (then the raw trace is removed), or a `trace_unavailable` skip. `ins` is its docker
+ * inspect when there is one (a detached container); a --rm one is gone, and the trace is the evidence
+ * that it ran under runsc.
+ */
+async function recordContainer(ctx, { id, ins = null, t0, exit = null, signal = null, timedOut = false, meta }) {
+  const summary = id ? await takeTrace(ctx.cfg, id, { waitMs: ctx.traceWaitMs }) : null;
+  const st = (ins && ins.State) || null;
+  const runtime = ins && ins.HostConfig && ins.HostConfig.Runtime ? String(ins.HostConfig.Runtime).slice(0, 20) : summary ? RUNTIME : 'unknown';
+  const code = st ? (st.Running ? null : st.ExitCode) : exit;
+  ctx.tel.write('container', { runtime, exit: Number.isInteger(code) ? code : null, signal: signal ? String(signal).slice(0, 20) : null, timed_out: !!timedOut, oom_killed: st ? !!st.OOMKilled : null, ms: Date.now() - t0 }, meta);
+  if (summary) ctx.tel.tryWrite('trace_summary', { summary }, { source: 'runsc', ...meta });
+  else {
+    ctx.tel.write('skip', { reason: 'trace_unavailable', detail: 'runsc wrote no syscall trace for this container' }, meta);
+    if (ctx.missing) ctx.missing.push(`a syscall trace (${meta.role ?? 'container'})`);
+  }
+}
+
+/**
+ * The host firewall's drops for the sandbox range since t0 (milliseconds), as `host_drop` records.
+ * false when the kernel log could not be read (or was known to be unreadable from the start).
+ */
+function recordDrops(ctx, t0, subject) {
+  if (!ctx.hostLog) return false;
+  const log = ctx.readLog(Math.floor(t0 / 1000) - 1);
+  if (!log.ok) { ctx.tel.write('skip', { reason: 'host_log_unavailable', detail: 'the kernel log could not be read for this target' }, { subject }); return false; }
+  writeDrops(ctx.tel, hostDropsFor(log.text, { since: t0 / 1000, until: Date.now() / 1000 }), { subject, roles: { ...rolesOn('install'), ...rolesOn('run') } });
+  return true;
+}
+
+/**
+ * The run network (one at a time: its subnet is fixed) with the network logger at .2, for the
+ * duration of fn(network). What the logger saw becomes telemetry; then the network is removed.
+ */
+async function withRunNet(ctx, dk, { target, subject, at3 }, fn) {
+  const network = await dk.network(dk.name(target, 'run'), true, target, { sandbox: 'run' });
+  let netlog = null;
+  try {
+    netlog = await startNetlogOn(dk, { net: 'run', network, image: ctx.images.node24, toolsVol: ctx.toolsVol, labels: dk.labels(target), target });
+    return await fn(network);
+  } finally {
+    if (netlog) {
+      try { writeNetlog(ctx.tel, await stopNetlog(dk, netlog), { subject, roles: rolesOn('run', { target: at3 }) }); } finally { await dk.kill(netlog); }
+    }
+    await dk.d(['network', 'rm', network], { deadline: Date.now() + 60_000 });
+  }
+}
+
+/**
+ * A stdio server at .3 of the run network, probed over the stdin and stdout of its `docker run`.
+ * Its settings, container and trace records go to telemetry.
+ */
+async function probeStdioIn(ctx, dk, { network, name, image, labels, mounts, env, cmd, entrypoint = null, timeoutMs, meta }) {
+  const cidfile = join(ctx.cidDir, `${name}.cid`);
+  const argv = sandboxRunArgs({ name, image, network, ip: NETS.run.target, resolv: 'run', cidfile, labels, stdin: true, cpus: ctx.cpus, mounts, env, cmd, entrypoint });
+  writeSettings(ctx, argv, meta);
+  const t0 = Date.now();
+  const p = await ctx.probe(['docker', ...argv], { protocol: PROTOCOL_OFFERED, timeoutMs, env: dk.env });
+  await dk.kill(name);
+  const tr = p.transport || {};
+  await recordContainer(ctx, { id: readCid(cidfile), t0, exit: tr.exit ?? null, signal: tr.signal ?? null, timedOut: /^time limit/.test(String(p.error ?? '')), meta });
+  return p;
+}
+
 /** What `docker run` itself costs in this sandbox: our null server, probed the way targets are. */
 async function baseline(ctx, dk) {
-  const name = dk.name(null, 'base');
-  const argv = sandboxRunArgs({ name, image: ctx.images.node24, network: 'none', labels: dk.labels(), stdin: true, cpus: ctx.cpus, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], env: runEnv({}), cmd: ['node', `${P.tools}/sandbox/null-server.mjs`] });
-  const p = await probeStdio(['docker', ...argv], { protocol: PROTOCOL_OFFERED, timeoutMs: PROBE_MS, env: dk.env });
-  await dk.kill(name);
-  return listed(p) ? p.timing.initialize_ms : null;
+  const t0 = Date.now();
+  try {
+    return await withRunNet(ctx, dk, { target: null, subject: null, at3: 'baseline' }, async (network) => {
+      const p = await probeStdioIn(ctx, dk, { network, name: dk.name(null, 'base'), image: ctx.images.node24, labels: dk.labels(), mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], env: runEnv({}), cmd: ['node', `${P.tools}/sandbox/null-server.mjs`], timeoutMs: PROBE_MS, meta: { role: 'baseline' } });
+      return listed(p) ? p.timing.initialize_ms : null;
+    });
+  } finally { recordDrops(ctx, t0, null); }
 }
 
 const runEnv = (extra) => ({ HOME: P.home, TMPDIR: '/tmp', NO_COLOR: '1', DO_NOT_TRACK: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUNBUFFERED: '1', npm_config_update_notifier: 'false', SURFACE_SANDBOX: '1', ...extra });
+// The proxy by its fixed address: on the install network every name resolves to the network logger.
+const PROXY_URL = `http://${NETS.install.proxy}:${PROXY_PORT}`;
 const installEnv = (ctx, extra) => ({
   HOME: `${P.work}/home`, TMPDIR: '/tmp', NO_COLOR: '1', DO_NOT_TRACK: '1', SURFACE_SANDBOX: '1', CI: '1',
   npm_config_cache: `${P.work}/home/.npm`, npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false',
   PIP_CACHE_DIR: `${P.work}/home/.cache/pip`, PIP_DISABLE_PIP_VERSION_CHECK: '1', PIP_NO_INPUT: '1',
-  HTTPS_PROXY: `http://egress:${PROXY_PORT}`, https_proxy: `http://egress:${PROXY_PORT}`, HTTP_PROXY: `http://egress:${PROXY_PORT}`, http_proxy: `http://egress:${PROXY_PORT}`, NO_PROXY: '', no_proxy: '',
+  HTTPS_PROXY: PROXY_URL, https_proxy: PROXY_URL, HTTP_PROXY: PROXY_URL, http_proxy: PROXY_URL, NO_PROXY: '', no_proxy: '',
   ...ctx.caEnv, ...extra,
 });
 
@@ -195,6 +313,13 @@ async function runTarget(t, list, ctx, dk) {
   const lbl = dk.labels(id);
   const helper = (o, opts = {}) => tdk.d(helperRunArgs({ name: dk.name(id, 'h'), image: ctx.images.node24, labels: lbl, cpus: ctx.cpus, ...o }), opts);
   const timedOut = () => Date.now() >= deadline;
+  // Evidence the sandbox could not give for this target (a syscall trace, the firewall's log). On the
+  // ci lane any of it missing makes the target a harness error whose row is left out.
+  const missing = [];
+  ctx.missing = missing;
+  // A trace past trace_max_mb (or a trace filesystem running short) stops the target's containers.
+  const fw0 = ctx.lane === 'ci' ? firewallCounts(ctx.hostRun) : null;
+  const watch = watchTraces(ctx.cfg, { sinceMs: t0, statfs: ctx.statfs, onOverflow: () => dk.killAll(id) });
 
   try {
     // 1. Repository facts and the commit (host fetch, fixed hosts).
@@ -251,28 +376,62 @@ async function runTarget(t, list, ctx, dk) {
           inst.image = image;
           ctx.imageIds[plan.image] ??= await dk.image(image, plan.image);
           work = await dk.volume(`surface-${ctx.runId}-${id}-work`, id);
-          await dk.must(tdk.d(helperRunArgs({ name: dk.name(id, 'h'), image: ctx.images.node24, user: '0:0', labels: lbl, mounts: [{ src: work, dst: P.work }], capAdd: ['CHOWN'], cmd: ['sh', '-c', 'mkdir -p /work/home /work/lock && chown -R 10001:10001 /work'] })), 'work volume');
-          // The install network has no route out; the proxy container is its only door.
-          const inNet = await dk.network(`surface-${ctx.runId}-${id}-in`, true, id);
+          await dk.must(tdk.d(helperRunArgs({ name: dk.name(id, 'h'), image: ctx.images.node24, user: '0:0', labels: lbl, mounts: [{ src: work, dst: P.work }], capAdd: ['CHOWN'], cmd: ['sh', '-c', 'mkdir -p /work/home /work/lock && chown -R 65534:65534 /work'] })), 'work volume');
+          // The install network has no route out: the network logger at .2 answers every name and logs
+          // it, the proxy at .3 is the only door, the install container is .4.
+          const inNet = await dk.network(`surface-${ctx.runId}-${id}-in`, true, id, { sandbox: 'install' });
+          const netlog = await startNetlogOn(tdk, { net: 'install', network: inNet, image: ctx.images.node24, toolsVol: ctx.toolsVol, labels: lbl, target: id });
+          let okAll = false;
+          let proxyUp = false;
           const proxy = dk.name(id, 'proxy');
-          await dk.must(tdk.d(helperRunArgs({ name: proxy, image: ctx.images.node24, network: ctx.outNet, detach: true, labels: lbl, memory: '256m', mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...plan.registries] })), 'egress proxy');
-          await dk.must(tdk.d(['network', 'connect', '--alias', 'egress', inNet, proxy]), 'egress proxy network');
-          let okAll = true;
-          for (const step of plan.install) {
-            if (timedOut()) { okAll = false; break; }
-            const s1 = Date.now();
-            const name = dk.name(id, 'i');
-            const r = await tdk.d(sandboxRunArgs({ name, image, network: inNet, labels: lbl, cpus: ctx.cpus, workdir: P.work, mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: installEnv(ctx, step.env || {}), cmd: step.cmd }), { deadline: left(), keepStdout: !!step.out, logStdout: !step.out, cap: 1024 * 1024, onTimeout: () => dk.kill(name) });
-            const s = { name: step.name, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - s1 };
-            if (step.out) { const j = safeParse(r.stdout); if (step.name === 'entry') entry = j && typeof j.script === 'string' && j.script.startsWith(`${P.work}/pkg/`) && !/[\u0000\n]/.test(j.script) ? j : null; s.result = j; }
-            inst.steps.push(s);
-            if (r.exit !== 0 || (step.name === 'entry' && !entry)) { okAll = false; break; }
+          try {
+            // The proxy runs under gVisor like everything else. gVisor's own network stack does not
+            // reach the daemon's DNS, so the host resolves the allowlisted registry names and the
+            // proxy gets them as fixed host entries (public IPv4 only); it looks nothing else up. It
+            // is created, given its install-network address, then started: gVisor takes its network
+            // interfaces when the sandbox starts.
+            const publicHosts = await ctx.resolveRegistries(plan.registries);
+            const proxyArgs = helperRunArgs({ name: proxy, image: ctx.images.node24, network: ctx.outNet, create: true, labels: lbl, memory: '256m', publicHosts, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...plan.registries] });
+            writeSettings(ctx, proxyArgs, { subject: id, role: 'proxy' });
+            await dk.must(tdk.d(proxyArgs), 'egress proxy');
+            proxyUp = true;
+            await dk.must(tdk.d(['network', 'connect', '--ip', NETS.install.proxy, inNet, proxy]), 'egress proxy network');
+            await dk.must(tdk.d(['start', proxy]), 'egress proxy start');
+            // Under gVisor the proxy takes a moment to start: the install waits until it listens.
+            for (let until = Date.now() + 30_000; ;) {
+              const pl0 = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 10_000 });
+              if (jsonLines(pl0.stdout).some((o) => Number.isInteger(o.listening))) break;
+              if (Date.now() >= until) throw new HarnessError('the egress proxy did not start');
+              await sleep(250);
+            }
+            okAll = true;
+            for (const step of plan.install) {
+              if (timedOut()) { okAll = false; break; }
+              const s1 = Date.now();
+              const name = dk.name(id, 'i');
+              const cidfile = join(ctx.cidDir, `${name}.cid`);
+              const argv = sandboxRunArgs({ name, image, network: inNet, ip: NETS.install.target, resolv: 'install', cidfile, labels: lbl, cpus: ctx.cpus, workdir: P.work, mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: installEnv(ctx, step.env || {}), cmd: step.cmd });
+              writeSettings(ctx, argv, { subject: id, role: 'install' });
+              const r = await tdk.d(argv, { deadline: left(), keepStdout: !!step.out, logStdout: !step.out, cap: 1024 * 1024, onTimeout: () => dk.kill(name) });
+              await recordContainer(ctx, { id: readCid(cidfile), t0: s1, exit: r.exit, signal: r.signal, timedOut: r.timed_out, meta: { subject: id, role: 'install' } });
+              const s = { name: step.name, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - s1 };
+              if (step.out) { const j = safeParse(r.stdout); if (step.name === 'entry') entry = j && typeof j.script === 'string' && j.script.startsWith(`${P.work}/pkg/`) && !/[\u0000\n]/.test(j.script) ? j : null; s.result = j; }
+              inst.steps.push(s);
+              if (r.exit !== 0 || (step.name === 'entry' && !entry)) { okAll = false; break; }
+            }
+          } finally {
+            // What the install looked up and reached, then what it asked the proxy for: written whatever
+            // happened above, the logger's lines first, and each record on its own, so a line the schema
+            // refuses is counted and left out instead of taking the others with it.
+            try { writeNetlog(ctx.tel, await stopNetlog(tdk, netlog), { subject: id, roles: rolesOn('install') }); } finally { await dk.kill(netlog); }
+            if (proxyUp) {
+              const pl = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024 });
+              inst.egress = pl.stdout.toString('utf8').split('\n').filter(Boolean).slice(0, 5000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+              inst.egress_refused = inst.egress.filter((e) => e && e.allowed === false && e.host).length;
+              for (const e of inst.egress) { const x = fromProxy(e); if (x) ctx.tel.tryWrite(x[0], x[1], { source: 'proxy', subject: id, role: 'proxy' }); }
+            }
+            await dk.kill(proxy);
           }
-          // What the install tried to reach, allowed or refused: part of the record.
-          const pl = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024 });
-          inst.egress = pl.stdout.toString('utf8').split('\n').filter(Boolean).slice(0, 5000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-          inst.egress_refused = inst.egress.filter((e) => e.allowed === false && e.host).length;
-          await dk.kill(proxy);
           inst.ok = okAll;
           // Lock files, read out through a helper with no network (target-written: data only, size-capped).
           for (const lk of plan.locks) {
@@ -303,34 +462,40 @@ async function runTarget(t, list, ctx, dk) {
           if (!plan.targetImage) ctx.imageIds[plan.runImage ?? plan.image] ??= await dk.image(runImage, 'run');
           const cmd = plan.run(entry);
           const mounts = [...(work ? [{ src: work, dst: P.work, ro: true }] : [])];
-          const probeOnce = async (env, tag) => {
+          const meta = { subject: id, role: 'server' };
+          const probeOnce = async (net, env, tag) => {
             if (timedOut()) return null;
             const transport = t.launch.transport ?? 'stdio';
             let p;
             if (transport === 'stdio') {
-              const name = dk.name(id, 's');
-              const argv = sandboxRunArgs({ name, image: runImage, network: 'none', labels: lbl, stdin: true, cpus: ctx.cpus, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null });
-              p = await probeStdio(['docker', ...argv], { protocol: PROTOCOL_OFFERED, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), env: dk.env });
-              await dk.kill(name);
+              p = await probeStdioIn(ctx, tdk, { network: net, name: dk.name(id, 's'), image: runImage, labels: lbl, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), meta });
             } else {
-              // Streamable HTTP: the server and our probe share one --internal network and nothing else.
-              const net = await dk.network(`surface-${ctx.runId}-${id}-run${++dk.n}`, true, id);
+              // Streamable HTTP: the server at .3 and our probe at .4 of the run network. `server` is a
+              // fixed host entry in the probe's container: every other name resolves to the logger.
               const name = dk.name(id, 's');
-              await tdk.d(sandboxRunArgs({ name, image: runImage, network: net, aliases: ['server'], detach: true, labels: lbl, cpus: ctx.cpus, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null }), { deadline: left(STEP_MS) });
+              const argv = sandboxRunArgs({ name, image: runImage, network: net, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, cpus: ctx.cpus, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null });
+              writeSettings(ctx, argv, meta);
+              const t1 = Date.now();
+              const started = await tdk.d(argv, { deadline: left(STEP_MS), keepStdout: true, cap: 4096 });
+              const sid = started.stdout.toString().trim();
               const ms = Math.max(1000, Math.min(PROBE_MS, deadline - Date.now()));
-              const r = await helper({ network: net, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/probe.mjs`, 'http', String(ms), PROTOCOL_OFFERED, `http://server:${t.launch.http.port}${t.launch.http.path}`] }, { keepStdout: true, logStdout: false, cap: OUT_CAP, deadline: Date.now() + ms + 15_000 });
+              const r = await helper({ network: net, ip: NETS.run.probe, resolv: 'run', hosts: [['server', NETS.run.target]], mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/probe.mjs`, 'http', String(ms), PROTOCOL_OFFERED, `http://server:${t.launch.http.port}${t.launch.http.path}`] }, { keepStdout: true, logStdout: false, cap: OUT_CAP, deadline: Date.now() + ms + 15_000 });
               p = safeParse(r.stdout) || { format: 'isokron-surface-probe/1', mode: 'http', error: 'the HTTP probe gave no result', lists: {}, transcript: [], transport: {} };
               const logs = await tdk.d(['logs', name], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024 });
               p.stderr = logs.stdout.toString('utf8').slice(0, 4 * 1024 * 1024); p.stderr_bytes = logs.stdout_bytes;
+              const okId = /^[0-9a-f]{64}$/.test(sid) ? sid : null;
+              const ins = okId ? await inspectOne(tdk, okId) : null;
               await dk.kill(name);
-              await tdk.d(['network', 'rm', net]);
+              await recordContainer(ctx, { id: okId, ins, t0: t1, exit: started.exit === 0 ? null : started.exit, meta });
             }
             p.env_names = Object.keys(env);
             keep(`probe-${tag}.json`, p);
             return p;
           };
-          bare = await probeOnce({}, 'bare');
-          if (names.used.length) withEnv = await probeOnce(plan0.env, 'env');
+          await withRunNet(ctx, tdk, { target: id, subject: id, at3: 'server' }, async (net) => {
+            bare = await probeOnce(net, {}, 'bare');
+            if (names.used.length) withEnv = await probeOnce(net, plan0.env, 'env');
+          });
           primary = withEnv && listed(withEnv) ? withEnv : bare && listed(bare) ? bare : null;
           for (const [tag, p] of [['bare', bare], ['env', withEnv]]) {
             if (!p) continue;
@@ -370,6 +535,29 @@ async function runTarget(t, list, ctx, dk) {
     rec.timed_out = timedOut();
   } finally {
     try { await dk.sweep(id); } catch { /* the shard's last sweep runs too */ }
+    // What the host firewall dropped while this target ran, and the traces of our helpers (not summarised).
+    watch.stop();
+    const over = watch.overflow();
+    if (over) {
+      ctx.tel.write('skip', { reason: 'trace_overflow', detail: `a syscall trace reached ${Math.round(over.bytes / 1048576)} MB (limit ${ctx.cfg.trace_max_mb} MB) or the trace filesystem ran short; the target's containers were stopped` }, { subject: id });
+      rec.errors.push({ step: 'trace', error: 'trace_overflow', harness: true });
+      missing.push('a complete syscall trace (overflow)');
+    }
+    let drops = false;
+    try { drops = recordDrops(ctx, t0, id); } catch (e) { appendFileSync(join(ctx.out, '_shard', 'driver-errors.log'), `${id}: host drops: ${String(e && e.message).slice(0, 300)}\n`); }
+    if (!drops && ctx.hostLog !== false) missing.push('the host firewall log');
+    sweepTraces(ctx.cfg, t0);
+    ctx.missing = null;
+    // Where a log or rate limit cut this target's evidence short (the record keeps it).
+    if (ctx.lane === 'ci') rec.limits_hit = limitsHit({ fw0, fw1: firewallCounts(ctx.hostRun) });
+  }
+  // Fail closed on the ci lane: a target whose sandbox evidence is incomplete is a harness error, and
+  // its row stays out of the results (the record keeps why).
+  const excluded = ctx.lane === 'ci' && missing.length > 0;
+  if (excluded) {
+    rec.errors.push({ step: 'evidence', error: `missing ${[...new Set(missing)].join(', ')}`.slice(0, 300), harness: true });
+    rec.public_exit = 125;
+    rec.excluded = 'sandbox evidence missing';
   }
   timing.total_ms = Date.now() - t0;
   rec.timing = timing;
@@ -378,35 +566,62 @@ async function runTarget(t, list, ctx, dk) {
   const state = buildState({ id, row, analysis, sha: facts ? facts.sha : null, resolved });
   rec.row = row;
   keep('record.json', rec);
-  appendFileSync(join(ctx.out, '_shard', 'rows.jsonl'), `${JSON.stringify(row)}\n`);
-  appendFileSync(join(ctx.out, '_shard', 'state.jsonl'), `${JSON.stringify(state)}\n`);
+  if (!excluded) {
+    appendFileSync(join(ctx.out, '_shard', 'rows.jsonl'), `${JSON.stringify(row)}\n`);
+    appendFileSync(join(ctx.out, '_shard', 'state.jsonl'), `${JSON.stringify(state)}\n`);
+  }
   return rec.public_exit;
 }
 
-export async function main(argv = process.argv.slice(2), { fetchFn = fetch } = {}) {
+/**
+ * Options are for the tests (a scripted daemon, no network): makeDocker, probe (the stdio probe),
+ * runscConfig, readResolv, readLog, traceWaitMs. The defaults are what CI runs.
+ */
+export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync, resolveHost = (h) => lookup(h, { all: true, family: 4 }) } = {}) {
   const o = parseArgs(argv);
   const list = validateList(JSON.parse(readFileSync(o.targets, 'utf8')));
   if (o.consume) rmSync(o.targets, { force: true });
   const runId = randomBytes(6).toString('hex');
   const out = resolve(o.out);
   mkdirSync(join(out, '_shard'), { recursive: true });
+  const cfg = runscConfig ?? loadRunscConfig();
+  const startedMs = Date.now();
+  const tel = new Telemetry(join(out, '_shard', 'telemetry.jsonl'), { run: runId });
   const ctx = {
     runId, out, lane: o.lane, images: loadImages(o.images), sourceCache: o.sourceCache ? resolve(o.sourceCache) : null, fetchFn,
     githubToken: process.env.GH_TOKEN || null,
     runner: { os: platform(), arch: arch(), kernel: release(), node: process.version },
     baselineMs: null,
+    cfg, tel, probe, readLog, traceWaitMs, statfs, hostRun, hostLog: false, resolveRegistries: (names) => resolveRegistries(names, resolveHost), cidDir: join(out, '_shard', 'cid'),
   };
-  const dk = new Docker({ runId, log: join(out, '_shard', 'docker.log') });
+  const dk = makeDocker({ runId, log: join(out, '_shard', 'docker.log') });
   const targets = shardTargets(list.targets, o.shard, o.shards, o.only);
   const engine = JSON.parse(readFileSync(join(root, 'engine', 'VENDORED.json'), 'utf8'));
   const shard = { format: RUN_FORMAT, label: LABEL, run: runId, lane: o.lane, shard: o.shard, shards: o.shards, only: o.only, started_at: new Date().toISOString(), finished_at: null, targets: targets.map((t) => t.id), list_total: list.targets.length, engine: { commit: engine.commit, rubric_version: engine.rubric_version, checks: engine.checks, core_sha256: engine.files[0].sha256 }, images: ctx.images, limits: LIMITS, probe_ms: PROBE_MS, protocol_offered: PROTOCOL_OFFERED, runner: ctx.runner, results: {}, harness_error: null };
+  shard.sandbox = { runtime: RUNTIME, gvisor_release: cfg.release, ok: false, reason: null, host_log: null, telemetry: 'telemetry.jsonl' };
+  tel.write('run_start', { kind: 'corpus', lane: o.lane, node: process.version, platform: `${platform()}/${arch()}`, runtime: RUNTIME, gvisor_release: cfg.release });
   const exits = [];
+  let checked = false;
   say(LABEL);
   try {
+    // cidfiles: docker writes each target container's id there, which names its runsc trace.
+    if (!/^\/[A-Za-z0-9._/-]{1,250}$/.test(ctx.cidDir)) throw new HarnessError('--out must be an absolute path of letters, digits, dots, dashes, underscores and slashes');
+    mkdirSync(ctx.cidDir, { recursive: true });
     await prepare(ctx, dk);
+    // Nothing runs unless gVisor is there: no runsc with our flags, no resolv.conf, no smoke container
+    // under runsc as 65534, no trace: a skip record, a harness error, and no fallback.
+    const pf = await preflight(dk, { cfg, arch: arch(), image: ctx.images.node24, cmd: ['node', '-e', 'console.log(process.getuid(), process.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readResolv, readLog, needHostLog: o.lane === 'ci', strict: o.lane === 'ci', statfs, run: hostRun, traceWaitMs });
+    checked = true;
+    Object.assign(shard.sandbox, { ok: pf.ok, reason: pf.reason, host_log: pf.hostLog });
+    if (!pf.ok) throw new HarnessError(`the sandbox is not there (${pf.reason}): ${pf.detail}`);
+    ctx.hostLog = pf.hostLog;
+    await prepareTools(ctx, dk);
     ctx.baselineMs = await baseline(ctx, dk);
     Object.assign(shard, { tools_sha256: ctx.toolsSha, install_ca: ctx.installCa, baseline_initialize_ms: ctx.baselineMs, image_ids: ctx.imageIds, cpus: ctx.cpus });
     for (const t of shuffled(targets, runId)) {
+      // Room for one more target, or the shard stops here: a full disk would lose every result.
+      const low = o.lane === 'ci' ? diskProblem(cfg, out, { statfs }) : null;
+      if (low) throw new HarnessError(`not enough disk before ${t.id}: ${low}`);
       let rc = 125;
       try { rc = await runTarget(t, list, ctx, dk); } catch (e) { appendFileSync(join(out, '_shard', 'driver-errors.log'), `${t.id}: ${String(e && e.stack).slice(0, 2000)}\n`); }
       shard.results[t.id] = rc;
@@ -416,16 +631,22 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch } = {
   } catch (e) {
     shard.harness_error = String(e && e.message).slice(0, 300);
     appendFileSync(join(out, '_shard', 'driver-errors.log'), `${String(e && e.stack).slice(0, 4000)}\n`);
+    // Stopped before the sandbox check could say anything: that is a skip too.
+    if (!checked) tel.write('skip', { reason: e && e.reason ? e.reason : 'sandbox_setup_missing', detail: `harness error before the sandbox check: ${String(e && e.message).slice(0, 240)}` });
     exits.push(125);
     say('run finished, exit 125');
   } finally {
     try { await dk.sweep(); } catch { /* the workflow's own sweep follows */ }
+    sweepTraces(cfg, startedMs);
+    rmSync(ctx.cidDir, { recursive: true, force: true });
   }
   shard.finished_at = new Date().toISOString();
   shard.image_ids = ctx.imageIds;
   writeJson(join(out, '_shard', 'shard.json'), shard);
   for (const f of ['rows.jsonl', 'state.jsonl']) if (!existsSync(join(out, '_shard', f))) writeFileSync(join(out, '_shard', f), '');
-  return exits.every((x) => x === 0) ? 0 : 1;
+  const ok = exits.every((x) => x === 0);
+  tel.end(ok && !shard.harness_error);
+  return ok ? 0 : 1;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

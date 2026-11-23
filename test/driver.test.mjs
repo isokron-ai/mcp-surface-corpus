@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { fakeFetch, tarGz } from './helpers.mjs';
 import { githubFacts, registryEntry, sourceArchive } from '../src/sources.mjs';
 
-process.env.SURFACE_PROBE_MS = '6000';
+// Short, so the hang case ends soon, but long enough for a node server to start under gVisor with
+// syscall tracing on (about 3 s on a hosted runner) and then try three ways out.
+process.env.SURFACE_PROBE_MS = '15000';
 const D = await import('../bin/run-shard.mjs');
 const SHA = 'c'.repeat(40);
 
@@ -74,7 +76,7 @@ const HTTP = `const T=[${TOOL('get_thing')}];require('http').createServer((q,s)=
 // Reports through its tool name whether it could reach the outside or the host from inside the sandbox.
 const NET = `async()=>{const tryIt=async(u)=>{try{await fetch(u,{signal:AbortSignal.timeout(1500)});return true}catch{return false}};const out=await tryIt('https://registry.npmjs.org/-/ping')||await tryIt('http://169.254.169.254/')||await tryIt('http://host.docker.internal/');let w='ro';try{require('fs').writeFileSync('/etc/x','x');w='rw'}catch{}return[{name:(out?'net_open':'net_blocked')+'_root_'+w+'_uid_'+process.getuid(),description:'Probe.',inputSchema:{type:'object'}}]}`;
 
-test('sandbox, end to end: stdio, a server that needs an env value, http, static only, no network, a hang', { skip: !docker && 'set SURFACE_DOCKER_TESTS=1 (needs Docker)' }, async () => {
+test('R-CI-05 sandbox, end to end: stdio, a server that needs an env value, http, static only, no network, a hang', { skip: !docker && 'set SURFACE_DOCKER_TESTS=1 (needs Docker)' }, async () => {
   const images = D.loadImages(new URL('../images.json', import.meta.url).pathname);
   const image = images.node24;
   const d = mkdtempSync(join(tmpdir(), 'surface-drv-'));
@@ -100,7 +102,9 @@ test('sandbox, end to end: stdio, a server that needs an env value, http, static
   assert.equal(existsSync(join(d, 'targets.json')), false, 'the clear-text list is deleted before any target runs');
   assert.deepEqual(lines.filter((l) => l.startsWith('run finished')), Array(6).fill('run finished, exit 0'), 'the public lines carry no id and no verdict');
   const rows = Object.fromEntries(readFileSync(join(out, '_shard', 'rows.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).map((r) => [r.id, r]));
-  // s001: starts bare; static and live disagree in a known way.
+  // s001: starts bare; static and live disagree in a known way. On a failure, say why: the record's errors.
+  const why = (id) => JSON.stringify(JSON.parse(readFileSync(join(out, id, 'record.json'), 'utf8')).errors);
+  assert.ok(rows.s001.live, `s001 has no live result: ${why('s001')}`);
   assert.deepEqual([rows.s001.acquired, rows.s001.live.starts_without_env, rows.s001.size.tools], ['live', true, 2]);
   assert.deepEqual([rows.s001.static_vs_live.shared, rows.s001.static_vs_live.only_live, rows.s001.static_vs_live.only_static], [1, 1, 1]);
   assert.deepEqual([rows.s001.repo.stars, rows.s001.repo.licence, rows.s001.sdk.id, rows.s001.sdk.kind], [1234, 'MIT', 'typescript-sdk', 'declared']);
@@ -115,7 +119,8 @@ test('sandbox, end to end: stdio, a server that needs an env value, http, static
   assert.deepEqual([rows.s004.acquired, rows.s004.layers.live.attempted, rows.s004.layers.static.tools, rows.s004.layers.readme.tools], ['static', false, 2, 1]);
   // s005: inside the sandbox there is no way out, the root is read-only, and the user is not root.
   const p5 = JSON.parse(readFileSync(join(out, 's005', 'probe-bare.json'), 'utf8'));
-  assert.equal(p5.lists['tools/list'].items[0].name, 'net_blocked_root_ro_uid_10001');
+  assert.ok(p5.lists && p5.lists['tools/list'] && p5.lists['tools/list'].items && p5.lists['tools/list'].items[0], `s005 listed no tool: ${JSON.stringify({ error: p5.error, lists: p5.lists, timing: p5.timing, transport: p5.transport, stderr: p5.stderr }).slice(0, 1500)}; ${why('s005')}`);
+  assert.equal(p5.lists['tools/list'].items[0].name, 'net_blocked_root_ro_uid_65534');
   // s006: a server that never answers is stopped; it is data, not a harness error.
   assert.deepEqual([rows.s006.public_exit, rows.s006.layers.live.ok, rows.s006.acquired], [0, false, 'static']);
   // Every raw piece is kept per target.
