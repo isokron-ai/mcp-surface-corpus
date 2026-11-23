@@ -215,7 +215,10 @@ async function recordContainer(ctx, { id, ins = null, t0, exit = null, signal = 
   const runtime = ins && ins.HostConfig && ins.HostConfig.Runtime ? String(ins.HostConfig.Runtime).slice(0, 20) : summary ? RUNTIME : 'unknown';
   const code = st ? (st.Running ? null : st.ExitCode) : exit;
   ctx.tel.write('container', { runtime, exit: Number.isInteger(code) ? code : null, signal: signal ? String(signal).slice(0, 20) : null, timed_out: !!timedOut, oom_killed: st ? !!st.OOMKilled : null, ms: Date.now() - t0 }, meta);
-  if (summary) ctx.tel.tryWrite('trace_summary', { summary }, { source: 'runsc', ...meta });
+  if (summary) {
+    // A summary the schema refused is evidence lost: the target counts as missing its trace.
+    if (!ctx.tel.tryWrite('trace_summary', { summary }, { source: 'runsc', ...meta })) ctx.missing?.push(`a syscall trace record (${meta.role ?? 'container'})`);
+  }
   else {
     ctx.tel.write('skip', { reason: 'trace_unavailable', detail: 'runsc wrote no syscall trace for this container' }, meta);
     if (ctx.missing) ctx.missing.push(`a syscall trace (${meta.role ?? 'container'})`);
