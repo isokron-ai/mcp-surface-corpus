@@ -174,6 +174,13 @@ jobs:
         run: sudo scripts/install-runsc.sh "$(command -v node)"
       - name: Guard the container networks
         run: sudo scripts/net-guard.sh
+      # The sandbox proves itself on this runner before the real list is even decrypted: the hostile
+      # self test under the gVisor and firewall just set up, then its telemetry check, which
+      # recomputes every verdict and alone decides. A fail stops the job here.
+      - name: Self test the sandbox
+        run: node bin/sandbox-selftest.mjs --out "$RUNNER_TEMP/selftest" --lane ci || echo "::warning::the harness reported a failure; the telemetry check decides"
+      - name: Check the self test
+        run: node scripts/check-selftest.mjs "$RUNNER_TEMP/selftest/telemetry.jsonl"
       - name: Decrypt the target list
         env:
           CORPUS_TARGETS_KEY: ${{ secrets.CORPUS_TARGETS_KEY }}
