@@ -127,7 +127,7 @@ caseTest('R-CASE-11 output-forgery: forged results and telemetry stay target out
 test('R-SBX-10 a case says which way it failed: got through, nothing tried, or no definite refusal', () => {
   const g = (c, f) => { const ev = GOOD[c](); f(ev); return evaluateCase(c, ev); };
   for (const c of ['direct-ip', 'metadata', 'doh-ip']) {
-    assert.match(g(c, (ev) => { ev.trace.network.connects[0] = ok({ family: 'AF_INET', addr: ev.trace.network.connects[0].addr, port: 443 }); }).detail, /^got through: 1 traced call/, `${c} reply`);
+    assert.match(g(c, (ev) => { ev.trace.network.connects[0] = ok({ family: 'AF_INET', addr: ev.trace.network.connects[0].addr, port: 443 }); }).detail, /^got through: 1 traced connection/, `${c} reply`);
     assert.match(g(c, (ev) => { for (const e of ev.trace.network.connects) e.errno = 4; }).detail, /^no definite refusal: /, `${c} cut short`);
     assert.match(g(c, (ev) => { ev.trace.network.connects = []; ev.trace.network.sends = []; }).detail, /^nothing was tried: /, `${c} nothing`);
   }
@@ -150,4 +150,15 @@ test('R-SBX-10 raw-socket fails when the target reports any capability left, the
   assert.equal(v(null).pass, true, 'no report: the settings check decides');
   const settings = evaluateCase('raw-socket', { ...GOOD['raw-socket'](), report: caps({}), inspect: { runtime: 'runsc', mismatches: ['capabilities are not all dropped'], canaryInEnv: false } });
   assert.equal(settings.pass, false, 'a report of no capabilities cannot outweigh the settings');
+});
+
+test('R-SBX-10 a datagram sent and not refused is no definite refusal, not a connection made', () => {
+  const ev = GOOD['direct-ip']();
+  ev.trace.network.sends[0] = ok({ family: 'AF_INET', addr: '8.8.8.8', port: 53 });
+  for (const c of ev.trace.network.connects) c.errno = 4;
+  const v = evaluateCase('direct-ip', ev);
+  assert.equal(v.blocked, false);
+  assert.match(v.detail, /^no definite refusal: 1 datagram\(s\) to an outside address were sent, not refused/);
+  ev.trace.network.connects[0] = ok({ family: 'AF_INET', addr: '1.1.1.1', port: 443 });
+  assert.match(evaluateCase('direct-ip', ev).detail, /^got through: 1 traced connection/);
 });

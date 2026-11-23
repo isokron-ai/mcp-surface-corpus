@@ -47,19 +47,23 @@ function net(trace) {
   return { connects: list(n.connects), sends: list(n.sends), sockets: list(n.sockets), raw: Number(n.raw_sockets) || 0 };
 }
 const to = (entries, addrs) => entries.filter((e) => addrs.includes(e.addr));
+/** Trace entries of sendto calls, marked so a send that was not refused is not read as a connection made. */
+const sent = (entries) => entries.map((e) => ({ ...e, call: 'sendto' }));
 
 /**
  * Why calls to an outside address do not show a block, most serious first: `got through` (a traced
- * call worked, or the target reports a reply), `nothing was tried` (too few calls traced), or `no
- * definite refusal` (every call failed, but not with a refusal: cut short by the target's alarm, or
- * timed out). `other` is a further reason of the case (a name answered by a real resolver). null
- * when the calls show a block.
+ * connect worked, a name got a real answer, or the target reports a reply), `nothing was tried` (too
+ * few calls traced), or `no definite refusal`: a datagram was sent and not refused (whether it
+ * arrived is not known), or every call failed but not with a refusal (cut short by the target's
+ * alarm, or timed out). `other` is a further reason of the case. null when the calls show a block.
  */
 function outsideWhy(att, min, { reported = false, other = null } = {}) {
   const worked = att.filter((e) => e.failed < e.n);
-  if (worked.length) return `got through: ${worked.length} traced call(s) to an outside address worked (${fmt(worked[0])})`;
+  const connected = worked.filter((e) => e.call !== 'sendto');
+  if (connected.length) return `got through: ${connected.length} traced connection(s) to an outside address worked (${fmt(connected[0])})`;
   if (reported) return 'got through: the target reports a reply from outside';
   if (other) return `got through: ${other}`;
+  if (worked.length) return `no definite refusal: ${worked.length} datagram(s) to an outside address were sent, not refused (${fmt(worked[0])}); whether any arrived is not known`;
   if (att.length < min) return `nothing was tried: ${att.length} call(s) traced, at least ${min} expected`;
   const soft = att.filter((e) => !refusedAll(e));
   if (soft.length) return `no definite refusal: every call failed, but ${soft.length} not with a refusal (${fmt(soft[0])}), so it was cut short or timed out, not refused`;
@@ -73,7 +77,7 @@ function verdict(blocked, logged, evidence, detail) {
 const RULES = {
   'direct-ip': (ev) => {
     const n = net(ev.trace);
-    const att = [...to(n.connects, ['1.1.1.1', '8.8.8.8', '140.82.112.3']), ...to(n.sends, ['8.8.8.8'])];
+    const att = [...to(n.connects, ['1.1.1.1', '8.8.8.8', '140.82.112.3']), ...sent(to(n.sends, ['8.8.8.8']))];
     const blocked = att.length >= 2 && att.every(refusedAll) && !reportGotThrough(ev.report);
     return verdict(blocked, att.length >= 2, att.map((e) => `trace: ${fmt(e)}`), blocked ? 'no connection to an outside address got through' : outsideWhy(att, 2, { reported: reportGotThrough(ev.report) }));
   },
@@ -100,7 +104,7 @@ const RULES = {
   },
   ipv6: (ev) => {
     const n = net(ev.trace);
-    const v6 = [...n.connects, ...n.sends].filter((e) => e.family === 'AF_INET6');
+    const v6 = [...n.connects, ...sent(n.sends)].filter((e) => e.family === 'AF_INET6');
     const v6sock = n.sockets.filter((s) => s.family === 'AF_INET6');
     const drops6 = list(ev.drops).filter((d) => d.family === 6);
     const tried = v6.length > 0 || v6sock.length > 0;
@@ -110,7 +114,7 @@ const RULES = {
   icmp: (ev) => {
     const n = net(ev.trace);
     const socks = n.sockets.filter((s) => /ICMP\b|^0x1$|^1$/.test(String(s.protocol)) && s.family === 'AF_INET');
-    const outside = to(n.sends, ['1.1.1.1']);
+    const outside = sent(to(n.sends, ['1.1.1.1']));
     const gw = to(n.sends, [NET.gateway]);
     const dropped = list(ev.drops).some((d) => d.chain === 'input' && /^ICMP$/i.test(d.proto) && d.dst === NET.gateway);
     const gwSent = gw.some((e) => e.failed < e.n);
