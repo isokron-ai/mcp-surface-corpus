@@ -123,3 +123,42 @@ caseTest('R-CASE-08 env-token: no runner or Actions token reaches the target', '
 caseTest('R-CASE-09 write-outside: nothing is written outside the work folder and /tmp', 'write-outside', (ev) => { ev.trace.opens_outside[0] = ok({ path: '/etc/isk-1', op: 'write' }); });
 caseTest('R-CASE-10 fork-bomb: the process limit refuses forks below the limit', 'fork-bomb', (ev) => { ev.trace.process = { clones: 1500, clone_failed: 0 }; });
 caseTest('R-CASE-11 output-forgery: forged results and telemetry stay target output', 'output-forgery', (ev) => { ev.telemetryHasNonce = true; });
+
+test('R-SBX-10 a case says which way it failed: got through, nothing tried, or no definite refusal', () => {
+  const g = (c, f) => { const ev = GOOD[c](); f(ev); return evaluateCase(c, ev); };
+  for (const c of ['direct-ip', 'metadata', 'doh-ip']) {
+    assert.match(g(c, (ev) => { ev.trace.network.connects[0] = ok({ family: 'AF_INET', addr: ev.trace.network.connects[0].addr, port: 443 }); }).detail, /^got through: 1 traced connection/, `${c} reply`);
+    assert.match(g(c, (ev) => { for (const e of ev.trace.network.connects) e.errno = 4; }).detail, /^no definite refusal: /, `${c} cut short`);
+    assert.match(g(c, (ev) => { ev.trace.network.connects = []; ev.trace.network.sends = []; }).detail, /^nothing was tried: /, `${c} nothing`);
+  }
+  assert.match(g('ipv6', (ev) => { for (const e of [...ev.trace.network.connects, ...ev.trace.network.sends]) e.errno = 110; }).detail, /^no definite refusal: /);
+  assert.match(g('doh-ip', (ev) => { ev.dns[0].answer = 'empty'; }).detail, /^got through: dns\.google got a real answer/);
+  assert.match(g('write-outside', (ev) => { ev.trace.opens_outside[1] = ok({ path: '/var/tmp/isk-1', op: 'write' }); }).detail, /^got through: a write outside the work folder worked \(\/var\/tmp\/isk-1\)/);
+  assert.match(g('write-outside', (ev) => { ev.trace.privileged = [ok({ name: 'mount' })]; }).detail, /^got through: a mount worked/);
+  assert.match(g('write-outside', (ev) => { ev.trace.opens_outside = []; }).detail, /^nothing was tried: /);
+});
+
+test('R-SBX-10 raw-socket fails when the target reports any capability left, the bounding set included; the report cannot pass it', () => {
+  const zero = '0000000000000000';
+  const caps = (o) => ({ case: 'raw-socket', result: { caps: { CapInh: zero, CapPrm: zero, CapEff: zero, CapBnd: zero, CapAmb: zero, NoNewPrivs: '1', ...o }, attempts: [] } });
+  const v = (report) => evaluateCase('raw-socket', { ...GOOD['raw-socket'](), report });
+  assert.equal(v(caps({})).pass, true);
+  assert.ok(v(caps({})).evidence.includes(`target: CapEff ${zero} CapBnd ${zero}`));
+  const left = v(caps({ CapBnd: '00000000a80425fb' }));
+  assert.equal(left.blocked, false);
+  assert.match(left.detail, /^got through: the target reports capabilities left \(CapBnd 00000000a80425fb\)/);
+  assert.equal(v(null).pass, true, 'no report: the settings check decides');
+  const settings = evaluateCase('raw-socket', { ...GOOD['raw-socket'](), report: caps({}), inspect: { runtime: 'runsc', mismatches: ['capabilities are not all dropped'], canaryInEnv: false } });
+  assert.equal(settings.pass, false, 'a report of no capabilities cannot outweigh the settings');
+});
+
+test('R-SBX-10 a datagram sent and not refused is no definite refusal, not a connection made', () => {
+  const ev = GOOD['direct-ip']();
+  ev.trace.network.sends[0] = ok({ family: 'AF_INET', addr: '8.8.8.8', port: 53 });
+  for (const c of ev.trace.network.connects) c.errno = 4;
+  const v = evaluateCase('direct-ip', ev);
+  assert.equal(v.blocked, false);
+  assert.match(v.detail, /^no definite refusal: 1 datagram\(s\) to an outside address were sent, not refused/);
+  ev.trace.network.connects[0] = ok({ family: 'AF_INET', addr: '1.1.1.1', port: 443 });
+  assert.match(evaluateCase('direct-ip', ev).detail, /^got through: 1 traced connection/);
+});

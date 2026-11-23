@@ -161,6 +161,8 @@ jobs:
             cases: direct-ip
           - disable: firewall-input
             cases: docker-host
+          - disable: firewall-order
+            cases: direct-ip
           - disable: cap-drop
             cases: raw-socket
           - disable: env-filter

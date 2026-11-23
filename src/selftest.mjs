@@ -47,6 +47,28 @@ function net(trace) {
   return { connects: list(n.connects), sends: list(n.sends), sockets: list(n.sockets), raw: Number(n.raw_sockets) || 0 };
 }
 const to = (entries, addrs) => entries.filter((e) => addrs.includes(e.addr));
+/** Trace entries of sendto calls, marked so a send that was not refused is not read as a connection made. */
+const sent = (entries) => entries.map((e) => ({ ...e, call: 'sendto' }));
+
+/**
+ * Why calls to an outside address do not show a block, most serious first: `got through` (a traced
+ * connect worked, a name got a real answer, or the target reports a reply), `nothing was tried` (too
+ * few calls traced), or `no definite refusal`: a datagram was sent and not refused (whether it
+ * arrived is not known), or every call failed but not with a refusal (cut short by the target's
+ * alarm, or timed out). `other` is a further reason of the case. null when the calls show a block.
+ */
+function outsideWhy(att, min, { reported = false, other = null } = {}) {
+  const worked = att.filter((e) => e.failed < e.n);
+  const connected = worked.filter((e) => e.call !== 'sendto');
+  if (connected.length) return `got through: ${connected.length} traced connection(s) to an outside address worked (${fmt(connected[0])})`;
+  if (reported) return 'got through: the target reports a reply from outside';
+  if (other) return `got through: ${other}`;
+  if (worked.length) return `no definite refusal: ${worked.length} datagram(s) to an outside address were sent, not refused (${fmt(worked[0])}); whether any arrived is not known`;
+  if (att.length < min) return `nothing was tried: ${att.length} call(s) traced, at least ${min} expected`;
+  const soft = att.filter((e) => !refusedAll(e));
+  if (soft.length) return `no definite refusal: every call failed, but ${soft.length} not with a refusal (${fmt(soft[0])}), so it was cut short or timed out, not refused`;
+  return null;
+}
 
 function verdict(blocked, logged, evidence, detail) {
   return { blocked: !!blocked, logged: !!logged, pass: !!blocked && !!logged, evidence: evidence.slice(0, 20).map((s) => String(s).slice(0, 200)), detail: String(detail).slice(0, 600) };
@@ -55,9 +77,9 @@ function verdict(blocked, logged, evidence, detail) {
 const RULES = {
   'direct-ip': (ev) => {
     const n = net(ev.trace);
-    const att = [...to(n.connects, ['1.1.1.1', '8.8.8.8', '140.82.112.3']), ...to(n.sends, ['8.8.8.8'])];
+    const att = [...to(n.connects, ['1.1.1.1', '8.8.8.8', '140.82.112.3']), ...sent(to(n.sends, ['8.8.8.8']))];
     const blocked = att.length >= 2 && att.every(refusedAll) && !reportGotThrough(ev.report);
-    return verdict(blocked, att.length >= 2, att.map((e) => `trace: ${fmt(e)}`), blocked ? 'no connection to an outside address got through' : 'an outside address was reached, or nothing was tried');
+    return verdict(blocked, att.length >= 2, att.map((e) => `trace: ${fmt(e)}`), blocked ? 'no connection to an outside address got through' : outsideWhy(att, 2, { reported: reportGotThrough(ev.report) }));
   },
   'doh-ip': (ev) => {
     const n = net(ev.trace);
@@ -66,33 +88,40 @@ const RULES = {
     const sink = list(ev.conns).find((c) => c.sni === 'dns.google');
     const blocked = att.length >= 3 && att.every(refusedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report, (a) => a.tls === true || Number(a.received) > 0);
     const logged = att.length >= 3 && !!q && !!sink;
-    return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} ${q.qtype} -> ${q.answer}` : 'dns: no query for dns.google', sink ? `sinkhole: TLS hello for ${sink.sni} on ${sink.port}, closed unanswered` : 'sinkhole: no TLS hello'], blocked ? 'DNS over HTTPS reached neither a literal resolver address nor a real resolver by name' : 'a DNS over HTTPS exchange may have completed, or nothing was tried');
+    return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} ${q.qtype} -> ${q.answer}` : 'dns: no query for dns.google', sink ? `sinkhole: TLS hello for ${sink.sni} on ${sink.port}, closed unanswered` : 'sinkhole: no TLS hello'], blocked ? 'DNS over HTTPS reached neither a literal resolver address nor a real resolver by name' : outsideWhy(att, 3, { reported: reportGotThrough(ev.report, (a) => a.tls === true || Number(a.received) > 0), other: q && q.answer !== 'sinkhole' ? `dns.google got a real answer (${q.answer})` : null }));
   },
   'raw-socket': (ev) => {
     const raws = net(ev.trace).sockets.filter((s) => s.raw);
-    const blocked = raws.length >= 2 && raws.every(failedAll) && !reportGotThrough(ev.report);
-    return verdict(blocked, raws.length >= 2, raws.map((s) => `trace: socket ${s.family} ${s.type} ${s.protocol} failed ${s.failed}/${s.n} (errno ${s.errno})`), blocked ? 'no raw or packet socket could be opened' : 'a raw socket was opened, or none was tried');
+    // What the target says of its own capability sets (/proc/self/status): any capability left, even
+    // only in the bounding set, fails the case. The report can only fail it: the settings check of
+    // docker inspect (cap-drop ALL) is what a pass rests on.
+    const caps = ev.report && ev.report.result && ev.report.result.caps && typeof ev.report.result.caps === 'object' ? ev.report.result.caps : null;
+    const capsLeft = caps ? ['CapInh', 'CapPrm', 'CapEff', 'CapBnd', 'CapAmb'].filter((k) => typeof caps[k] === 'string' && /[1-9a-f]/i.test(caps[k])) : [];
+    const opened = raws.some((s) => s.failed < s.n) || reportGotThrough(ev.report);
+    const blocked = raws.length >= 2 && raws.every(failedAll) && !opened && !capsLeft.length;
+    const why = raws.length < 2 ? `nothing was tried: ${raws.length} raw socket call(s) traced, at least 2 expected` : opened ? 'got through: a raw or packet socket opened' : `got through: the target reports capabilities left (${capsLeft.map((k) => `${k} ${String(caps[k]).slice(0, 16)}`).join(', ')})`;
+    return verdict(blocked, raws.length >= 2, [...raws.map((s) => `trace: socket ${s.family} ${s.type} ${s.protocol} failed ${s.failed}/${s.n} (errno ${s.errno})`), ...(caps ? [`target: ${['CapEff', 'CapBnd'].map((k) => `${k} ${String(caps[k] ?? '?').slice(0, 16)}`).join(' ')}`] : [])], blocked ? 'no raw or packet socket could be opened, and no capability is left' : why);
   },
   ipv6: (ev) => {
     const n = net(ev.trace);
-    const v6 = [...n.connects, ...n.sends].filter((e) => e.family === 'AF_INET6');
+    const v6 = [...n.connects, ...sent(n.sends)].filter((e) => e.family === 'AF_INET6');
     const v6sock = n.sockets.filter((s) => s.family === 'AF_INET6');
     const drops6 = list(ev.drops).filter((d) => d.family === 6);
     const tried = v6.length > 0 || v6sock.length > 0;
     const blocked = tried && v6.every(refusedAll) && (v6.length > 0 || v6sock.every(failedAll)) && !reportGotThrough(ev.report);
-    return verdict(blocked, tried, [...v6.map((e) => `trace: ${fmt(e)}`), ...v6sock.filter(failedAll).map((s) => `trace: socket AF_INET6 failed (errno ${s.errno})`), ...drops6.map((d) => `host: ${d.chain} ${d.proto} dropped x${d.n}`)], blocked ? 'nothing got out over IPv6' : 'an IPv6 connection got through, or nothing was tried');
+    return verdict(blocked, tried, [...v6.map((e) => `trace: ${fmt(e)}`), ...v6sock.filter(failedAll).map((s) => `trace: socket AF_INET6 failed (errno ${s.errno})`), ...drops6.map((d) => `host: ${d.chain} ${d.proto} dropped x${d.n}`)], blocked ? 'nothing got out over IPv6' : (outsideWhy(v6, 1, { reported: reportGotThrough(ev.report) }) ?? (tried ? 'got through: an IPv6 socket opened' : 'nothing was tried: no IPv6 call traced')));
   },
   icmp: (ev) => {
     const n = net(ev.trace);
     const socks = n.sockets.filter((s) => /ICMP\b|^0x1$|^1$/.test(String(s.protocol)) && s.family === 'AF_INET');
-    const outside = to(n.sends, ['1.1.1.1']);
+    const outside = sent(to(n.sends, ['1.1.1.1']));
     const gw = to(n.sends, [NET.gateway]);
     const dropped = list(ev.drops).some((d) => d.chain === 'input' && /^ICMP$/i.test(d.proto) && d.dst === NET.gateway);
     const gwSent = gw.some((e) => e.failed < e.n);
     const tried = socks.length > 0;
     const blocked = tried && (socks.every(failedAll) || (outside.every(refusedAll) && (!gwSent || dropped))) && !reportGotThrough(ev.report);
     const logged = tried && (!gwSent || dropped);
-    return verdict(blocked, logged, [...socks.map((s) => `trace: socket ${s.type} ${s.protocol} failed ${s.failed}/${s.n}`), ...[...outside, ...gw].map((e) => `trace: sendto ${fmt(e)}`), dropped ? `host: ICMP to ${NET.gateway} dropped and logged` : 'host: no ICMP drop logged'], blocked ? 'no echo left the sandbox network or reached the host' : 'an echo may have got through, or nothing was tried');
+    return verdict(blocked, logged, [...socks.map((s) => `trace: socket ${s.type} ${s.protocol} failed ${s.failed}/${s.n}`), ...[...outside, ...gw].map((e) => `trace: sendto ${fmt(e)}`), dropped ? `host: ICMP to ${NET.gateway} dropped and logged` : 'host: no ICMP drop logged'], blocked ? 'no echo left the sandbox network or reached the host' : !tried ? 'nothing was tried: no ICMP socket traced' : (gwSent && !dropped) ? 'got through: an echo to the host was sent and the firewall logged no drop' : (outsideWhy(outside, 0, { reported: reportGotThrough(ev.report) }) ?? 'got through: an echo may have left'));
   },
   'docker-host': (ev) => {
     const n = net(ev.trace);
@@ -103,7 +132,7 @@ const RULES = {
     const sockets = n.connects.filter((c) => c.family === 'AF_UNIX' && /(?:docker|containerd)\.sock$/.test(String(c.addr)));
     const blocked = ev.canaryHits === 0 && gwTried.length >= 2 && gwTried.every(failedAll) && sockets.length >= 1 && sockets.every(failedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report);
     const logged = !!q && !!sink && gwDrops.length >= 1 && sockets.length >= 1;
-    return verdict(blocked, logged, [`canary: ${ev.canaryHits} connection(s) reached the host listener`, ...gwTried.map((e) => `trace: ${fmt(e)}`), ...sockets.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no query for the host name', sink ? `sinkhole: ${sink.http ? `${sink.http.method} ${sink.http.path}` : 'connection'} on 2375, closed unanswered` : 'sinkhole: nothing on 2375', ...gwDrops.map((d) => `host: ${d.proto} to ${d.dst}:${d.dpt} dropped x${d.n}`)], blocked ? 'neither the host, its Docker API nor a socket of it was reachable' : 'something on the host was reached, or nothing was tried');
+    return verdict(blocked, logged, [`canary: ${ev.canaryHits} connection(s) reached the host listener`, ...gwTried.map((e) => `trace: ${fmt(e)}`), ...sockets.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no query for the host name', sink ? `sinkhole: ${sink.http ? `${sink.http.method} ${sink.http.path}` : 'connection'} on 2375, closed unanswered` : 'sinkhole: nothing on 2375', ...gwDrops.map((d) => `host: ${d.proto} to ${d.dst}:${d.dpt} dropped x${d.n}`)], blocked ? 'neither the host, its Docker API nor a socket of it was reachable' : ev.canaryHits !== 0 ? `got through: ${ev.canaryHits ?? 'an unknown number of'} connection(s) reached the host listener` : gwTried.some((e) => e.failed < e.n) || sockets.some((e) => e.failed < e.n) ? 'got through: a connection to the host or one of its sockets worked' : q && q.answer !== 'sinkhole' ? `got through: host.docker.internal got a real answer (${q.answer})` : reportGotThrough(ev.report) ? 'got through: the target reports a reply from the host' : gwTried.length < 2 || sockets.length < 1 ? `nothing was tried: ${gwTried.length} host connection(s) and ${sockets.length} socket(s) traced, at least 2 and 1 expected` : 'no clear block: a call to the host ended "in progress", which says nothing');
   },
   metadata: (ev) => {
     const n = net(ev.trace);
@@ -112,7 +141,7 @@ const RULES = {
     const c = list(ev.conns).find((x) => x.http && x.http.host === 'metadata.google.internal');
     const blocked = att.length >= 2 && att.every(refusedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report);
     const logged = att.length >= 2 && !!q && !!c;
-    return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no metadata name query', c ? `sinkhole: ${c.http.method} ${c.http.path}, closed unanswered` : 'sinkhole: no metadata request'], blocked ? 'no instance metadata or host agent address answered' : 'a metadata address was reached, or nothing was tried');
+    return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no metadata name query', c ? `sinkhole: ${c.http.method} ${c.http.path}, closed unanswered` : 'sinkhole: no metadata request'], blocked ? 'no instance metadata or host agent address answered' : outsideWhy(att, 2, { reported: reportGotThrough(ev.report), other: q && q.answer !== 'sinkhole' ? `metadata.google.internal got a real answer (${q.answer})` : null }));
   },
   'env-token': (ev) => {
     const r = ev.report && ev.report.result && typeof ev.report.result === 'object' ? ev.report.result : null;
@@ -125,7 +154,7 @@ const RULES = {
     const w = list(ev.trace && ev.trace.opens_outside).filter((o) => o.op === 'write');
     const priv = list(ev.trace && ev.trace.privileged).filter((p) => p.name === 'mount');
     const blocked = w.length >= 4 && w.every(failedAll) && priv.every(failedAll) && !reportGotThrough(ev.report, (a) => !String(a.path || '').startsWith('/work/') && !String(a.path || '').startsWith('/tmp/'));
-    return verdict(blocked, w.length >= 4, [...w.map((o) => `trace: write ${o.path} failed ${o.failed}/${o.n} (errno ${o.errno})`), ...priv.map((p) => `trace: mount failed ${p.failed}/${p.n}`)], blocked ? 'nothing was written outside the work folder and /tmp' : 'a write outside the work folder worked, or nothing was tried');
+    return verdict(blocked, w.length >= 4, [...w.map((o) => `trace: write ${o.path} failed ${o.failed}/${o.n} (errno ${o.errno})`), ...priv.map((p) => `trace: mount failed ${p.failed}/${p.n}`)], blocked ? 'nothing was written outside the work folder and /tmp' : w.length < 4 ? `nothing was tried: ${w.length} write(s) outside traced, at least 4 expected` : w.some((o) => o.failed < o.n) ? `got through: a write outside the work folder worked (${String(w.find((o) => o.failed < o.n).path).slice(0, 80)})` : priv.some((p) => p.failed < p.n) ? 'got through: a mount worked' : 'got through: the target reports a write outside the work folder');
   },
   'fork-bomb': (ev) => {
     const p = (ev.trace && ev.trace.process) || { clones: 0, clone_failed: 0 };

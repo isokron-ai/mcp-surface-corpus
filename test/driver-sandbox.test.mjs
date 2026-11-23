@@ -12,7 +12,7 @@ import { fakeFetch, fakeHostRun, tarGz } from './helpers.mjs';
 import { Docker } from '../src/docker.mjs';
 import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
-import { readTelemetry } from '../src/telemetry.mjs';
+import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
 
 process.env.SURFACE_PROBE_MS = '6000';
 const D = await import('../bin/run-shard.mjs');
@@ -280,4 +280,23 @@ test('R-SBX-03 the ci lane fails closed: a target with no syscall trace, or no f
   assert.equal(rh.rc, 1);
   assert.equal(readFileSync(join(h.out, '_shard', 'rows.jsonl'), 'utf8'), '', 'no target row without the firewall log');
   assert.match(JSON.parse(readFileSync(join(h.out, 's001', 'record.json'), 'utf8')).errors.find((e) => e.step === 'evidence').error, /host firewall log/);
+});
+
+test('R-SBX-11 the ci lane fails closed when the schema refuses a trace summary: that target counts as missing its trace', async () => {
+  const s = setup({ lane: 'ci' });
+  const orig = Telemetry.prototype.tryWrite;
+  // The schema refusing s002's server trace, as a summary too big or malformed would be refused.
+  Telemetry.prototype.tryWrite = function (type, fields, meta = {}) {
+    if (type === 'trace_summary' && meta.subject === 's002') { this.dropped++; return null; }
+    return orig.call(this, type, fields, meta);
+  };
+  let r;
+  try { r = await runMain(s); } finally { Telemetry.prototype.tryWrite = orig; }
+  assert.equal(r.rc, 1);
+  const rows = readFileSync(join(s.out, '_shard', 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).id);
+  assert.deepEqual(rows, ['s001'], 's002 has no row');
+  const rec2 = JSON.parse(readFileSync(join(s.out, 's002', 'record.json'), 'utf8'));
+  assert.deepEqual([rec2.public_exit, rec2.excluded], [125, 'sandbox evidence missing']);
+  assert.match(rec2.errors.find((e) => e.step === 'evidence').error, /a syscall trace record \(server\)/);
+  assert.ok(r.by('run_end')[0].telemetry_dropped >= 1);
 });

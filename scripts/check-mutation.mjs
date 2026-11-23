@@ -24,10 +24,15 @@ export const EXPECT = {
   'runtime-runc': { case: 'direct-ip', why: /not run under gVisor \(runtime runc\)/, blocked: false },
   'firewall-forward': { preflight: /the firewall is not the one net-guard\.sh makes: .*ISK-SBX/ },
   'firewall-input': { preflight: /the firewall is not the one net-guard\.sh makes: .*INPUT lacks/ },
-  'cap-drop': { case: 'raw-socket', why: /capabilities are not all dropped/, blocked: false },
+  'firewall-order': { preflight: /the firewall is not the one net-guard\.sh makes: .*DOCKER-USER: -A DOCKER-USER -[sd] 10\.213\.52\.0\/22 -j ISK-SBX comes after -A DOCKER-USER -s 10\.213\.52\.0\/22 -j ACCEPT/ },
+  // Shown twice: by docker inspect (the settings) and by the target's own capability report, which
+  // only the harness's verdict holds (a report can fail a case, never pass it).
+  'cap-drop': { case: 'raw-socket', why: /capabilities are not all dropped/, blocked: false, harness: /target: CapEff [0-9a-f]+ CapBnd 0*[1-9a-f]/ },
   'env-filter': { case: 'env-token', why: /a token reached the target/, blocked: false },
-  'read-only': { case: 'write-outside', why: /a write outside the work folder worked/, blocked: false, logged: true },
-  'internal-net': { case: 'direct-ip', why: /an outside address was reached/, blocked: false, logged: true },
+  'read-only': { case: 'write-outside', why: /^got through: a write outside the work folder worked/, blocked: false, logged: true },
+  // On a network with a route out, the firewall's silent drop leaves the calls to time out: shown as
+  // the absence of a definite refusal, not as a reply.
+  'internal-net': { case: 'direct-ip', why: /^no definite refusal: /, blocked: false, logged: true },
 };
 
 export function checkMutation(file, protection) {
@@ -65,6 +70,7 @@ export function checkMutation(file, protection) {
   if (!exp.why.test(v.detail)) return fail(`${exp.case} failed for another reason`);
   if (exp.blocked !== undefined && v.blocked !== exp.blocked) return fail(`${exp.case}: blocked is ${v.blocked}`);
   if (exp.logged !== undefined && v.logged !== exp.logged) return fail(`${exp.case}: logged is ${v.logged}`);
+  if (exp.harness && !harness.evidence.some((e) => exp.harness.test(e))) return fail(`${exp.case}: the harness's evidence does not show it (${String(exp.harness)})`);
   lines.push(`mutation ${protection}: shown by ${exp.case}`);
   return { ok: true, lines };
 }

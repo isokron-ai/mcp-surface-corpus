@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NETS, SANDBOX_RANGE, RESOLV_DIR, LOG_PREFIX, SINK_TCP, SINK_UDP, resolvConf, parseKernelLog, groupDrops, readHostLog, firewallProblems } from '../src/sandbox-net.mjs';
+import { NETS, SANDBOX_RANGE, RESOLV_DIR, LOG_PREFIX, SINK_TCP, SINK_UDP, resolvConf, parseKernelLog, groupDrops, readHostLog, firewallProblems, jumpOrderProblems } from '../src/sandbox-net.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const ipNum = (ip) => ip.split('.').reduce((n, x) => n * 256 + Number(x), 0);
@@ -147,4 +147,17 @@ test('R-CI-07 iptables -S prints a LOG rule without --log-level when it is the d
   assert.deepEqual(firewallProblems(with4), [], 'with --log-level 4');
   const other = (cmd, argv) => { const r = fakeHostRun(cfg)(cmd, argv); return { ...r, stdout: String(r.stdout).replace(/(--log-prefix "isk-sbx-in: ")$/m, '$1 --log-level 7') }; };
   assert.match(firewallProblems(other).join(), /ISK-SBX-IN is not the chain/);
+});
+
+test('R-SBX-09 our jumps must come before any rule that could let a packet past them: an ACCEPT above them is refused', () => {
+  const cfg = loadCfg();
+  const top = (k, rules) => firewallProblems(fakeHostRun(cfg, { top: { [k]: rules } }));
+  assert.match(top('iptables DOCKER-USER', ['-A DOCKER-USER -s 10.213.52.0/22 -j ACCEPT']).join(), /DOCKER-USER: -A DOCKER-USER -d 10\.213\.52\.0\/22 -j ISK-SBX comes after -A DOCKER-USER -s 10\.213\.52\.0\/22 -j ACCEPT/);
+  assert.match(top('iptables INPUT', ['-A INPUT -i br-+ -p tcp -m tcp --dport 2375 -j ACCEPT']).join(), /INPUT: -A INPUT -i br-\+ -j ISK-SBX-IN comes after/);
+  assert.match(top('ip6tables FORWARD', ['-A FORWARD -j DOCKER-USER']).join(), /ip6tables FORWARD: .* comes after -A FORWARD -j DOCKER-USER/, 'a jump to another chain is a way past too');
+  assert.match(top('ip6tables INPUT', ['-A INPUT -j RETURN']).join(), /ip6tables INPUT: .* comes after -A INPUT -j RETURN/);
+  // Rules that only drop, reject or log above ours, and Docker's RETURN at the very end, are fine.
+  assert.deepEqual(top('iptables DOCKER-USER', ['-A DOCKER-USER -d 192.0.2.1/32 -j DROP', '-A DOCKER-USER -p tcp -j REJECT --reject-with tcp-reset', '-A DOCKER-USER -j LOG --log-prefix "x: "']), []);
+  assert.deepEqual(firewallProblems(fakeHostRun(cfg)), [], 'the fixture ends DOCKER-USER with -j RETURN');
+  assert.deepEqual(jumpOrderProblems('iptables', 'INPUT', ['-A INPUT -i br-+ -j ISK-SBX-IN', '-A INPUT -j ACCEPT'], ['-A INPUT -i br-+ -j ISK-SBX-IN']), [], 'an ACCEPT below our jump is fine');
 });

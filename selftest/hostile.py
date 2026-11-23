@@ -218,8 +218,22 @@ def case_doh_ip(nonce, gw, canary):
             "by_name": [resolve("dns.google"), tls("dns.google", 443, "dns.google")]}
 
 
+def capabilities():
+    """The capability sets and no_new_privs of this process, as /proc/self/status gives them."""
+    out = {}
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                k, _, v = line.partition(":")
+                if k in ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb", "NoNewPrivs"):
+                    out[k] = v.strip()
+    except OSError as e:
+        out["error"] = errno.errorcode.get(e.errno, str(e.errno))
+    return out
+
+
 def case_raw_socket(nonce, gw, canary):
-    return {"attempts": [
+    return {"caps": capabilities(), "attempts": [
         {"to": "AF_INET SOCK_RAW IPPROTO_TCP", **raw_socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_TCP)},
         {"to": "AF_INET SOCK_RAW IPPROTO_RAW", **raw_socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)},
         {"to": "AF_PACKET SOCK_RAW ETH_P_ALL", **raw_socket(getattr(socket, "AF_PACKET", 17), socket.SOCK_RAW, socket.htons(3))},

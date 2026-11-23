@@ -37,7 +37,7 @@ test('each container mutation takes out exactly its one protection', () => {
   const e = mutateCaseArgs(a, 'env-filter', can);
   assert.ok(e.includes('GITHUB_TOKEN=isk-canary-1'));
   assert.ok(e.indexOf('GITHUB_TOKEN=isk-canary-1') < e.indexOf(IMG), 'before the image, so docker reads it as an option');
-  for (const m of ['firewall-forward', 'firewall-input', 'internal-net']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
+  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'internal-net']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
   assert.deepEqual(a, caseArgs(), 'the original arguments are not changed');
 });
 
@@ -46,11 +46,14 @@ test('the host mutations go through sudo -n and say whether they worked', () => 
   assert.equal(mutateHost('firewall-input', (cmd, argv) => { seen.push([cmd, ...argv].join(' ')); return { status: 0 }; }), true);
   assert.deepEqual(seen, ['sudo -n iptables -D INPUT -i docker0 -j ISK-SBX-IN', 'sudo -n iptables -D INPUT -i br-+ -j ISK-SBX-IN']);
   assert.equal(mutateHost('firewall-forward', () => ({ status: 1 })), false);
+  const order = [];
+  mutateHost('firewall-order', (cmd, argv) => { order.push([cmd, ...argv].join(' ')); return { status: 0 }; });
+  assert.deepEqual(order, ['sudo -n iptables -I DOCKER-USER 1 -s 10.213.52.0/22 -j ACCEPT']);
   assert.equal(mutateHost('cap-drop', () => { throw new Error('no host change'); }), true);
 });
 
 /** A mutated run's telemetry: the preflight refusing, or the named case with the given evidence. */
-function mutated(protection, { preflight = null, ev = null, ended = true, harnessDetail = 'x', name = null } = {}) {
+function mutated(protection, { preflight = null, ev = null, ended = true, harnessDetail = 'x', harnessEvidence = [], name = null } = {}) {
   const f = join(mkdtempSync(join(tmpdir(), 'mut-')), 'telemetry.jsonl');
   const tel = new Telemetry(f, { run: '20261121t100000-000001' });
   tel.write('run_start', { kind: 'selftest', lane: 'selftest-mutation', node: 'v22', platform: 'linux/x64', runtime: 'runsc', gvisor_release: '20261116.0', disabled: protection });
@@ -65,7 +68,7 @@ function mutated(protection, { preflight = null, ev = null, ended = true, harnes
     for (const x of ev.conns) tel.write('connection', x, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
     tel.write('case_evidence', { case: c, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
-    tel.write('bypass_result', { case: c, blocked: false, logged: false, pass: false, evidence: [], detail: harnessDetail }, meta);
+    tel.write('bypass_result', { case: c, blocked: false, logged: false, pass: false, evidence: harnessEvidence, detail: harnessDetail }, meta);
   }
   if (ended) tel.end(false);
   return f;
@@ -77,16 +80,21 @@ test('R-MUT-00 a mutated run counts only when it failed for the reason its prote
   assert.equal(checkMutation(mutated('runtime-runc', { ev: runc }), 'runtime-runc').ok, true);
   // The firewall: the preflight refused.
   assert.equal(checkMutation(mutated('firewall-input', { preflight: 'the firewall is not the one net-guard.sh makes: iptables INPUT lacks: -A INPUT -i br-+ -j ISK-SBX-IN' }), 'firewall-input').ok, true);
+  assert.equal(checkMutation(mutated('firewall-order', { preflight: 'the firewall is not the one net-guard.sh makes: iptables DOCKER-USER: -A DOCKER-USER -s 10.213.52.0/22 -j ISK-SBX comes after -A DOCKER-USER -s 10.213.52.0/22 -j ACCEPT' }), 'firewall-order').ok, true);
   assert.equal(checkMutation(mutated('firewall-forward', { preflight: 'the firewall is not the one net-guard.sh makes: iptables ISK-SBX is not the chain net-guard.sh makes (0 rules; rule 1: missing)' }), 'firewall-forward').ok, true);
   // Capabilities, environment, root, network: the named case on its evidence.
   const caps = GOOD['raw-socket'](); caps.inspect.mismatches = ['capabilities are not all dropped'];
-  assert.equal(checkMutation(mutated('cap-drop', { ev: caps }), 'cap-drop').ok, true);
+  const capsLeft = ['runtime: runsc, settings differ', 'target: CapEff 0000000000000000 CapBnd 00000000a80425fb'];
+  assert.equal(checkMutation(mutated('cap-drop', { ev: caps, harnessEvidence: capsLeft }), 'cap-drop').ok, true);
+  assert.match(checkMutation(mutated('cap-drop', { ev: caps, harnessEvidence: ['target: CapEff 0000000000000000 CapBnd 0000000000000000'] }), 'cap-drop').lines.join('\n'), /harness's evidence does not show it/, 'the settings alone are not enough: the target must see a capability left');
   const env = GOOD['env-token'](); env.inspect.canaryInEnv = true;
   assert.equal(checkMutation(mutated('env-filter', { ev: env }), 'env-filter').ok, true);
   const ro = GOOD['write-outside'](); ro.trace.opens_outside[0] = { path: '/var/tmp/isk-1', op: 'write', call: 'openat', n: 1, failed: 0, errno: null };
   assert.equal(checkMutation(mutated('read-only', { ev: ro }), 'read-only').ok, true);
   const net = GOOD['direct-ip'](); for (const c of net.trace.network.connects) c.errno = 4;
   assert.equal(checkMutation(mutated('internal-net', { ev: net }), 'internal-net').ok, true);
+  const reached = GOOD['direct-ip'](); reached.trace.network.connects[0] = { family: 'AF_INET', addr: '1.1.1.1', port: 443, n: 1, failed: 0, errno: null };
+  assert.match(checkMutation(mutated('internal-net', { ev: reached }), 'internal-net').lines.join('\n'), /another reason/, 'a reply is not what internal-net shows');
 
   // Not counted: a pass, another reason, a crash, a harness error, the wrong protection.
   assert.equal(checkMutation(mutated('cap-drop', { ev: GOOD['raw-socket']() }), 'cap-drop').ok, false, 'the case passed on its evidence');
