@@ -84,7 +84,7 @@ export function row(i, o = {}) {
 export function fakeHostRun(cfg, { drop = {}, version = null } = {}) {
   const v4 = {
     'ISK-SBX': ['-A ISK-SBX -s 10.213.53.0/24 -d 10.213.53.0/24 -j RETURN', '-A ISK-SBX -s 10.213.54.0/24 -d 10.213.54.0/24 -j RETURN', '-A ISK-SBX -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-fwd: " --log-level 4', '-A ISK-SBX -j DROP'],
-    'ISK-SBX-IN': ['-A ISK-SBX-IN -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-in: " --log-level 4', '-A ISK-SBX-IN -j DROP'],
+    'ISK-SBX-IN': ['-A ISK-SBX-IN -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-in: "', '-A ISK-SBX-IN -j DROP'],
     'DOCKER-USER': ['-A DOCKER-USER -d 168.63.129.16/32 -j DROP', '-A DOCKER-USER -d 169.254.0.0/16 -j DROP', '-A DOCKER-USER -d 10.213.52.0/22 -j ISK-SBX', '-A DOCKER-USER -s 10.213.52.0/22 -j ISK-SBX', '-A DOCKER-USER -j RETURN'],
     INPUT: ['-A INPUT -i br-+ -j ISK-SBX-IN', '-A INPUT -i docker0 -j ISK-SBX-IN'],
     FORWARD: ['-A FORWARD -j DOCKER-USER', '-A FORWARD -j DOCKER-FORWARD'],

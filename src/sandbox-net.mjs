@@ -77,7 +77,8 @@ export function readHostLog(since, run = spawnSync) {
  * chains holds exactly its lines in order; DOCKER-USER, INPUT and FORWARD hold our jumps.
  */
 const LIMIT = String.raw`-m limit --limit 20/s(?:ec|econd)? --limit-burst 200`;
-const LOGR = (chain, prefix) => new RegExp(String.raw`^-A ${chain} ${LIMIT} -j LOG --log-prefix "?${prefix.replace(/ $/, String.raw`\s?`)}"? --log-level 4$`);
+// iptables -S leaves out --log-level when it is the default (4, warning).
+const LOGR = (chain, prefix) => new RegExp(String.raw`^-A ${chain} ${LIMIT} -j LOG --log-prefix "?${prefix.replace(/ $/, String.raw`\s?`)}"?(?: --log-level 4)?$`);
 const lit = (s) => new RegExp(`^${s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`);
 const [RUN_NET, INSTALL_NET] = [NETS.run.subnet, NETS.install.subnet];
 export const FIREWALL = {
@@ -121,7 +122,8 @@ export function firewallProblems(run = spawnSync) {
     for (const [chain, want] of Object.entries(FIREWALL[fam])) {
       const got = ruleLines(tool, chain, run);
       if (got === null) { out.push(`${tool} ${chain} cannot be read`); continue; }
-      if (got.length !== want.length || !want.every((re, i) => re.test(got[i]))) out.push(`${tool} ${chain} is not the chain net-guard.sh makes`);
+      const i = want.findIndex((re, k) => !re.test(got[k] ?? ''));
+      if (got.length !== want.length || i >= 0) out.push(`${tool} ${chain} is not the chain net-guard.sh makes (${got.length} rules; ${i >= 0 ? `rule ${i + 1}: ${String(got[i] ?? 'missing').slice(0, 120)}` : 'extra rules'})`);
     }
     for (const [chain, want] of Object.entries(FIREWALL.jumps[fam])) {
       const got = ruleLines(tool, chain, run);
