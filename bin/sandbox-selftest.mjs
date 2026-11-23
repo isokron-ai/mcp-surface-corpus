@@ -8,6 +8,11 @@
  * whether it was blocked and whether it was logged. A case passes only when both hold.
  *
  *   node bin/sandbox-selftest.mjs --out DIR [--cases a,b] [--images images.json] [--lane ci|local]
+ *   node bin/sandbox-selftest.mjs --out DIR --lane selftest-mutation --disable PROTECTION [--cases a,b]
+ *
+ * --disable turns off exactly one protection, to prove the self test can fail (the `mutation` job
+ * of sandbox-selftest.yml; scripts/check-mutation.mjs checks it failed for the expected reason). It
+ * is refused on every lane but selftest-mutation, and that lane needs it. See MUTATIONS.
  *
  * Writes DIR/telemetry.jsonl (docs/TELEMETRY.md), DIR/results.json and, kept apart and never parsed
  * as results, DIR/untrusted/<case>.stdout and .stderr (what the hostile target printed).
@@ -25,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, dockerEnvFrom, helperRunArgs, sandboxRunArgs, LIMITS } from '../src/docker.mjs';
+import { Docker, HarnessError, checkDockerVersion, dockerEnvFrom, helperRunArgs, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
@@ -43,19 +48,36 @@ const CASE_MS = 120_000;
 const OUT_CAP = 1024 * 1024;
 const sha256 = (b) => createHash('sha256').update(b).digest('hex');
 
+/**
+ * The protections --disable can turn off, test-only: what each changes. Host changes run through
+ * `sudo -n` before the preflight; the others change the case container or its network only.
+ */
+export const MUTATIONS = {
+  'runtime-runc': 'the case container runs under runc instead of runsc',
+  'firewall-forward': "net-guard.sh's ISK-SBX chain is flushed and DOCKER-USER no longer jumps to it",
+  'firewall-input': "net-guard.sh's INPUT jumps to ISK-SBX-IN are removed",
+  'cap-drop': 'the case container keeps Docker\'s default capabilities (no --cap-drop ALL)',
+  'env-filter': "the runner's tokens (the canaries) reach the case container's environment",
+  'read-only': 'the case container has a writable root filesystem',
+  'internal-net': 'the run network is made without --internal',
+};
+
 export function parseArgs(argv) {
-  const o = { out: null, cases: [...CASES], images: join(root, 'images.json'), lane: 'local' };
+  const o = { out: null, cases: [...CASES], images: join(root, 'images.json'), lane: 'local', disable: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]; const v = () => { if (i + 1 >= argv.length) throw new HarnessError(`${a} needs a value`); return argv[++i]; };
     if (a === '--out') o.out = v();
     else if (a === '--cases') o.cases = v().split(',').filter(Boolean);
     else if (a === '--images') o.images = v();
     else if (a === '--lane') o.lane = v();
+    else if (a === '--disable') o.disable = v();
     else throw new HarnessError(`unknown option ${a}`);
   }
   if (!o.out) throw new HarnessError('usage: sandbox-selftest.mjs --out DIR [--cases a,b] [--images images.json] [--lane ci|local]');
   if (!o.cases.length || !o.cases.every((c) => CASES.includes(c))) throw new HarnessError(`--cases takes some of: ${CASES.join(', ')}`);
-  if (!['ci', 'local'].includes(o.lane)) throw new HarnessError('--lane must be ci or local');
+  if (!['ci', 'local', 'selftest-mutation'].includes(o.lane)) throw new HarnessError('--lane must be ci, local or selftest-mutation');
+  if (o.disable !== null && o.lane !== 'selftest-mutation') throw new HarnessError('--disable is refused except on the selftest-mutation lane');
+  if (o.lane === 'selftest-mutation' && !Object.prototype.hasOwnProperty.call(MUTATIONS, String(o.disable))) throw new HarnessError(`the selftest-mutation lane needs --disable with one of: ${Object.keys(MUTATIONS).join(', ')}`);
   return o;
 }
 
@@ -72,6 +94,26 @@ export function canaryEnv(nonce) {
     ACTIONS_ID_TOKEN_REQUEST_URL: `https://isk-canary-${nonce}.invalid/id-token`,
     CORPUS_TARGETS_KEY: `isk-canary-${nonce}-corpus-targets-key`,
   };
+}
+
+/** The case container's `docker run` arguments with one protection taken out (MUTATIONS), test-only. */
+export function mutateCaseArgs(argv, disable, canaries) {
+  const a = [...argv];
+  const drop = (flag, val) => { for (let i = 0; i < a.length; i++) if (a[i] === flag && (val === undefined || a[i + 1] === val)) { a.splice(i, val === undefined ? 1 : 2); return; } throw new HarnessError(`mutation: ${flag} not found`); };
+  const image = a.findIndex((x) => /@sha256:[0-9a-f]{64}$/.test(x));
+  if (disable === 'runtime-runc') a[a.indexOf('--runtime') + 1] = 'runc';
+  else if (disable === 'cap-drop') drop('--cap-drop', 'ALL');
+  else if (disable === 'read-only') drop('--read-only');
+  else if (disable === 'env-filter') a.splice(image, 0, ...Object.entries(canaries).flatMap(([k, v]) => ['--env', `${k}=${v}`]));
+  return a;
+}
+
+/** The host changes of a mutation, through sudo -n (the runner's sudo): true when they all worked. */
+export function mutateHost(disable, run = spawnSync) {
+  const cmds = disable === 'firewall-forward'
+    ? [['iptables', '-F', 'ISK-SBX'], ['iptables', '-D', 'DOCKER-USER', '-s', '10.213.52.0/22', '-j', 'ISK-SBX'], ['iptables', '-D', 'DOCKER-USER', '-d', '10.213.52.0/22', '-j', 'ISK-SBX']]
+    : disable === 'firewall-input' ? [['iptables', '-D', 'INPUT', '-i', 'docker0', '-j', 'ISK-SBX-IN'], ['iptables', '-D', 'INPUT', '-i', 'br-+', '-j', 'ISK-SBX-IN']] : [];
+  return cmds.every((c) => run('sudo', ['-n', ...c], { encoding: 'utf8', timeout: 30_000 }).status === 0);
 }
 
 /** The env the hostile target gets: what any target gets, nothing of the runner's. */
@@ -121,7 +163,9 @@ async function runCase(name, ctx) {
   const savedEnv = Object.fromEntries(Object.keys(canaries).map((k) => [k, process.env[k]]));
   Object.assign(process.env, canaries);
   try {
-    const network = await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
+    const network = ctx.disable === 'internal-net'
+      ? await externalRunNetwork(dk, `surface-${dk.runId}-${name}-run`, name)
+      : await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
     const work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
     // chmod before chown: once /work belongs to 65534, root without CAP_FOWNER may no longer change its mode.
     await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', 'chmod 0750 /work && chown 65534:65534 /work'] }), { deadline: Date.now() + 120_000 }), 'work volume');
@@ -130,12 +174,13 @@ async function runCase(name, ctx) {
     extra.canary_bound = canary.bound;
 
     const cname = dk.name(name, 'case');
-    const argv = sandboxRunArgs({
+    let argv = sandboxRunArgs({
       name: cname, image: images.python, network, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, workdir: P.work,
       mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: CASE_ENV,
       cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NETS.run.gateway, String(CANARY_PORT)],
       hostEnv: process.env,
     });
+    if (ctx.disable) argv = mutateCaseArgs(argv, ctx.disable, canaries);
     const manifest = settingsManifest(argv, { role: 'case' });
     tel.write('settings', { digest: settingsDigest(manifest), manifest }, meta);
     const t0 = Date.now();
@@ -216,6 +261,13 @@ async function runCase(name, ctx) {
   }
 }
 
+/** mutation internal-net: the run network with its fixed subnet, but not --internal. Test-only. */
+async function externalRunNetwork(dk, name, target) {
+  const sn = NETS.run;
+  await dk.must(dk.d(['network', 'create', '--driver', 'bridge', '--subnet', sn.subnet, '--gateway', sn.gateway, '--ipv6=false', '--opt', 'com.docker.network.bridge.enable_ip_masquerade=false', '--label', `${LABEL_RUN}=${dk.runId}`, '--label', `${LABEL_TARGET}=${target}`, name]), 'network create');
+  return name;
+}
+
 /** Our code for the containers (the network logger, the hostile target), read-only, through stdin into a volume. */
 async function toolsVolume(dk, images) {
   const vol = await dk.volume(`surface-${dk.runId}-tools`);
@@ -235,7 +287,7 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
   const tel = new Telemetry(join(out, 'telemetry.jsonl'), { run: runId });
   const dk = new Docker({ runId, log: join(out, 'docker.log') });
   const results = { format: RESULTS_FORMAT, run: runId, lane: o.lane, started_at: started.toISOString(), finished_at: null, gvisor_release: cfg.release, runtime: RUNTIME, skipped: null, cases: [], passed: 0, total: o.cases.length };
-  tel.write('run_start', { kind: 'selftest', lane: o.lane, node: process.version, platform: `${platform()}/${arch()}`, runtime: RUNTIME, gvisor_release: cfg.release });
+  tel.write('run_start', { kind: 'selftest', lane: o.lane, node: process.version, platform: `${platform()}/${arch()}`, runtime: RUNTIME, gvisor_release: cfg.release, ...(o.disable ? { disabled: o.disable } : {}) });
   let ok = false;
   try {
     const images = loadImages(o.images);
@@ -244,12 +296,13 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
     checkDockerVersion(v.stdout.toString().trim().split(' ')[0]);
     await dk.image(images.python, 'python');
     await dk.image(images.node22, 'node22');
+    if (o.disable && !mutateHost(o.disable)) throw new HarnessError(`the mutation ${o.disable} could not be applied to the host`);
     const pf = await preflight(dk, { cfg, arch: arch(), image: images.python, cmd: ['python3', '-c', 'import os; print(os.getuid(), os.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readLog, needHostLog: true, strict: true });
     if (!pf.ok) {
       results.skipped = { reason: pf.reason, detail: pf.detail };
       say(`selftest: skipped (${pf.reason}): ${pf.detail}`);
     } else {
-      const ctx = { dk, tel, cfg, images, out, readLog, toolsVol: await toolsVolume(dk, images) };
+      const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images) };
       for (const name of o.cases) {
         const r = await runCase(name, ctx);
         results.cases.push(r);

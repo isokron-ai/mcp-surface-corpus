@@ -76,11 +76,12 @@ The first record of a file.
 | Field | Type | Meaning |
 |---|---|---|
 | `kind` | `corpus` or `selftest` | Which program wrote the file. |
-| `lane` | string | `ci` or `local`. |
+| `lane` | string | `ci`, `local`, or `selftest-mutation` (a self test with one protection off). |
 | `node` | string | Node.js version of the harness. |
 | `platform` | string | Host OS and CPU, as `linux/x64`. |
 | `runtime` | string | The container runtime every target container must use: `runsc`. |
 | `gvisor_release` | string | The pinned gVisor release from `gvisor.json`. |
+| `disabled` | string, optional | Only on the `selftest-mutation` lane: the one protection this run turned off (`bin/sandbox-selftest.mjs` MUTATIONS). Such a run must fail; `scripts/check-mutation.mjs` checks why. |
 
 ### `runtime`
 

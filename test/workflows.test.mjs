@@ -52,7 +52,7 @@ test('least privilege: no token permission by default, every job asks for its ow
     assert.match(code(y), /\npermissions: \{\}\n/, `${f}: top-level permissions`);
     assert.ok(jobsOf(y).length >= 2, f);
     for (const j of jobsOf(y)) assert.match(job(code(y), j), /\n    permissions:(?: \{\}\n|\n      contents: read\n)/, `${f}: job ${j} declares its permissions`);
-    assert.ok(!/:\s*write\b/.test(code(y)), `${f}: no write permission`);
+    assert.ok(!/:\s*write(?:-all)?\s*$/m.test(code(y)), `${f}: no write permission (a matrix value such as write-outside is not one)`);
     assert.ok(!/pull_request_target|workflow_run:/.test(code(y)), `${f}: no privileged trigger`);
     assert.ok(!/persist-credentials:\s*true/.test(y));
     for (const m of code(y).matchAll(/uses: actions\/checkout@[^\n]*\n((?:\s+.*\n)*?)(?=\s+- )/g)) assert.match(m[1], /persist-credentials: false/, `${f}: checkout keeps no credentials`);
@@ -123,7 +123,9 @@ test('corpus: each shard installs gVisor, then guards the networks, then decrypt
   assert.match(s, /run: sudo scripts\/install-runsc\.sh "\$\(command -v node\)"/);
   assert.ok(at('actions/setup-node') < at('scripts/install-runsc.sh'));
   assert.ok(at('scripts/install-runsc.sh') < at('sudo scripts/net-guard.sh'), 'the daemon restart comes before the firewall rules');
-  assert.ok(at('sudo scripts/net-guard.sh') < at('scripts/decrypt-targets.sh'));
+  assert.ok(at('sudo scripts/net-guard.sh') < at('node bin/sandbox-selftest.mjs'));
+  assert.ok(at('node bin/sandbox-selftest.mjs') < at('node scripts/check-selftest.mjs'));
+  assert.ok(at('node scripts/check-selftest.mjs') < at('scripts/decrypt-targets.sh'), 'the self test passes before the real list is decrypted');
   assert.ok(at('scripts/decrypt-targets.sh') < at('scripts/run-ci-shard.sh'));
 });
 
@@ -187,7 +189,7 @@ test('sandbox-selftest: by hand or from a pull request that touches the sandbox;
   assert.ok(!/schedule:|\n  push:|pull_request_target|workflow_run/.test(y));
   assert.ok(!/secrets\.|environment:|github\.token|GH_TOKEN/.test(y), 'no secret, no environment, no token');
   assert.match(y, /\nconcurrency:\n  group: sandbox-selftest-\$\{\{ github\.ref \}\}\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/);
-  assert.deepEqual(jobsOf(raw), ['gate', 'selftest']);
+  assert.deepEqual(jobsOf(raw), ['gate', 'selftest', 'mutation']);
 });
 
 test('sandbox-selftest: the pull request filter covers every file the self test runs or imports, and names no missing file', () => {
@@ -201,7 +203,7 @@ test('sandbox-selftest: the pull request filter covers every file the self test 
   for (const g of paths) assert.ok(files.some((f) => re(g).test(f)), `${g} names no file`);
   // Every local module the entry points import, followed through their imports.
   const seen = new Set();
-  const queue = ['bin/sandbox-selftest.mjs', 'scripts/check-selftest.mjs', 'scripts/runsc-plan.mjs'];
+  const queue = ['bin/sandbox-selftest.mjs', 'scripts/check-selftest.mjs', 'scripts/check-mutation.mjs', 'scripts/runsc-plan.mjs'];
   while (queue.length) {
     const f = queue.shift();
     if (seen.has(f)) continue;
@@ -237,7 +239,7 @@ test('sandbox-selftest: a gate job with the loop guard alone, then the self test
     'uses: actions/setup-node@',
     'run: sudo scripts/install-runsc.sh "$(command -v node)"',
     'run: sudo scripts/net-guard.sh',
-    'run: node bin/sandbox-selftest.mjs --out "$RUNNER_TEMP/selftest" --lane ci',
+    'run: node bin/sandbox-selftest.mjs --out "$RUNNER_TEMP/selftest" --lane ci || echo "::warning::the harness reported a failure; the telemetry check decides"',
     'run: node scripts/check-selftest.mjs "$RUNNER_TEMP/selftest/telemetry.jsonl"',
     'uses: actions/upload-artifact@',
   ];
@@ -292,4 +294,18 @@ test('the loop guard: one block, the same in corpus and sandbox-selftest; nothin
     [{ EVENT: 'pull_request', LOOP_ENABLED: 'false', LOOP_SLOTS: '0' }, 'go=true\nslots=1\n'],
   ];
   for (const [env, want] of ons) assert.equal(run(env).out, want, JSON.stringify(env));
+});
+
+test('sandbox-selftest: a mutation job turns off each protection in turn and must see the self test fail for that reason', async () => {
+  const { MUTATIONS } = await import('../bin/sandbox-selftest.mjs');
+  const { EXPECT } = await import('../scripts/check-mutation.mjs');
+  const m = job(code(WF['sandbox-selftest.yml']), 'mutation');
+  assert.match(m, /^    needs: gate\n/);
+  assert.match(m, /\n    permissions:\n      contents: read\n/);
+  assert.ok(!/secrets\.|environment:/.test(m));
+  const listed = [...m.matchAll(/\n          - disable: ([a-z-]+)\n/g)].map((x) => x[1]);
+  assert.deepEqual(listed.sort(), Object.keys(MUTATIONS).sort(), 'every protection the switch knows is tried');
+  assert.deepEqual(Object.keys(EXPECT).sort(), Object.keys(MUTATIONS).sort(), 'and each has an expected reason');
+  for (const x of ['--lane selftest-mutation --disable "$DISABLE"', 'node scripts/check-selftest.mjs', 'node scripts/check-mutation.mjs']) assert.ok(m.includes(x), x);
+  assert.ok(!/untrusted/.test(m));
 });
