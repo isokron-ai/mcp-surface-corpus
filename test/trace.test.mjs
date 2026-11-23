@@ -104,3 +104,28 @@ test('a trace file is streamed; a missing one gives null', async () => {
   assert.equal(t.truncated, true);
   assert.equal(await summarizeTraceFile(join(d, 'missing.log'), cfg), null);
 });
+
+test('a file name with a line break cannot pass for a trace line unnoticed', () => {
+  // runsc prints paths unquoted: the name below ends the real line and starts lines of its own.
+  const forged = `x\nI1121 10:00:01.000000       1 strace.go:605] [   7:   7] python3 X connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10) = 0x0 (1ms)\n`;
+  const lines = [L(7, 'python3', 'E', `openat(AT_FDCWD /work, 0x7f00 ${forged}, O_RDONLY, 0o0)`), L(7, 'python3', 'X', 'openat(AT_FDCWD /work, 0x7f00 y, O_RDONLY, 0o0)', '0x3 (1µs)')];
+  const s = summarizeTrace(lines.join('\n'), cfg);
+  assert.equal(s.target_influenced, true);
+  assert.equal(s.broken_lines, 1, 'the real line, cut short by the name, does not close');
+  assert.ok(s.headerless_lines >= 1, 'what followed the forged line has no header');
+  assert.equal(s.injection_suspected, true);
+  // A line without runsc's header is never a call.
+  assert.equal(parseStraceLine('[   7:   7] python3 X connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10) = 0x0'), null);
+  const clean = summarizeTrace(TRACE, cfg);
+  assert.deepEqual([clean.injection_suspected, clean.headerless_lines, clean.broken_lines, clean.target_influenced], [false, 0, 0, true]);
+});
+
+test('a flood of refused calls cannot push out the one that worked', () => {
+  const lines = [];
+  for (let i = 0; i < 200; i++) lines.push(...call(1, 'x', `connect(0x3, 0x7f00 {Family: AF_INET, Addr: 10.0.${i >> 8}.${i & 255}, Port: 443}, 0x10)`, '0x0 errno=101 (network is unreachable) (1µs)'));
+  lines.push(...call(1, 'x', 'connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10)', '0x0 (1ms)'));
+  const s = summarizeTrace(lines.join('\n'), cfg, { cap: 5 });
+  assert.equal(s.network.connects.length, 5);
+  assert.deepEqual([s.network.connects[0].addr, s.network.connects[0].failed], ['1.2.3.4', 0], 'the connection that worked comes first');
+  assert.ok(s.omitted.connects > 0);
+});

@@ -3,6 +3,13 @@
 // expected paths, reads of credential paths, programs run, sockets, connections and other network
 // attempts, and privileged calls. The trace is the target's doing, so every string in it is
 // untrusted: paths and addresses are cut to a fixed length and every list is capped.
+//
+// Known limit: runsc prints path arguments without quoting (Go %s, pkg/sentry/strace path()), so a
+// file name with a line break in it can start a line of its own that looks like any other trace
+// line, header included. Lines without runsc's log header are ignored, a call line whose argument
+// list does not close is counted (`broken_lines`), and either sets `injection_suspected`. Every
+// summary says `target_influenced: true`: it is evidence the target could have shaped, never the
+// only evidence that something was blocked. Structured trace output is the real fix (follow-up).
 import { createReadStream } from 'node:fs';
 import { posix } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -43,18 +50,22 @@ export function splitArgs(s) {
   return out;
 }
 
-/** One line of the trace, or null when it is not a syscall line. */
+/**
+ * One line of the trace, or null when it is not a syscall line. Only a line with runsc's log header
+ * counts: a line without one is a continuation of a line before it (a path with a line break in
+ * it), never a call. A call line whose argument list does not close gives { broken: true }.
+ */
 export function parseStraceLine(line) {
   const h = HEAD.exec(line);
-  const rest0 = h ? h[1] : line;
-  const t = TASK.exec(rest0);
+  if (!h) return null;
+  const t = TASK.exec(h[1]);
   if (!t) return null;
   const ids = /(\d+)\D+(\d+)/.exec(t[1]) || /(\d+)/.exec(t[1]);
   const c = CALL.exec(t[2]);
   if (!c) return null;
   const open = c[0].length;
   const close = argSpan(t[2], open);
-  if (close < 0) return null;
+  if (close < 0) return { broken: true, name: c[3] };
   const args = splitArgs(t[2].slice(open, close));
   const after = t[2].slice(close + 1);
   let ret = null;
@@ -119,16 +130,32 @@ const under = (p, list) => list.some((x) => (x.endsWith('/') ? p.startsWith(x) |
 const WRITE_FLAGS = /O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND/;
 const PATH_WRITES = { unlinkat: 1, unlink: 0, renameat2: 1, renameat: 1, rename: 0, mkdirat: 1, mkdir: 0, symlinkat: 2, symlink: 1, linkat: 3, link: 1, fchmodat: 1, chmod: 0, truncate: 0, mknodat: 1, mknod: 0, creat: 0 };
 
-/** A capped tally: key -> { ...fields, n, failed, errno (the last one) }. */
+/**
+ * A capped tally: key -> { ...fields, n, failed, errno (the last one) }. An entry with a call that
+ * worked outranks one whose calls all failed, in the list and for a place in the table: when the
+ * table is full, a call that worked takes the place of an all-failed entry, so a flood of refused
+ * calls cannot push out the one that got through. `more_ok` counts worked calls left out anyway.
+ */
 class Tally {
-  constructor(cap) { this.cap = cap; this.m = new Map(); this.more = 0; }
+  constructor(cap) { this.cap = cap; this.m = new Map(); this.more = 0; this.moreOk = 0; }
   add(key, fields, ret) {
+    const failed = !!(ret && ret.errno !== null);
     let e = this.m.get(key);
-    if (!e) { if (this.m.size >= this.cap * 4) { this.more++; return; } e = { ...fields, n: 0, failed: 0, errno: null }; this.m.set(key, e); }
+    if (!e) {
+      if (this.m.size >= this.cap * 4) {
+        const victim = failed ? null : [...this.m.entries()].filter(([, x]) => x.failed === x.n).sort((a, b) => a[1].n - b[1].n)[0];
+        if (!victim) { this.more++; if (!failed) this.moreOk++; return; }
+        this.m.delete(victim[0]); this.more++;
+      }
+      e = { ...fields, n: 0, failed: 0, errno: null }; this.m.set(key, e);
+    }
     e.n++;
-    if (ret && ret.errno !== null) { e.failed++; e.errno = ret.errno; }
+    if (failed) { e.failed++; e.errno = ret.errno; }
   }
-  list() { return [...this.m.values()].sort((a, b) => b.n - a.n || JSON.stringify(a).localeCompare(JSON.stringify(b))).slice(0, this.cap); }
+  list() {
+    const worked = (x) => (x.failed < x.n ? 1 : 0);
+    return [...this.m.values()].sort((a, b) => worked(b) - worked(a) || b.n - a.n || JSON.stringify(a).localeCompare(JSON.stringify(b))).slice(0, this.cap);
+  }
   omitted() { return this.more + Math.max(0, this.m.size - this.cap); }
 }
 
@@ -137,7 +164,7 @@ export class TraceSummary {
   constructor(cfg, { cap = 40 } = {}) {
     this.cfg = cfg;
     this.cred = cfg.summary.credential.map((r) => new RegExp(r));
-    this.lines = 0; this.parsed = 0;
+    this.lines = 0; this.parsed = 0; this.headerless = 0; this.broken = 0;
     this.counts = Object.fromEntries([...FAMILIES, 'other'].map((f) => [f, 0]));
     this.failed = Object.fromEntries([...FAMILIES, 'other'].map((f) => [f, 0]));
     this.pending = new Map();
@@ -149,8 +176,10 @@ export class TraceSummary {
 
   add(line) {
     this.lines++;
+    if (!HEAD.test(line)) { this.headerless++; return; }
     const r = parseStraceLine(line);
     if (!r) return;
+    if (r.broken) { this.broken++; return; }
     this.parsed++;
     const key = `${r.tid}:${r.name}`;
     if (r.phase === 'E') { this.pending.set(key, r); return; }
@@ -206,13 +235,16 @@ export class TraceSummary {
     this.pending.clear();
     const t = (x) => x.list();
     return {
-      format: SUMMARY_FORMAT, lines: this.lines, syscalls: Object.values(this.counts).reduce((s, n) => s + n, 0),
+      format: SUMMARY_FORMAT, target_influenced: true, lines: this.lines, syscalls: Object.values(this.counts).reduce((s, n) => s + n, 0),
+      headerless_lines: this.headerless, broken_lines: this.broken, injection_suspected: this.headerless > 0 || this.broken > 0,
       counts: this.counts, failed: this.failed,
       opens_outside: t(this.opens), credential_paths: t(this.creds), exec: t(this.execs),
       process: { clones: this.clones, clone_failed: this.cloneFailed },
       network: { sockets: t(this.sockets), raw_sockets: this.rawSockets, connects: t(this.connects), sends: t(this.sends), binds: t(this.binds), dns_names: t(this.dns) },
       privileged: t(this.priv),
       omitted: { opens_outside: this.opens.omitted(), credential_paths: this.creds.omitted(), exec: this.execs.omitted(), connects: this.connects.omitted(), sends: this.sends.omitted() },
+      // Calls that worked but found no place in a full table: a limit was hit where it matters.
+      omitted_ok: { opens_outside: this.opens.moreOk, credential_paths: this.creds.moreOk, exec: this.execs.moreOk, connects: this.connects.moreOk, sends: this.sends.moreOk, sockets: this.sockets.moreOk },
     };
   }
 }
