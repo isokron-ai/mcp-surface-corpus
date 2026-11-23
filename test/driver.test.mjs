@@ -117,6 +117,7 @@ test('sandbox, end to end: stdio, a server that needs an env value, http, static
   assert.deepEqual([rows.s004.acquired, rows.s004.layers.live.attempted, rows.s004.layers.static.tools, rows.s004.layers.readme.tools], ['static', false, 2, 1]);
   // s005: inside the sandbox there is no way out, the root is read-only, and the user is not root.
   const p5 = JSON.parse(readFileSync(join(out, 's005', 'probe-bare.json'), 'utf8'));
+  assert.ok(p5.lists && p5.lists['tools/list'] && p5.lists['tools/list'].items && p5.lists['tools/list'].items[0], `s005 listed no tool: ${JSON.stringify({ error: p5.error, lists: p5.lists, timing: p5.timing, transport: p5.transport, stderr: p5.stderr }).slice(0, 1500)}; ${why('s005')}`);
   assert.equal(p5.lists['tools/list'].items[0].name, 'net_blocked_root_ro_uid_65534');
   // s006: a server that never answers is stopped; it is data, not a harness error.
   assert.deepEqual([rows.s006.public_exit, rows.s006.layers.live.ok, rows.s006.acquired], [0, false, 'static']);
