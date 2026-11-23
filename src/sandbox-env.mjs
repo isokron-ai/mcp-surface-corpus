@@ -121,6 +121,8 @@ export function inspectMismatches(ins, m, { canaries = [] } = {}) {
   want((hc.SecurityOpt || []).some((o) => /^no-new-privileges(:true)?$/.test(o)), 'no-new-privileges is not set');
   want(hc.ReadonlyRootfs === m.read_only, 'the root filesystem is not read-only');
   if (m.pids_limit !== null) want(hc.PidsLimit === m.pids_limit, `pids limit is ${hc.PidsLimit}`);
+  const ulimits = (hc.Ulimits || []).map((u) => `${u.Name}=${u.Soft}:${u.Hard}`);
+  for (const u of m.ulimits) want(ulimits.includes(u), `ulimit ${String(u).split('=')[0]} is not ${String(u).split('=')[1]}`);
   if (m.memory !== null) want(hc.Memory === parseMemory(m.memory), `memory limit is ${hc.Memory}`);
   if (m.cpus !== null) want(hc.NanoCpus === Math.round(m.cpus * 1e9), `cpu limit is ${hc.NanoCpus}`);
   want(hc.NetworkMode === m.network, `network is ${hc.NetworkMode}`);

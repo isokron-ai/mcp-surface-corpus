@@ -109,7 +109,7 @@ async function runCase(name, ctx) {
   const lbl = dk.labels(name);
   const roles = rolesOn('run', { target: 'case' });
   const since = Date.now() / 1000;
-  const ev = { trace: null, dns: [], conns: [], drops: [], canaryHits: null, inspect: null, container: null, telemetryHasNonce: null, output: null, outputRecorded: false, report: null, pidsLimit: Number(LIMITS.pids) };
+  const ev = { trace: null, dns: [], conns: [], drops: [], canaryHits: null, inspect: null, container: null, telemetryHasNonce: null, output: null, outputRecorded: false, report: null, pidsLimit: Number(LIMITS.nproc) };
   let canary = null;
   let netlog = null;
   const extra = { canary_bound: null };

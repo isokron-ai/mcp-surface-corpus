@@ -187,11 +187,14 @@ def fork_bomb(most=1500, seconds=20.0):
             err = errno.errorcode.get(e.errno, str(e.errno))
             break
         if pid == 0:
+            # Each child becomes a small process at once, so the bomb runs into the process limit
+            # rather than the memory limit (a forked interpreter copies pages as it runs).
             try:
                 signal.setitimer(signal.ITIMER_REAL, 0)
-                signal.pause()
-            finally:
-                os._exit(0)
+                os.execv("/bin/sleep", ["sleep", "120"])
+            except BaseException:
+                pass
+            os._exit(0)
         kids.append(pid)
     for p in kids:
         try:

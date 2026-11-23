@@ -17,8 +17,13 @@ export const LABEL_RUN = 'isokron.surface.run';
 export const LABEL_TARGET = 'isokron.surface.target';
 /** Oldest Docker Engine accepted: before 26.0.0, --internal networks still resolved outside names (CVE-2024-29018). */
 export const DOCKER_MIN = [26, 0, 0];
-/** Limits of a container that runs target code (install, the server). */
-export const LIMITS = { memory: '2g', pids: '512', cpus: 2, tmp: '512m' };
+/**
+ * Limits of a container that runs target code (install, the server). Under gVisor, --pids-limit only
+ * bounds the host cgroup that holds the sandbox's own host threads (runsc/cgroup); processes inside
+ * the sandbox are counted by gVisor's kernel, which enforces RLIMIT_NPROC per user. So the process
+ * limit a target meets is `--ulimit nproc`, set to the same number.
+ */
+export const LIMITS = { memory: '2g', pids: '512', nproc: '512', cpus: 2, tmp: '512m' };
 
 const PINNED = /^[a-z0-9][a-z0-9./_-]{0,200}(?::[A-Za-z0-9._-]{1,120})?@sha256:[0-9a-f]{64}$/;
 export function checkPinned(ref, what = 'image') {
@@ -99,6 +104,7 @@ export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, la
     '--memory', LIMITS.memory, '--memory-swap', LIMITS.memory,
     '--cpus', String(cpus),
     '--ulimit', 'nofile=4096:4096',
+    '--ulimit', `nproc=${LIMITS.nproc}:${LIMITS.nproc}`,
     '--init',
     '--hostname', 'surface',
     '--network', network, ...aliases.flatMap((a) => ['--network-alias', a]),

@@ -18,6 +18,7 @@ test('a sandbox container: non-root, no capabilities, read-only root, limits, no
   assert.equal(pair(a, '--memory'), '2g');
   assert.equal(pair(a, '--memory-swap'), '2g');
   assert.equal(pair(a, '--pids-limit'), '512');
+  assert.ok(a.join(' ').includes('--ulimit nproc=512:512'), 'the process limit gVisor enforces inside the sandbox');
   assert.equal(pair(a, '--network'), 'none');
   assert.equal(pair(a, '--mount'), 'type=volume,src=surface-x-s001-work,dst=/work,readonly');
   assert.ok(!a.some((x) => /type=bind|docker\.sock|^-v$|--volume/.test(x)));

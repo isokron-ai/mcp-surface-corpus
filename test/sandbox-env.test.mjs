@@ -72,7 +72,7 @@ test('a helper manifest shows its runtime and its one capability', () => {
 });
 
 const inspectOf = (m, over = {}) => ({
-  HostConfig: { Runtime: 'runsc', CapDrop: ['ALL'], CapAdd: null, Privileged: false, SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true, PidsLimit: 512, Memory: 2 * 1024 ** 3, NanoCpus: 2e9, NetworkMode: m.network, PidMode: '', IpcMode: 'private', Devices: [], Binds: null, ...(over.HostConfig || {}) },
+  HostConfig: { Runtime: 'runsc', CapDrop: ['ALL'], CapAdd: null, Privileged: false, SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true, PidsLimit: 512, Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }, { Name: 'nproc', Soft: 512, Hard: 512 }], Memory: 2 * 1024 ** 3, NanoCpus: 2e9, NetworkMode: m.network, PidMode: '', IpcMode: 'private', Devices: [], Binds: null, ...(over.HostConfig || {}) },
   Config: { User: '65534:65534', Env: ['PATH=/usr/local/bin:/usr/bin', 'HOME=/tmp/home', 'A=1', 'B=2', 'PYTHON_VERSION=3.13.1'], ...(over.Config || {}) },
   Mounts: over.Mounts ?? [
     { Type: 'bind', Source: '/etc/isokron-sandbox/resolv-run.conf', Destination: '/etc/resolv.conf', RW: false },
@@ -90,6 +90,7 @@ test('inspect: a container that matches its manifest has no mismatch; each drift
   assert.match(drift({ HostConfig: { ReadonlyRootfs: false } }).join(), /read-only/);
   assert.match(drift({ HostConfig: { SecurityOpt: [] } }).join(), /no-new-privileges/);
   assert.match(drift({ HostConfig: { PidsLimit: 0 } }).join(), /pids limit/);
+  assert.match(drift({ HostConfig: { Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }] } }).join(), /ulimit nproc is not 512:512/);
   assert.match(drift({ HostConfig: { Privileged: true } }).join(), /privileged/);
   assert.match(drift({ HostConfig: { ExtraHosts: ['host.internal:host-gateway'] } }).join(), /host entries/);
   assert.match(drift({ HostConfig: { PidMode: 'host' } }).join(), /host namespace/);

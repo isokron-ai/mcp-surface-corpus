@@ -121,7 +121,7 @@ const RULES = {
   },
   'fork-bomb': (ev) => {
     const p = (ev.trace && ev.trace.process) || { clones: 0, clone_failed: 0 };
-    const limit = ev.pidsLimit ?? Number(LIMITS.pids);
+    const limit = ev.pidsLimit ?? Number(LIMITS.nproc);
     const worked = p.clones - p.clone_failed;
     const said = ev.report && ev.report.result && ev.report.result.bomb ? Number(ev.report.result.bomb.forked) : 0;
     const blocked = p.clone_failed >= 1 && worked < limit && !(said >= limit);
