@@ -1,0 +1,53 @@
+{
+  "about": "The pinned gVisor (runsc) release, the flags every runsc container gets, the syscall families runsc traces, and the paths the trace summary treats as expected. scripts/install-runsc.sh installs exactly this bundle (sha512 checked, nothing else accepted) and registers it as the Docker runtime 'runsc'; src/runsc.mjs turns this file into runsc flags and summarises the traces. Recorded 21 Nov 2026; change only by a reviewed commit.",
+  "release": "20261116.0",
+  "runtime": "runsc",
+  "bundles": {
+    "x86_64": {
+      "url": "https://storage.googleapis.com/gvisor/releases/release/20261116.0/x86_64/gvisor.tar.bz2",
+      "sha512": "c87d792d5842efb70c38ee822124cfe0821a547715e7abcf3f2b14997cd02784edaa0b91e238ec5c27a25a1b9e00bf98113398eb62a0778d8d20d4e222f8b0e0"
+    },
+    "aarch64": {
+      "url": "https://storage.googleapis.com/gvisor/releases/release/20261116.0/aarch64/gvisor.tar.bz2",
+      "sha512": "a64ce2d5ba6825a0a6459ee6a9ce40164749c2d276a945b885673988c4e545e66b2f4ef3a08e068a26cca676061c8c5e8ba982156feb786f0eab995f5b8b854d"
+    }
+  },
+  "install_dir": "/usr/local/lib/isokron-gvisor",
+  "log_dir": "/var/log/isokron-runsc",
+  "flags": {
+    "network": "sandbox",
+    "net-raw": "false",
+    "debug-command": "boot",
+    "debug-log-format": "text"
+  },
+  "strace": {
+    "log_size": 256,
+    "families": {
+      "file": ["openat", "open", "creat", "unlinkat", "unlink", "renameat2", "renameat", "rename", "mkdirat", "mkdir", "symlinkat", "symlink", "linkat", "link", "fchmodat", "chmod", "truncate", "mknodat", "mknod"],
+      "process": ["execve", "execveat", "clone", "clone3", "fork", "vfork", "kill", "tgkill", "setuid", "setgid", "setresuid", "setresgid", "setgroups", "prctl"],
+      "network": ["socket", "socketpair", "connect", "bind", "listen", "sendto", "sendmsg"],
+      "privileged": ["mount", "umount2", "pivot_root", "chroot", "ptrace", "unshare", "setns", "capset", "init_module", "finit_module", "delete_module", "kexec_load", "bpf", "perf_event_open", "keyctl", "add_key", "request_key", "reboot", "swapon", "swapoff", "sethostname", "setdomainname", "iopl", "ioperm", "personality", "open_by_handle_at", "acct", "settimeofday", "clock_settime", "syslog"]
+    },
+    "amd64_only": ["open", "creat", "unlink", "rename", "mkdir", "symlink", "link", "chmod", "mknod", "fork", "vfork", "iopl", "ioperm"]
+  },
+  "summary": {
+    "read_ok": ["/work/", "/tmp/", "/opt/surface/", "/usr/", "/lib/", "/lib64/", "/bin/", "/sbin/", "/etc/", "/proc/self/", "/proc/thread-self/", "/proc/meminfo", "/proc/cpuinfo", "/proc/stat", "/proc/filesystems", "/proc/sys/kernel/", "/proc/sys/vm/", "/sys/fs/cgroup/", "/sys/devices/system/cpu/", "/dev/null", "/dev/zero", "/dev/urandom", "/dev/random", "/dev/tty", "/dev/pts/", "/dev/shm/", "/app/", "/srv/", "/opt/", "/home/"],
+    "write_ok": ["/work/", "/tmp/", "/dev/null", "/dev/tty", "/dev/pts/", "/dev/shm/", "/proc/self/fd/"],
+    "credential": [
+      "^/proc/(?:[0-9]+|self|thread-self)/environ$",
+      "^/proc/1/",
+      "^/etc/(?:shadow|gshadow|sudoers)",
+      "^/root/",
+      "/\\.(?:ssh|aws|kube|docker|gnupg)/",
+      "/\\.config/(?:gcloud|gh)/",
+      "/\\.(?:npmrc|pypirc|netrc|git-credentials|env)$",
+      "^/(?:var/)?run/(?:docker\\.sock|secrets/|containerd/)",
+      "^/var/lib/docker/",
+      "^/proc/(?:kcore|kallsyms|sys/kernel/core_pattern)$",
+      "^/dev/(?:mem|kmem|port)$",
+      "^/sys/kernel/",
+      "^/home/runner/",
+      "^/(?:github|_work|runner)/"
+    ]
+  }
+}

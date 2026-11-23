@@ -3,15 +3,20 @@
 #   test        the unit tests on Node 22 and 24 (target list, sandbox flags, probe, static reader,
 #               aggregate and its disclosure rules, the workflows themselves), the engine's vendored
 #               hashes, and shellcheck over scripts/ and bin/
-#   example     the sandbox tests against the runner's Docker, then the whole pipeline, end to end, on
-#               the public example list (three reference servers from modelcontextprotocol/servers):
-#               real containers, the allowlist proxy, the probe, the engine, encryption to
-#               recipients.txt, the aggregate. No secret is used
+#   example     gVisor (scripts/install-runsc.sh) and the network guard, the sandbox tests against the
+#               runner's Docker, then the whole pipeline, end to end, on the public example list (three
+#               reference servers from modelcontextprotocol/servers): real containers under runsc, the
+#               allowlist proxy, the probe, the engine, encryption to recipients.txt, the aggregate.
+#               No secret is used
 #   ci-ok       passes only if every job above succeeded: the one required status check
 #
-# No secrets, a read-only token, no pull_request_target: a pull request from a fork runs with the
-# same permissions as any other. The example's results are public by design (its three targets are
-# named in targets/example.targets.json); the real list never runs here.
+# The hostile-target self test is its own workflow, sandbox-selftest.yml (pull requests that touch
+# the sandbox, and by hand).
+#
+# No secrets, a token with no permission but contents: read where a job checks out, no
+# pull_request_target: a pull request from a fork runs with the same permissions as any other. The
+# example's results are public by design (its three targets are named in
+# targets/example.targets.json); the real list never runs here.
 
 name: ci
 
@@ -20,8 +25,7 @@ on:
   push:
     branches: [main]
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,6 +39,8 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -61,6 +67,8 @@ jobs:
   example:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -71,6 +79,10 @@ jobs:
           package-manager-cache: false
       - name: Install age
         run: scripts/install-age.sh
+      # Every target container runs under runsc and the driver refuses to start without it. Before
+      # net-guard.sh: registering runsc restarts the Docker daemon.
+      - name: Install gVisor
+        run: sudo scripts/install-runsc.sh "$(command -v node)"
       - name: Guard the container networks
         run: sudo scripts/net-guard.sh
       # The sandbox against the runner's Docker: stdio, http, a server that needs an env value, a server
@@ -105,6 +117,7 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Every job succeeded
         env:
