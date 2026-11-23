@@ -124,8 +124,8 @@ async function smoke(dk, { cfg, image, cmd, expect, tel, labels, deadlineMs, tra
  * Checks the sandbox before anything runs in it, and records what it found (`runtime`, the smoke
  * container's `settings`, `container` and `trace_summary`). { ok, reason, detail, hostLog }: when ok
  * is false a `skip` record with the reason is written and the caller must not run anything. An
- * unreadable kernel log stops the run only when needHostLog is set (the self test needs the drops
- * as evidence; the corpus records the skip and goes on).
+ * unreadable kernel log stops the run only when needHostLog is set (the self test and the corpus's
+ * ci lane need the drops as evidence; the local lane records the skip and goes on).
  */
 export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels = {}, readResolv, readLog = readHostLog, needHostLog = true, deadlineMs = 180_000, traceWaitMs = 5000 }) {
   const skip = (reason, detail) => tel.write('skip', { reason, detail: String(detail).slice(0, 300) });

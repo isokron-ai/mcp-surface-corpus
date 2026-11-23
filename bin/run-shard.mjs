@@ -198,15 +198,22 @@ async function recordContainer(ctx, { id, ins = null, t0, exit = null, signal = 
   const code = st ? (st.Running ? null : st.ExitCode) : exit;
   ctx.tel.write('container', { runtime, exit: Number.isInteger(code) ? code : null, signal: signal ? String(signal).slice(0, 20) : null, timed_out: !!timedOut, oom_killed: st ? !!st.OOMKilled : null, ms: Date.now() - t0 }, meta);
   if (summary) ctx.tel.tryWrite('trace_summary', { summary }, { source: 'runsc', ...meta });
-  else ctx.tel.write('skip', { reason: 'trace_unavailable', detail: 'runsc wrote no syscall trace for this container' }, meta);
+  else {
+    ctx.tel.write('skip', { reason: 'trace_unavailable', detail: 'runsc wrote no syscall trace for this container' }, meta);
+    if (ctx.missing) ctx.missing.push(`a syscall trace (${meta.role ?? 'container'})`);
+  }
 }
 
-/** The host firewall's drops for the sandbox range since t0 (milliseconds), as `host_drop` records. */
+/**
+ * The host firewall's drops for the sandbox range since t0 (milliseconds), as `host_drop` records.
+ * false when the kernel log could not be read (or was known to be unreadable from the start).
+ */
 function recordDrops(ctx, t0, subject) {
-  if (!ctx.hostLog) return;
+  if (!ctx.hostLog) return false;
   const log = ctx.readLog(Math.floor(t0 / 1000) - 1);
-  if (!log.ok) return;
+  if (!log.ok) { ctx.tel.write('skip', { reason: 'host_log_unavailable', detail: 'the kernel log could not be read for this target' }, { subject }); return false; }
   writeDrops(ctx.tel, hostDropsFor(log.text, { since: t0 / 1000, until: Date.now() / 1000 }), { subject, roles: { ...rolesOn('install'), ...rolesOn('run') } });
+  return true;
 }
 
 /**
@@ -288,6 +295,10 @@ async function runTarget(t, list, ctx, dk) {
   const lbl = dk.labels(id);
   const helper = (o, opts = {}) => tdk.d(helperRunArgs({ name: dk.name(id, 'h'), image: ctx.images.node24, labels: lbl, cpus: ctx.cpus, ...o }), opts);
   const timedOut = () => Date.now() >= deadline;
+  // Evidence the sandbox could not give for this target (a syscall trace, the firewall's log). On the
+  // ci lane any of it missing makes the target a harness error whose row is left out.
+  const missing = [];
+  ctx.missing = missing;
 
   try {
     // 1. Repository facts and the commit (host fetch, fixed hosts).
@@ -493,8 +504,19 @@ async function runTarget(t, list, ctx, dk) {
   } finally {
     try { await dk.sweep(id); } catch { /* the shard's last sweep runs too */ }
     // What the host firewall dropped while this target ran, and the traces of our helpers (not summarised).
-    try { recordDrops(ctx, t0, id); } catch (e) { appendFileSync(join(ctx.out, '_shard', 'driver-errors.log'), `${id}: host drops: ${String(e && e.message).slice(0, 300)}\n`); }
+    let drops = false;
+    try { drops = recordDrops(ctx, t0, id); } catch (e) { appendFileSync(join(ctx.out, '_shard', 'driver-errors.log'), `${id}: host drops: ${String(e && e.message).slice(0, 300)}\n`); }
+    if (!drops && ctx.hostLog !== false) missing.push('the host firewall log');
     sweepTraces(ctx.cfg, t0);
+    ctx.missing = null;
+  }
+  // Fail closed on the ci lane: a target whose sandbox evidence is incomplete is a harness error, and
+  // its row stays out of the results (the record keeps why).
+  const excluded = ctx.lane === 'ci' && missing.length > 0;
+  if (excluded) {
+    rec.errors.push({ step: 'evidence', error: `missing ${[...new Set(missing)].join(', ')}`.slice(0, 300), harness: true });
+    rec.public_exit = 125;
+    rec.excluded = 'sandbox evidence missing';
   }
   timing.total_ms = Date.now() - t0;
   rec.timing = timing;
@@ -503,8 +525,10 @@ async function runTarget(t, list, ctx, dk) {
   const state = buildState({ id, row, analysis, sha: facts ? facts.sha : null, resolved });
   rec.row = row;
   keep('record.json', rec);
-  appendFileSync(join(ctx.out, '_shard', 'rows.jsonl'), `${JSON.stringify(row)}\n`);
-  appendFileSync(join(ctx.out, '_shard', 'state.jsonl'), `${JSON.stringify(state)}\n`);
+  if (!excluded) {
+    appendFileSync(join(ctx.out, '_shard', 'rows.jsonl'), `${JSON.stringify(row)}\n`);
+    appendFileSync(join(ctx.out, '_shard', 'state.jsonl'), `${JSON.stringify(state)}\n`);
+  }
   return rec.public_exit;
 }
 
@@ -545,7 +569,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     await prepare(ctx, dk);
     // Nothing runs unless gVisor is there: no runsc with our flags, no resolv.conf, no smoke container
     // under runsc as 65534, no trace: a skip record, a harness error, and no fallback.
-    const pf = await preflight(dk, { cfg, arch: arch(), image: ctx.images.node24, cmd: ['node', '-e', 'console.log(process.getuid(), process.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readResolv, readLog, needHostLog: false, traceWaitMs });
+    const pf = await preflight(dk, { cfg, arch: arch(), image: ctx.images.node24, cmd: ['node', '-e', 'console.log(process.getuid(), process.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readResolv, readLog, needHostLog: o.lane === 'ci', traceWaitMs });
     checked = true;
     Object.assign(shard.sandbox, { ok: pf.ok, reason: pf.reason, host_log: pf.hostLog });
     if (!pf.ok) throw new HarnessError(`the sandbox is not there (${pf.reason}): ${pf.detail}`);

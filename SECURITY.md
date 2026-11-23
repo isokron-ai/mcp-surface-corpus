@@ -123,6 +123,9 @@ Network:
   network; all traffic from Docker bridges to the runner itself; and the same for IPv6. It refuses to
   proceed if `DOCKER-USER` is not in the forward path or an `ACCEPT` comes before it, and writes the
   resolv.conf files. The kernel log lines (prefixes `isk-sbx-*`) are read back into the telemetry.
+  On the `ci` lane the corpus fails closed: a kernel log it cannot read stops the shard at the
+  preflight, and a target whose containers left no syscall trace, or whose window of the kernel log
+  cannot be read, is a harness error (exit 125) and its row is left out of the results.
 - Docker Engine 26.0.0 or later is required (older `--internal` networks resolved outside names,
   CVE-2024-29018).
 

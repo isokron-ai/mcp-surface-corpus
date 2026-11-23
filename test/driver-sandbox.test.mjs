@@ -47,7 +47,7 @@ class FakeDocker extends Docker {
 }
 
 /** The daemon: every runsc container leaves a trace in logDir, as runsc would. */
-function daemon({ logDir, flags }) {
+function daemon({ logDir, flags, noTrace = null }) {
   const nets = new Map();
   const box = new Map();
   let n = 0;
@@ -65,7 +65,7 @@ function daemon({ logDir, flags }) {
       const cmd = argv.join(' ');
       const what = /netlog\.mjs/.test(cmd) ? 'netlog' : /egress-proxy\.mjs/.test(cmd) ? 'proxy' : name.includes('-smoke') ? 'smoke' : val(argv, '--ip') === NETS.run.target ? 'server' : 'other';
       box.set(name, { id, what }); box.set(id, { id, what });
-      if (val(argv, '--runtime') === 'runsc') writeFileSync(join(logDir, `${id}.boot.log`), TRACE);
+      if (val(argv, '--runtime') === 'runsc' && what !== noTrace) writeFileSync(join(logDir, `${id}.boot.log`), TRACE);
       if (val(argv, '--cidfile')) writeFileSync(val(argv, '--cidfile'), `${id}`);
       if (argv.includes('--detach')) return { stdout: `${id}\n` };
       if (/npm-entry\.mjs/.test(cmd)) return { stdout: JSON.stringify({ script: '/work/pkg/node_modules/n/index.js', version: '1.2.3' }) };
@@ -95,13 +95,13 @@ function gnuTarOnPath(d) {
   return `${bin}:${process.env.PATH}`;
 }
 
-function setup({ flags = 'expected', hostLog = true } = {}) {
+function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = null, hostLogFailsAfter = Infinity } = {}) {
   const d = mkdtempSync(join(tmpdir(), 'surface-sbx-'));
   const logDir = join(d, 'runsc'); mkdirSync(logDir);
   const cfg = { ...loadRunscConfig(), log_dir: logDir };
   const want = runscFlags(cfg, arch());
   const box = { dk: null, probes: [], logReads: 0 };
-  const makeDocker = (o) => (box.dk = new FakeDocker(o, daemon({ logDir, flags: flags === 'expected' ? want : flags })));
+  const makeDocker = (o) => (box.dk = new FakeDocker(o, daemon({ logDir, flags: flags === 'expected' ? want : flags, noTrace })));
   // The stdio probe starts `docker run --interactive`; here it writes the cidfile and the trace as docker and runsc would.
   const probe = async (argv) => {
     box.probes.push(argv);
@@ -114,7 +114,7 @@ function setup({ flags = 'expected', hostLog = true } = {}) {
   const readResolv = (f) => resolvConf(f.endsWith('run.conf') ? 'run' : 'install');
   const readLog = () => {
     box.logReads++;
-    if (!hostLog) return { ok: false, text: '', via: null };
+    if (!hostLog || box.logReads > hostLogFailsAfter) return { ok: false, text: '', via: null };
     return { ok: true, text: `${(Date.now() / 1000).toFixed(6)} runner kernel: isk-sbx-fwd: IN=br-1 OUT=eth0 SRC=10.213.53.3 DST=1.1.1.1 LEN=60 PROTO=TCP SPT=40000 DPT=443\n`, via: 'journalctl' };
   };
   const list = { format: 'isokron-surface-targets/1', defaults: { timeout_s: 120 }, targets: [
@@ -123,7 +123,7 @@ function setup({ flags = 'expected', hostLog = true } = {}) {
   ] };
   writeFileSync(join(d, 'targets.json'), JSON.stringify(list));
   const fetchFn = fakeFetch({ archives: { '*': tarGz({ 'README.md': '# n\n' }, { commit: SHA }) } });
-  return { d, cfg, logDir, box, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0 } };
+  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0 } };
 }
 
 async function runMain(s) {
@@ -133,7 +133,7 @@ async function runMain(s) {
   process.stdout.write = (x, ...r) => { if (typeof x === 'string' && /^run finished/.test(x)) { lines.push(x.trim()); return true; } return write(x, ...r); };
   process.env.PATH = s.path;
   let rc;
-  try { rc = await D.main(['--targets', join(s.d, 'targets.json'), '--out', s.out], s.opts); } finally { process.stdout.write = write; process.env.PATH = path; }
+  try { rc = await D.main(['--targets', join(s.d, 'targets.json'), '--out', s.out, '--lane', s.lane], s.opts); } finally { process.stdout.write = write; process.env.PATH = path; }
   const tel = readTelemetry(join(s.out, '_shard', 'telemetry.jsonl'));
   const shard = JSON.parse(readFileSync(join(s.out, '_shard', 'shard.json'), 'utf8'));
   return { rc, lines, tel, shard, by: (type, f = () => true) => tel.records.filter((r) => r.type === type && f(r)) };
@@ -245,4 +245,32 @@ test('a kernel log the driver cannot read is a skip, not a stop: the shard runs,
   assert.equal(s.box.logReads, 1, 'asked once, at the start');
   assert.equal(r.shard.sandbox.host_log, false);
   assert.equal(r.by('run_end')[0].ok, true);
+});
+
+test('the ci lane fails closed: a kernel log it cannot read stops the shard before any target runs', async () => {
+  const s = setup({ hostLog: false, lane: 'ci' });
+  const r = await runMain(s);
+  assert.equal(r.rc, 1);
+  assert.deepEqual(r.lines, ['run finished, exit 125']);
+  assert.deepEqual(r.by('skip').map((x) => x.reason), ['host_log_unavailable']);
+  assert.match(r.shard.harness_error, /host_log_unavailable/);
+  assert.equal(readFileSync(join(s.out, '_shard', 'rows.jsonl'), 'utf8'), '');
+});
+
+test('the ci lane fails closed: a target with no syscall trace, or no firewall log, is a harness error and its row is left out', async () => {
+  const s = setup({ lane: 'ci', noTrace: 'server' });
+  const r = await runMain(s);
+  assert.equal(r.rc, 1);
+  const rows = readFileSync(join(s.out, '_shard', 'rows.jsonl'), 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l).id);
+  assert.deepEqual(rows, ['s001'], 's002 ran its http server without a trace: no row');
+  const rec2 = JSON.parse(readFileSync(join(s.out, 's002', 'record.json'), 'utf8'));
+  assert.deepEqual([rec2.public_exit, rec2.excluded], [125, 'sandbox evidence missing']);
+  assert.match(rec2.errors.find((e) => e.step === 'evidence').error, /syscall trace \(server\)/);
+  assert.equal(r.shard.results.s002, 125);
+
+  const h = setup({ lane: 'ci', hostLogFailsAfter: 1 });
+  const rh = await runMain(h);
+  assert.equal(rh.rc, 1);
+  assert.equal(readFileSync(join(h.out, '_shard', 'rows.jsonl'), 'utf8'), '', 'no target row without the firewall log');
+  assert.match(JSON.parse(readFileSync(join(h.out, 's001', 'record.json'), 'utf8')).errors.find((e) => e.step === 'evidence').error, /host firewall log/);
 });
