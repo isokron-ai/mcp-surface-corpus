@@ -116,7 +116,8 @@ async function runCase(name, ctx) {
   try {
     const network = await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
     const work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
-    await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', 'chown 65534:65534 /work && chmod 0750 /work'] }), { deadline: Date.now() + 120_000 }), 'work volume');
+    // chmod before chown: once /work belongs to 65534, root without CAP_FOWNER may no longer change its mode.
+    await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', 'chmod 0750 /work && chown 65534:65534 /work'] }), { deadline: Date.now() + 120_000 }), 'work volume');
     netlog = await startNetlogOn(dk, { net: 'run', network, image: images.node22, toolsVol: ctx.toolsVol, labels: lbl, target: name });
     canary = await listenCanary(NETS.run.gateway, CANARY_PORT);
     extra.canary_bound = canary.bound;
@@ -188,7 +189,7 @@ async function runCase(name, ctx) {
     tel.write('bypass_result', { case: name, ...v }, meta);
     return { case: name, ...v, ...extra };
   } catch (e) {
-    const v = { blocked: false, logged: false, pass: false, evidence: [], detail: `harness: ${String(e && e.message).slice(0, 300)}` };
+    const v = { blocked: false, logged: false, pass: false, evidence: [], detail: `harness: ${String(e && e.message).slice(0, 580)}` };
     tel.write('bypass_result', { case: name, ...v }, meta);
     return { case: name, ...v, ...extra };
   } finally {

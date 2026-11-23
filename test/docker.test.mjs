@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run } from '../src/docker.mjs';
+import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run, tailLine, STDERR_TAIL } from '../src/docker.mjs';
 import { decide, makeProxy } from '../sandbox/egress-proxy.mjs';
 import { connect } from 'node:net';
 
@@ -119,6 +119,16 @@ test('run(): keeps stdout up to the cap, kills at the deadline', async () => {
   const t = await run(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { deadline: Date.now() + 300 });
   assert.equal(t.timed_out, true);
   assert.ok(t.ms < 5000);
+});
+
+test('a failed harness step says why: the tail of its stderr, bounded and printable', async () => {
+  const r = await run(process.execPath, ['-e', `process.stderr.write("a".repeat(5000) + "\\nchmod: changing permissions of '/work': Operation not permitted\\n"); process.exit(1)`]);
+  assert.equal(r.exit, 1);
+  assert.ok(r.stderr_tail.length <= STDERR_TAIL);
+  const dk = new Docker({ runId: 'r1', env: {} });
+  await assert.rejects(dk.must(Promise.resolve(r), 'work volume'), (e) => e instanceof HarnessError && /^work volume failed \(exit 1\): \.\.\.a+ \| chmod: changing permissions of '\/work': Operation not permitted$/.test(e.message) && e.message.length < 460);
+  assert.equal(tailLine(Buffer.from('x\u001b[31my\r\n\n z\u0000 ')), 'x?[31my | z?');
+  await assert.rejects(dk.must(Promise.resolve({ exit: 2, stderr_tail: Buffer.alloc(0) }), 'volume create'), (e) => e.message === 'volume create failed (exit 2)');
 });
 
 test('egress proxy: only CONNECT to an allowlisted host name on port 443', async () => {

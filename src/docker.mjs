@@ -148,14 +148,24 @@ export function helperRunArgs({ name, image, network = 'none', mounts = [], env 
 
 /**
  * Runs a command with a deadline. stdout is kept (up to `cap` bytes) when keepStdout is set; stdout
- * and stderr also go to `log` (bounded) unless logStdout is false. Returns
- * { exit, signal, timed_out, stdout, stdout_bytes, stdout_truncated, ms }.
+ * and stderr also go to `log` (bounded) unless logStdout is false. The last STDERR_TAIL bytes of
+ * stderr are always kept, so a failed harness step can say why (HarnessError, Docker.must). Returns
+ * { exit, signal, timed_out, stdout, stdout_bytes, stdout_truncated, stderr_tail, ms }.
  */
+export const STDERR_TAIL = 2048;
+
+/** stderr as one bounded line for an error message: printable ASCII only, line breaks shown as ' | '. */
+export function tailLine(buf, max = 400) {
+  const t = Buffer.isBuffer(buf) ? buf.toString('utf8') : String(buf ?? '');
+  const line = t.replace(/\r?\n+/g, ' | ').replace(/[^\x20-\x7e]/g, '?').replace(/\s+/g, ' ').replace(/^[ |]+|[ |]+$/g, '');
+  return line.length > max ? `...${line.slice(-max)}` : line;
+}
+
 export function run(cmd, argv, { env, log = null, deadline = null, input = null, keepStdout = false, logStdout = true, cap = 64 * 1024 * 1024, logCap = 16 * 1024 * 1024, onTimeout = null } = {}) {
   return new Promise((done) => {
     const t0 = Date.now();
     let child;
-    try { child = spawn(cmd, argv, { env, stdio: ['pipe', 'pipe', 'pipe'] }); } catch (e) { return done({ exit: 127, signal: null, timed_out: false, stdout: Buffer.alloc(0), stdout_bytes: 0, stdout_truncated: false, ms: 0, spawn_error: e.message }); }
+    try { child = spawn(cmd, argv, { env, stdio: ['pipe', 'pipe', 'pipe'] }); } catch (e) { return done({ exit: 127, signal: null, timed_out: false, stdout: Buffer.alloc(0), stdout_bytes: 0, stdout_truncated: false, stderr_tail: Buffer.alloc(0), ms: 0, spawn_error: e.message }); }
     const chunks = []; let kept = 0; let total = 0; let logged = 0; let truncated = false; let timedOut = false; let timer = null;
     const toLog = (c) => { if (!log || logged >= logCap) return; const b = c.subarray(0, logCap - logged); logged += b.length; try { appendFileSync(log, b); } catch { /* the log is best effort */ } };
     child.stdout.on('data', (c) => {
@@ -163,10 +173,15 @@ export function run(cmd, argv, { env, log = null, deadline = null, input = null,
       if (keepStdout) { if (kept + c.length <= cap) { chunks.push(c); kept += c.length; } else truncated = true; }
       if (logStdout) toLog(c);
     });
-    child.stderr.on('data', toLog);
+    let errTail = Buffer.alloc(0);
+    child.stderr.on('data', (c) => {
+      errTail = Buffer.concat([errTail, c]);
+      if (errTail.length > STDERR_TAIL) errTail = errTail.subarray(errTail.length - STDERR_TAIL);
+      toLog(c);
+    });
     child.stdin.on('error', () => {});
-    child.on('error', (e) => { clearTimeout(timer); done({ exit: 127, signal: null, timed_out: false, stdout: Buffer.alloc(0), stdout_bytes: 0, stdout_truncated: false, ms: Date.now() - t0, spawn_error: e.message }); });
-    child.on('close', (code, signal) => { clearTimeout(timer); done({ exit: code, signal, timed_out: timedOut, stdout: Buffer.concat(chunks), stdout_bytes: total, stdout_truncated: truncated, ms: Date.now() - t0 }); });
+    child.on('error', (e) => { clearTimeout(timer); done({ exit: 127, signal: null, timed_out: false, stdout: Buffer.alloc(0), stdout_bytes: 0, stdout_truncated: false, stderr_tail: errTail, ms: Date.now() - t0, spawn_error: e.message }); });
+    child.on('close', (code, signal) => { clearTimeout(timer); done({ exit: code, signal, timed_out: timedOut, stdout: Buffer.concat(chunks), stdout_bytes: total, stdout_truncated: truncated, stderr_tail: errTail, ms: Date.now() - t0 }); });
     if (deadline !== null) {
       timer = setTimeout(async () => {
         timedOut = true;
@@ -192,9 +207,17 @@ export class Docker {
   name(target, what) { return `surface-${this.runId}-${target ?? 'shard'}-${what}${++this.counter.n}`; }
   d(argv, opts = {}) { return run('docker', argv, { env: this.env, log: this.log, ...opts }); }
 
+  /**
+   * A harness step that must succeed. Only our own commands go through here (docker itself and our
+   * helper containers, never a container that runs target code), so the failure carries the tail of
+   * their stderr: that is how a step that fails on a runner says why.
+   */
   async must(p, what) {
     const r = await p;
-    if (r.exit !== 0) throw new HarnessError(`${what} failed (exit ${r.exit}${r.timed_out ? ', time limit' : ''})`);
+    if (r.exit !== 0) {
+      const why = tailLine(r.stderr_tail || r.spawn_error || '');
+      throw new HarnessError(`${what} failed (exit ${r.exit}${r.timed_out ? ', time limit' : ''})${why ? `: ${why}` : ''}`);
+    }
     return r;
   }
 

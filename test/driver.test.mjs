@@ -100,7 +100,9 @@ test('sandbox, end to end: stdio, a server that needs an env value, http, static
   assert.equal(existsSync(join(d, 'targets.json')), false, 'the clear-text list is deleted before any target runs');
   assert.deepEqual(lines.filter((l) => l.startsWith('run finished')), Array(6).fill('run finished, exit 0'), 'the public lines carry no id and no verdict');
   const rows = Object.fromEntries(readFileSync(join(out, '_shard', 'rows.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).map((r) => [r.id, r]));
-  // s001: starts bare; static and live disagree in a known way.
+  // s001: starts bare; static and live disagree in a known way. On a failure, say why: the record's errors.
+  const why = (id) => JSON.stringify(JSON.parse(readFileSync(join(out, id, 'record.json'), 'utf8')).errors);
+  assert.ok(rows.s001.live, `s001 has no live result: ${why('s001')}`);
   assert.deepEqual([rows.s001.acquired, rows.s001.live.starts_without_env, rows.s001.size.tools], ['live', true, 2]);
   assert.deepEqual([rows.s001.static_vs_live.shared, rows.s001.static_vs_live.only_live, rows.s001.static_vs_live.only_static], [1, 1, 1]);
   assert.deepEqual([rows.s001.repo.stars, rows.s001.repo.licence, rows.s001.sdk.id, rows.s001.sdk.kind], [1234, 'MIT', 'typescript-sdk', 'declared']);
