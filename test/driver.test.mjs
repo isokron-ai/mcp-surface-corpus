@@ -7,7 +7,9 @@ import { join } from 'node:path';
 import { fakeFetch, tarGz } from './helpers.mjs';
 import { githubFacts, registryEntry, sourceArchive } from '../src/sources.mjs';
 
-process.env.SURFACE_PROBE_MS = '6000';
+// Short, so the hang case ends soon, but long enough for a node server to start under gVisor with
+// syscall tracing on (about 3 s on a hosted runner) and then try three ways out.
+process.env.SURFACE_PROBE_MS = '15000';
 const D = await import('../bin/run-shard.mjs');
 const SHA = 'c'.repeat(40);
 
