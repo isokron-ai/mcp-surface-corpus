@@ -162,7 +162,7 @@ for (const [what, flags, reason] of [['no runsc runtime', null, 'runtime_unavail
   });
 }
 
-test('a shard in the sandbox: runsc for every container, the egress proxy too, fixed addresses, our resolv.conf, and the run telemetry', async () => {
+test('R-SBX-07 a shard in the sandbox: runsc for every container, the egress proxy too, fixed addresses, our resolv.conf, and the run telemetry', async () => {
   const s = setup();
   const r = await runMain(s);
   assert.equal(r.rc, 0);
@@ -254,7 +254,7 @@ test('a kernel log the driver cannot read is a skip, not a stop: the shard runs,
   assert.equal(r.by('run_end')[0].ok, true);
 });
 
-test('the ci lane fails closed: a kernel log it cannot read stops the shard before any target runs', async () => {
+test('R-SBX-03 the ci lane fails closed: a kernel log it cannot read stops the shard before any target runs', async () => {
   const s = setup({ hostLog: false, lane: 'ci' });
   const r = await runMain(s);
   assert.equal(r.rc, 1);
@@ -264,7 +264,7 @@ test('the ci lane fails closed: a kernel log it cannot read stops the shard befo
   assert.equal(readFileSync(join(s.out, '_shard', 'rows.jsonl'), 'utf8'), '');
 });
 
-test('the ci lane fails closed: a target with no syscall trace, or no firewall log, is a harness error and its row is left out', async () => {
+test('R-SBX-03 the ci lane fails closed: a target with no syscall trace, or no firewall log, is a harness error and its row is left out', async () => {
   const s = setup({ lane: 'ci', noTrace: 'server' });
   const r = await runMain(s);
   assert.equal(r.rc, 1);

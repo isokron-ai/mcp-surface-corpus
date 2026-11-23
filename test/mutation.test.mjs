@@ -71,7 +71,7 @@ function mutated(protection, { preflight = null, ev = null, ended = true, harnes
   return f;
 }
 
-test('a mutated run counts only when it failed for the reason its protection explains', () => {
+test('R-MUT-00 a mutated run counts only when it failed for the reason its protection explains', () => {
   // runc: the case ran, not under gVisor.
   const runc = GOOD['direct-ip'](); runc.inspect.runtime = 'runc'; runc.trace = null;
   assert.equal(checkMutation(mutated('runtime-runc', { ev: runc }), 'runtime-runc').ok, true);

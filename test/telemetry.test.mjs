@@ -88,7 +88,7 @@ test('docs/TELEMETRY.md documents every record type, field, source, role and ski
   for (const s of [...SOURCES, ...ROLES, ...SKIP_REASONS]) assert.match(doc, new RegExp(`\`${s}\``), s);
 });
 
-test('a container cannot stop the telemetry: its numbers are clamped, a refused record is counted and left out', () => {
+test('R-SBX-01 a container cannot stop the telemetry: its numbers are clamped, a refused record is counted and left out', () => {
   // CONNECT a.b:99999 through the proxy: the port is kept as null, and the record is valid.
   assert.equal(decide('a.b:99999', new Set()).port, null);
   const [t, f] = fromProxy({ host: 'a.b', port: 99999, allowed: false, error: 'port', up: -1 });
@@ -108,7 +108,7 @@ test('a container cannot stop the telemetry: its numbers are clamped, a refused 
   assert.deepEqual([back.bad.length, back.records.length], [0, 3]);
 });
 
-test('a trace summary is cut to fit a record, least telling lists first, by its JSON size', () => {
+test('R-SBX-01 a trace summary is cut to fit a record, least telling lists first, by its JSON size', () => {
   const ent = (i) => ({ path: `/x/${'\u0001'.repeat(190)}${i}`, op: 'write', call: 'openat', n: 1, failed: 1, errno: 13 });
   const big = (n) => Array.from({ length: n }, (_, i) => ent(i));
   const s = { format: 'isokron-trace-summary/1', opens_outside: big(160), credential_paths: big(40), exec: big(40), network: { sockets: [], connects: big(40), sends: big(40), binds: [], dns_names: [] }, privileged: [], omitted: {} };

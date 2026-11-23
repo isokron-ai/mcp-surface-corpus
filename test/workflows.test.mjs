@@ -117,7 +117,7 @@ test('corpus: the loop guard comes first in the plan; nothing else runs, and no 
   assert.match(job(y, 'aggregate'), /\n    if: always\(\) && needs\.plan\.result == 'success' && needs\.plan\.outputs\.go == 'true' && github\.repository == /);
 });
 
-test('corpus: each shard installs gVisor, then guards the networks, then decrypts the list, then runs', () => {
+test('R-SBX-06 corpus: each shard installs gVisor, guards the networks, passes the self test, then decrypts the list and runs', () => {
   const s = job(code(WF['corpus.yml']), 'shard');
   const at = (x) => { const i = s.indexOf(x); assert.ok(i >= 0, x); return i; };
   assert.match(s, /run: sudo scripts\/install-runsc\.sh "\$\(command -v node\)"/);
@@ -296,7 +296,7 @@ test('the loop guard: one block, the same in corpus and sandbox-selftest; nothin
   for (const [env, want] of ons) assert.equal(run(env).out, want, JSON.stringify(env));
 });
 
-test('sandbox-selftest: a mutation job turns off each protection in turn and must see the self test fail for that reason', async () => {
+test('R-MUT-00 sandbox-selftest: a mutation job turns off each protection in turn and must see the self test fail for that reason', async () => {
   const { MUTATIONS } = await import('../bin/sandbox-selftest.mjs');
   const { EXPECT } = await import('../scripts/check-mutation.mjs');
   const m = job(code(WF['sandbox-selftest.yml']), 'mutation');

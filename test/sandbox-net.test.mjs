@@ -126,7 +126,7 @@ test('net-guard: stops before changing anything when forwarded traffic would ski
   if (spawnSync('bash', ['-c', 'command -v iptables'], { env: { PATH: '/usr/bin:/bin' } }).status !== 0) assert.match(noIp6.stdout, /^harness error: iptables not found/);
 });
 
-test('the firewall is checked live: every chain net-guard.sh makes, and every jump to it', () => {
+test('R-SBX-05 the firewall is checked live: every chain net-guard.sh makes, and every jump to it', () => {
   const cfg = loadCfg();
   assert.deepEqual(firewallProblems(fakeHostRun(cfg)), []);
   const bad = (drop) => firewallProblems(fakeHostRun(cfg, { drop }));
@@ -138,4 +138,13 @@ test('the firewall is checked live: every chain net-guard.sh makes, and every ju
   const accept = (cmd, argv) => (argv.includes('FORWARD') && (cmd === 'iptables' || argv[1] === 'iptables') ? { status: 0, stdout: '-P FORWARD DROP\n-A FORWARD -j ACCEPT\n-A FORWARD -j DOCKER-USER' } : fakeHostRun(cfg)(cmd, argv));
   assert.match(firewallProblems(accept).join(), /accepts traffic before DOCKER-USER/);
   assert.equal(firewallProblems(() => ({ status: 1 })).length > 0, true, 'nothing readable is not live');
+});
+
+test('R-CI-07 iptables -S prints a LOG rule without --log-level when it is the default: that is still net-guard.sh\'s chain', () => {
+  const cfg = loadCfg();
+  const with4 = (cmd, argv) => { const r = fakeHostRun(cfg)(cmd, argv); return { ...r, stdout: String(r.stdout).replace(/(--log-prefix "isk-sbx-[a-z0-9]+: ")$/gm, '$1 --log-level 4') }; };
+  assert.deepEqual(firewallProblems(fakeHostRun(cfg)), [], 'without --log-level, as the runner prints it');
+  assert.deepEqual(firewallProblems(with4), [], 'with --log-level 4');
+  const other = (cmd, argv) => { const r = fakeHostRun(cfg)(cmd, argv); return { ...r, stdout: String(r.stdout).replace(/(--log-prefix "isk-sbx-in: ")$/m, '$1 --log-level 7') }; };
+  assert.match(firewallProblems(other).join(), /ISK-SBX-IN is not the chain/);
 });

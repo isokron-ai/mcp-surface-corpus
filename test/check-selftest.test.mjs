@@ -105,13 +105,13 @@ test('check-selftest: the command line prints one line per case and exits 1 on a
   assert.equal(run(join(tmpdir(), 'chk-empty.jsonl')).status, 1);
 });
 
-test('check-selftest: evidence the schema refused and left out fails the run', () => {
+test('R-SBX-01 check-selftest: evidence the schema refused and left out fails the run', () => {
   const r = checkSelftest(telemetry({ dropped: 2 }));
   assert.equal(r.ok, false);
   assert.ok(r.lines.some((l) => /2 record\(s\) of evidence were refused/.test(l)), r.lines.join('\n'));
 });
 
-test('check-selftest: the verdict comes from the evidence; a harness that says pass cannot make one', () => {
+test('R-SBX-08 check-selftest: the verdict comes from the evidence; a harness that says pass cannot make one', () => {
   const r = checkSelftest(telemetry({ tweak: { metadata: { blocked: false, harness: true } } }));
   assert.equal(r.ok, false);
   assert.ok(r.lines.some((l) => /^metadata: FAIL \(not blocked/.test(l)), r.lines.join('\n'));
@@ -119,7 +119,7 @@ test('check-selftest: the verdict comes from the evidence; a harness that says p
   assert.equal(v.ok, false, 'a harness verdict that is not a pass still vetoes');
 });
 
-test('check-selftest: the host firewall must have been checked live at the preflight', () => {
+test('R-SBX-05 check-selftest: the host firewall must have been checked live at the preflight', () => {
   for (const firewall of [false, null]) {
     const r = checkSelftest(telemetry({ firewall }));
     assert.equal(r.ok, false, String(firewall));
@@ -127,7 +127,7 @@ test('check-selftest: the host firewall must have been checked live at the prefl
   }
 });
 
-test('check-selftest: a case whose evidence a log or rate limit cut short fails', () => {
+test('R-SBX-04 check-selftest: a case whose evidence a log or rate limit cut short fails', () => {
   const r = checkSelftest(telemetry({ tweak: { 'docker-host': { limits: ['firewall ISK-SBX-IN: 4 drop(s) not logged (rate limit)'] } } }));
   assert.equal(r.ok, false);
   assert.ok(r.lines.some((l) => /^docker-host: FAIL .*rate limit/.test(l)), r.lines.join('\n'));

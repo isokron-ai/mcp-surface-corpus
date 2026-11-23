@@ -76,7 +76,7 @@ const HTTP = `const T=[${TOOL('get_thing')}];require('http').createServer((q,s)=
 // Reports through its tool name whether it could reach the outside or the host from inside the sandbox.
 const NET = `async()=>{const tryIt=async(u)=>{try{await fetch(u,{signal:AbortSignal.timeout(1500)});return true}catch{return false}};const out=await tryIt('https://registry.npmjs.org/-/ping')||await tryIt('http://169.254.169.254/')||await tryIt('http://host.docker.internal/');let w='ro';try{require('fs').writeFileSync('/etc/x','x');w='rw'}catch{}return[{name:(out?'net_open':'net_blocked')+'_root_'+w+'_uid_'+process.getuid(),description:'Probe.',inputSchema:{type:'object'}}]}`;
 
-test('sandbox, end to end: stdio, a server that needs an env value, http, static only, no network, a hang', { skip: !docker && 'set SURFACE_DOCKER_TESTS=1 (needs Docker)' }, async () => {
+test('R-CI-05 sandbox, end to end: stdio, a server that needs an env value, http, static only, no network, a hang', { skip: !docker && 'set SURFACE_DOCKER_TESTS=1 (needs Docker)' }, async () => {
   const images = D.loadImages(new URL('../images.json', import.meta.url).pathname);
   const image = images.node24;
   const d = mkdtempSync(join(tmpdir(), 'surface-drv-'));

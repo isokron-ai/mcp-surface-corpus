@@ -116,6 +116,12 @@ export function mutateHost(disable, run = spawnSync) {
   return cmds.every((c) => run('sudo', ['-n', ...c], { encoding: 'utf8', timeout: 30_000 }).status === 0);
 }
 
+/**
+ * The helper's command that hands the case its work volume (as root, with CAP_CHOWN only): chmod
+ * first, because once /work belongs to 65534, root without CAP_FOWNER may no longer change its mode.
+ */
+export const WORK_VOLUME_CMD = 'chmod 0750 /work && chown 65534:65534 /work';
+
 /** The env the hostile target gets: what any target gets, nothing of the runner's. */
 const CASE_ENV = { HOME: P.home, TMPDIR: '/tmp', NO_COLOR: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUNBUFFERED: '1', SURFACE_SANDBOX: '1' };
 
@@ -167,8 +173,7 @@ async function runCase(name, ctx) {
       ? await externalRunNetwork(dk, `surface-${dk.runId}-${name}-run`, name)
       : await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
     const work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
-    // chmod before chown: once /work belongs to 65534, root without CAP_FOWNER may no longer change its mode.
-    await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', 'chmod 0750 /work && chown 65534:65534 /work'] }), { deadline: Date.now() + 120_000 }), 'work volume');
+    await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', WORK_VOLUME_CMD] }), { deadline: Date.now() + 120_000 }), 'work volume');
     netlog = await startNetlogOn(dk, { net: 'run', network, image: images.node22, toolsVol: ctx.toolsVol, labels: lbl, target: name });
     canary = await listenCanary(NETS.run.gateway, CANARY_PORT);
     extra.canary_bound = canary.bound;

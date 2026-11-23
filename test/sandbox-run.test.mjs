@@ -204,7 +204,7 @@ test('sweepTraces: removes the run\'s leftover traces (helpers\' too), nothing o
   assert.equal(sweepTraces({ ...cfg, log_dir: join(d, 'missing') }, 0), 0);
 });
 
-test('a trace that grows past its limit, or a trace filesystem running short, stops the containers', async () => {
+test('R-SBX-02 a trace that grows past its limit, or a trace filesystem running short, stops the containers', async () => {
   const d = mkdtempSync(join(tmpdir(), 'tw-'));
   const cfg = { ...loadRunscConfig(), log_dir: d, trace_max_mb: 1 / 1024 }; // 1 KiB, for the test
   const roomy = () => ({ bsize: 4096, blocks: 1e6, bavail: 1e6 });
@@ -224,7 +224,7 @@ test('a trace that grows past its limit, or a trace filesystem running short, st
   assert.ok(full.overflow(), 'a trace filesystem with no room left counts as an overflow');
 });
 
-test('the trace folder must be its own filesystem of the pinned size, and a target needs room to run', () => {
+test('R-SBX-02 the trace folder must be its own filesystem of the pinned size, and a target needs room to run', () => {
   const cfg = loadRunscConfig();
   const own = () => ({ bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 });
   const rootFs = () => ({ bsize: 4096, blocks: 20 * 1024 * 256 * 10, bavail: 1e7 });
@@ -236,7 +236,7 @@ test('the trace folder must be its own filesystem of the pinned size, and a targ
   assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 1e7 } : { bsize: 4096, bavail: 1 }) }), /trace filesystem has less room/);
 });
 
-test('the strict preflight checks the host live: the pinned runsc in its place, the trace filesystem, the firewall', async () => {
+test('R-SBX-05 the strict preflight checks the host live: the pinned runsc in its place, the trace filesystem, the firewall', async () => {
   const own = (cfg) => () => ({ bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 });
   const s = setup();
   const r = await preflight(s.dk, { ...s.opts, strict: true, statfs: own(s.cfg), run: fakeHostRun(s.cfg) });
@@ -251,7 +251,7 @@ test('the strict preflight checks the host live: the pinned runsc in its place, 
   assert.equal(installProblem(cfg, daemonWith(['x']), fakeHostRun(cfg)), null);
 });
 
-test('limits that cut evidence short are reported: firewall rate limit, logger line limit, a trace cut to fit', () => {
+test('R-SBX-04 limits that cut evidence short are reported: firewall rate limit, logger line limit, a trace cut to fit', () => {
   const fw0 = { 'ISK-SBX': { logged: 10, dropped: 10 }, 'ISK-SBX-IN': { logged: 5, dropped: 5 } };
   assert.deepEqual(limitsHit({ fw0, fw1: { 'ISK-SBX': { logged: 12, dropped: 12 }, 'ISK-SBX-IN': { logged: 5, dropped: 5 } } }), []);
   assert.deepEqual(limitsHit({ fw0, fw1: { 'ISK-SBX': { logged: 210, dropped: 900 }, 'ISK-SBX-IN': { logged: 5, dropped: 5 } } }), ['firewall ISK-SBX: 690 drop(s) not logged (rate limit)']);

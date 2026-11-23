@@ -105,7 +105,7 @@ test('a trace file is streamed; a missing one gives null', async () => {
   assert.equal(await summarizeTraceFile(join(d, 'missing.log'), cfg), null);
 });
 
-test('a file name with a line break cannot pass for a trace line unnoticed', () => {
+test('R-SBX-04 a file name with a line break cannot pass for a trace line unnoticed', () => {
   // runsc prints paths unquoted: the name below ends the real line and starts lines of its own.
   const forged = `x\nI1121 10:00:01.000000       1 strace.go:605] [   7:   7] python3 X connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10) = 0x0 (1ms)\n`;
   const lines = [L(7, 'python3', 'E', `openat(AT_FDCWD /work, 0x7f00 ${forged}, O_RDONLY, 0o0)`), L(7, 'python3', 'X', 'openat(AT_FDCWD /work, 0x7f00 y, O_RDONLY, 0o0)', '0x3 (1µs)')];
@@ -118,12 +118,9 @@ test('a file name with a line break cannot pass for a trace line unnoticed', () 
   assert.equal(parseStraceLine('[   7:   7] python3 X connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10) = 0x0'), null);
   const clean = summarizeTrace(TRACE, cfg);
   assert.deepEqual([clean.injection_suspected, clean.headerless_lines, clean.broken_lines, clean.target_influenced], [false, 0, 0, true]);
-  // runsc's own headerless block as the sandbox starts, before any call, is not a sign of forgery.
-  const boot = summarizeTrace(`{\n  "ociVersion": "1.0.0"\n}\n${TRACE}`, cfg);
-  assert.deepEqual([boot.injection_suspected, boot.headerless_before_calls, boot.headerless_lines], [false, 3, 0]);
 });
 
-test('a flood of refused calls cannot push out the one that worked', () => {
+test('R-SBX-04 a flood of refused calls cannot push out the one that worked', () => {
   const lines = [];
   for (let i = 0; i < 200; i++) lines.push(...call(1, 'x', `connect(0x3, 0x7f00 {Family: AF_INET, Addr: 10.0.${i >> 8}.${i & 255}, Port: 443}, 0x10)`, '0x0 errno=101 (network is unreachable) (1µs)'));
   lines.push(...call(1, 'x', 'connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10)', '0x0 (1ms)'));
@@ -131,4 +128,11 @@ test('a flood of refused calls cannot push out the one that worked', () => {
   assert.equal(s.network.connects.length, 5);
   assert.deepEqual([s.network.connects[0].addr, s.network.connects[0].failed], ['1.2.3.4', 0], 'the connection that worked comes first');
   assert.ok(s.omitted.connects > 0);
+});
+
+test('R-CI-06 runsc\'s own headerless block as the sandbox starts, before any call, is not taken for forgery', () => {
+  const boot = summarizeTrace(`{\n  "ociVersion": "1.0.0"\n}\n${TRACE}`, cfg);
+  assert.deepEqual([boot.injection_suspected, boot.headerless_before_calls, boot.headerless_lines], [false, 3, 0]);
+  const late = summarizeTrace(`${TRACE}\n{\n}`, cfg);
+  assert.equal(late.injection_suspected, true, 'after the first call it is');
 });

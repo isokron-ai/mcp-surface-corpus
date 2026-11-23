@@ -74,7 +74,7 @@ test('the target\'s report cannot make a case pass', () => {
   }
 });
 
-test('an outside address counts as blocked only on a definite refusal, never on a cut-short call', () => {
+test('R-SBX-08 an outside address counts as blocked only on a definite refusal, never on a cut-short call', () => {
   const g = (c, f) => { const ev = GOOD[c](); f(ev); return evaluateCase(c, ev); };
   for (const errno of [4, 512, 110]) {
     assert.equal(g('direct-ip', (ev) => { ev.trace.network.connects[0].errno = errno; }).blocked, false, `direct-ip errno ${errno}`);
@@ -86,7 +86,7 @@ test('an outside address counts as blocked only on a definite refusal, never on 
   assert.equal(g('docker-host', () => {}).blocked, true, 'the host address: a timeout plus the drop log and the listener decide');
 });
 
-test('a trace a target may have shaped, or one cut short, cannot carry a verdict', () => {
+test('R-SBX-04 a trace a target may have shaped, or one cut short, cannot carry a verdict', () => {
   for (const c of CASES) {
     for (const bad of [{ injection_suspected: true, headerless_lines: 2, broken_lines: 1 }, { truncated: true }, { omitted_ok: { connects: 1 } }]) {
       const ev = GOOD[c]();
@@ -97,3 +97,29 @@ test('a trace a target may have shaped, or one cut short, cannot carry a verdict
     }
   }
 });
+
+/**
+ * One regression test per hostile case (REGRESSIONS.md R-CASE-*): on a working sandbox's evidence the
+ * case is blocked and logged, and on evidence that the attempt got through it is not.
+ */
+function caseTest(name, c, gotThrough) {
+  test(name, () => {
+    const good = evaluateCase(c, GOOD[c]());
+    assert.deepEqual([good.blocked, good.logged, good.pass], [true, true, true], good.detail);
+    const ev = GOOD[c]();
+    gotThrough(ev);
+    const bad = evaluateCase(c, ev);
+    assert.equal(bad.pass, false, `${c} must fail when the attempt got through`);
+  });
+}
+caseTest('R-CASE-01 direct-ip: a connection to an outside address by IP is refused and traced', 'direct-ip', (ev) => { ev.trace.network.connects[0] = ok({ family: 'AF_INET', addr: '1.1.1.1', port: 443 }); });
+caseTest('R-CASE-02 doh-ip: DNS over HTTPS by address or by name reaches no resolver, and is logged', 'doh-ip', (ev) => { ev.dns[0].answer = 'empty'; });
+caseTest('R-CASE-03 raw-socket: no raw or packet socket opens', 'raw-socket', (ev) => { ev.trace.network.sockets[2] = ok({ family: 'AF_PACKET', type: 'SOCK_RAW', protocol: '0x300', raw: true }); });
+caseTest('R-CASE-04 ipv6: nothing gets out over IPv6', 'ipv6', (ev) => { ev.trace.network.connects[0] = ok({ family: 'AF_INET6', addr: '2606:4700:4700::1111', port: 443 }); });
+caseTest('R-CASE-05 icmp: no echo leaves the sandbox network, and one to the host is dropped and logged', 'icmp', (ev) => { ev.drops = []; });
+caseTest('R-CASE-06 docker-host: the host, its Docker API and its sockets are out of reach', 'docker-host', (ev) => { ev.canaryHits = 1; });
+caseTest('R-CASE-07 metadata: no cloud metadata or host agent address answers', 'metadata', (ev) => { ev.trace.network.connects[1] = ok({ family: 'AF_INET', addr: '168.63.129.16', port: 80 }); });
+caseTest('R-CASE-08 env-token: no runner or Actions token reaches the target', 'env-token', (ev) => { ev.inspect.canaryInEnv = true; });
+caseTest('R-CASE-09 write-outside: nothing is written outside the work folder and /tmp', 'write-outside', (ev) => { ev.trace.opens_outside[0] = ok({ path: '/etc/isk-1', op: 'write' }); });
+caseTest('R-CASE-10 fork-bomb: the process limit refuses forks below the limit', 'fork-bomb', (ev) => { ev.trace.process = { clones: 1500, clone_failed: 0 }; });
+caseTest('R-CASE-11 output-forgery: forged results and telemetry stay target output', 'output-forgery', (ev) => { ev.telemetryHasNonce = true; });

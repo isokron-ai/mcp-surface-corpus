@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run, tailLine, STDERR_TAIL, isPublicIp4 } from '../src/docker.mjs';
+import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run, tailLine, STDERR_TAIL, isPublicIp4, LIMITS } from '../src/docker.mjs';
+import { WORK_VOLUME_CMD } from '../bin/sandbox-selftest.mjs';
 import { decide, makeProxy } from '../sandbox/egress-proxy.mjs';
 import { connect } from 'node:net';
 
@@ -47,7 +48,7 @@ test('a helper container: same box, no network unless named, CHOWN or NET_BIND_S
   assert.throws(() => helperRunArgs({ name: 'h', image: IMG, cmd: ['true'], capAdd: ['NET_RAW'] }), /CHOWN or NET_BIND_SERVICE only/);
 });
 
-test('gVisor everywhere: every sandbox container gets --runtime runsc, with no way to ask for another', () => {
+test('R-SBX-07 gVisor everywhere: every sandbox container gets --runtime runsc, with no way to ask for another', () => {
   assert.equal(pair(sb(), '--runtime'), 'runsc');
   assert.equal(sb().filter((x) => x === '--runtime').length, 1);
   assert.equal(pair(sb({ runtime: 'runc' }), '--runtime'), 'runsc', 'an option to change it is ignored, not honoured');
@@ -121,7 +122,7 @@ test('run(): keeps stdout up to the cap, kills at the deadline', async () => {
   assert.ok(t.ms < 5000);
 });
 
-test('a failed harness step says why: the tail of its stderr, bounded and printable', async () => {
+test('R-CI-02 a failed harness step says why: the tail of its stderr, bounded and printable', async () => {
   const r = await run(process.execPath, ['-e', `process.stderr.write("a".repeat(5000) + "\\nchmod: changing permissions of '/work': Operation not permitted\\n"); process.exit(1)`]);
   assert.equal(r.exit, 1);
   assert.ok(r.stderr_tail.length <= STDERR_TAIL);
@@ -157,7 +158,7 @@ test('names stay unique across a per-target view of the session (Object.create s
   assert.equal(new Set(names).size, 4);
 });
 
-test('the egress proxy gets registry names as fixed host entries: DNS names, public IPv4 addresses only', () => {
+test('R-SBX-07 the egress proxy gets registry names as fixed host entries: DNS names, public IPv4 addresses only', () => {
   const a = helperRunArgs({ name: 'p', image: IMG, network: 'surface-x-out', create: true, cmd: ['node', 'egress-proxy.mjs'], publicHosts: [['registry.npmjs.org', '104.16.1.34']] });
   assert.equal(a[0], 'create');
   assert.ok(!a.includes('--rm') && !a.includes('--detach'));
@@ -169,4 +170,19 @@ test('the egress proxy gets registry names as fixed host entries: DNS names, pub
   }
   for (const n of ['host.docker.internal:1', 'localhost', 'a b.org', '-x.org', 'Registry.npmjs.org']) assert.throws(() => helperRunArgs({ name: 'p', image: IMG, cmd: ['x'], publicHosts: [[n, '104.16.1.34']] }), /DNS name/, n);
   assert.equal(isPublicIp4('104.16.1.34'), true);
+});
+
+test('R-CI-01 the work volume is chmod-ed before it is chown-ed: root without CAP_FOWNER cannot chmod what it no longer owns', () => {
+  assert.ok(WORK_VOLUME_CMD.indexOf('chmod 0750 /work') >= 0 && WORK_VOLUME_CMD.indexOf('chmod') < WORK_VOLUME_CMD.indexOf('chown 65534:65534 /work'), WORK_VOLUME_CMD);
+});
+
+test('R-CI-03 the process limit a target meets inside gVisor is RLIMIT_NPROC, set on every target container', () => {
+  const a = sb();
+  assert.equal(a.filter((x, i) => a[i - 1] === '--ulimit' && x.startsWith('nproc=')).join(), `nproc=${LIMITS.nproc}:${LIMITS.nproc}`);
+  assert.equal(LIMITS.nproc, '512');
+});
+
+test('R-CI-04 the host pids limit stays above what nproc lets a target make (gVisor spends about two host tasks a process)', () => {
+  assert.ok(Number(LIMITS.pids) >= 2 * Number(LIMITS.nproc) + 512, `${LIMITS.pids} vs ${LIMITS.nproc}`);
+  assert.equal(pair(sb(), '--pids-limit'), LIMITS.pids);
 });
