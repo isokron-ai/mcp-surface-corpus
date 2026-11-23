@@ -36,7 +36,7 @@ test('the settings manifest is read back from the exact run arguments', () => {
   assert.deepEqual(m.cap_add, []);
   assert.deepEqual(m.security_opt, ['no-new-privileges']);
   assert.equal(m.read_only, true);
-  assert.equal(m.pids_limit, 512);
+  assert.equal(m.pids_limit, 2048);
   assert.equal(m.memory, '2g');
   assert.equal(m.network, 'surface-x-run');
   assert.equal(m.ip, '10.213.53.3');
@@ -72,7 +72,7 @@ test('a helper manifest shows its runtime and its one capability', () => {
 });
 
 const inspectOf = (m, over = {}) => ({
-  HostConfig: { Runtime: 'runsc', CapDrop: ['ALL'], CapAdd: null, Privileged: false, SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true, PidsLimit: 512, Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }, { Name: 'nproc', Soft: 512, Hard: 512 }], Memory: 2 * 1024 ** 3, NanoCpus: 2e9, NetworkMode: m.network, PidMode: '', IpcMode: 'private', Devices: [], Binds: null, ...(over.HostConfig || {}) },
+  HostConfig: { Runtime: 'runsc', CapDrop: ['ALL'], CapAdd: null, Privileged: false, SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true, PidsLimit: 2048, Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }, { Name: 'nproc', Soft: 512, Hard: 512 }], Memory: 2 * 1024 ** 3, NanoCpus: 2e9, NetworkMode: m.network, PidMode: '', IpcMode: 'private', Devices: [], Binds: null, ...(over.HostConfig || {}) },
   Config: { User: '65534:65534', Env: ['PATH=/usr/local/bin:/usr/bin', 'HOME=/tmp/home', 'A=1', 'B=2', 'PYTHON_VERSION=3.13.1'], ...(over.Config || {}) },
   Mounts: over.Mounts ?? [
     { Type: 'bind', Source: '/etc/isokron-sandbox/resolv-run.conf', Destination: '/etc/resolv.conf', RW: false },

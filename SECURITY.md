@@ -88,9 +88,11 @@ Every container that runs target code (install and server):
 - digest-pinned image (`images.json`, or the target's own image, which must be pinned by digest);
 - `--runtime runsc`, user `65534:65534` (nobody), `--cap-drop ALL`, `--security-opt no-new-privileges`,
   read-only root filesystem, tmpfs `/tmp`;
-- `--memory 2g` (no swap beyond it), at most 2 CPUs, at most 512 processes: `--ulimit nproc=512:512`,
-  which gVisor's kernel enforces inside the sandbox (`--pids-limit 512` is set too, but under gVisor it
-  bounds only the host threads of the sandbox itself, not the processes in it);
+- `--memory 2g` (no swap beyond it), at most 2 CPUs, at most 512 processes and threads:
+  `--ulimit nproc=512:512`, which gVisor's kernel enforces inside the sandbox (a fork past it fails
+  with EAGAIN). `--pids-limit 2048` bounds the sandbox's own host tasks (gVisor's threads and a stub
+  process and thread per sandboxed process) as a backstop; under gVisor it does not count the
+  processes inside the sandbox, and at 512 a fork bomb crashed the sandbox at about 240 processes;
 - named Docker volumes only: never a host path, the workspace, `RUNNER_TEMP`, `_actions` or the
   Docker socket (the one bind mount is net-guard.sh's resolv.conf, read-only);
 - an environment of the names the harness sets only: runner, Actions, token and loader names are

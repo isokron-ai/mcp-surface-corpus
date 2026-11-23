@@ -18,12 +18,15 @@ export const LABEL_TARGET = 'isokron.surface.target';
 /** Oldest Docker Engine accepted: before 26.0.0, --internal networks still resolved outside names (CVE-2024-29018). */
 export const DOCKER_MIN = [26, 0, 0];
 /**
- * Limits of a container that runs target code (install, the server). Under gVisor, --pids-limit only
- * bounds the host cgroup that holds the sandbox's own host threads (runsc/cgroup); processes inside
- * the sandbox are counted by gVisor's kernel, which enforces RLIMIT_NPROC per user. So the process
- * limit a target meets is `--ulimit nproc`, set to the same number.
+ * Limits of a container that runs target code (install, the server). The process limit a target
+ * meets is `nproc`: gVisor's kernel counts the processes and threads inside the sandbox and refuses
+ * a fork past RLIMIT_NPROC with EAGAIN (it does not apply the OCI pids limit inside). `pids` is the
+ * host cgroup's limit on the sandbox's own host tasks: gVisor's threads plus, on its default
+ * platform, a host stub process and thread for each sandboxed process. It is a backstop sized above
+ * what `nproc` lets a target make (about two host tasks each), so a fork bomb meets EAGAIN inside
+ * the sandbox instead of crashing it at the host limit.
  */
-export const LIMITS = { memory: '2g', pids: '512', nproc: '512', cpus: 2, tmp: '512m' };
+export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', cpus: 2, tmp: '512m' };
 
 const PINNED = /^[a-z0-9][a-z0-9./_-]{0,200}(?::[A-Za-z0-9._-]{1,120})?@sha256:[0-9a-f]{64}$/;
 export function checkPinned(ref, what = 'image') {
