@@ -56,7 +56,7 @@ import { envNameAllowed, settingsDigest, settingsManifest } from '../src/sandbox
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { Telemetry, fromProxy } from '../src/telemetry.mjs';
-import { diskProblem, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { diskProblem, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { sdkFromFile } from '../src/sdk.mjs';
 import { buildRow, buildState, RECORD_FORMAT } from '../src/record.mjs';
 import { probeStdio, listed, PROTOCOL_OFFERED } from '../sandbox/probe.mjs';
@@ -300,6 +300,7 @@ async function runTarget(t, list, ctx, dk) {
   const missing = [];
   ctx.missing = missing;
   // A trace past trace_max_mb (or a trace filesystem running short) stops the target's containers.
+  const fw0 = ctx.lane === 'ci' ? firewallCounts(ctx.hostRun) : null;
   const watch = watchTraces(ctx.cfg, { sinceMs: t0, statfs: ctx.statfs, onOverflow: () => dk.killAll(id) });
 
   try {
@@ -518,6 +519,8 @@ async function runTarget(t, list, ctx, dk) {
     if (!drops && ctx.hostLog !== false) missing.push('the host firewall log');
     sweepTraces(ctx.cfg, t0);
     ctx.missing = null;
+    // Where a log or rate limit cut this target's evidence short (the record keeps it).
+    if (ctx.lane === 'ci') rec.limits_hit = limitsHit({ fw0, fw1: firewallCounts(ctx.hostRun) });
   }
   // Fail closed on the ci lane: a target whose sandbox evidence is incomplete is a harness error, and
   // its row stays out of the results (the record keeps why).
@@ -545,7 +548,7 @@ async function runTarget(t, list, ctx, dk) {
  * Options are for the tests (a scripted daemon, no network): makeDocker, probe (the stdio probe),
  * runscConfig, readResolv, readLog, traceWaitMs. The defaults are what CI runs.
  */
-export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync } = {}) {
+export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync } = {}) {
   const o = parseArgs(argv);
   const list = validateList(JSON.parse(readFileSync(o.targets, 'utf8')));
   if (o.consume) rmSync(o.targets, { force: true });
@@ -560,7 +563,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     githubToken: process.env.GH_TOKEN || null,
     runner: { os: platform(), arch: arch(), kernel: release(), node: process.version },
     baselineMs: null,
-    cfg, tel, probe, readLog, traceWaitMs, statfs, hostLog: false, cidDir: join(out, '_shard', 'cid'),
+    cfg, tel, probe, readLog, traceWaitMs, statfs, hostRun, hostLog: false, cidDir: join(out, '_shard', 'cid'),
   };
   const dk = makeDocker({ runId, log: join(out, '_shard', 'docker.log') });
   const targets = shardTargets(list.targets, o.shard, o.shards, o.only);
@@ -578,7 +581,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     await prepare(ctx, dk);
     // Nothing runs unless gVisor is there: no runsc with our flags, no resolv.conf, no smoke container
     // under runsc as 65534, no trace: a skip record, a harness error, and no fallback.
-    const pf = await preflight(dk, { cfg, arch: arch(), image: ctx.images.node24, cmd: ['node', '-e', 'console.log(process.getuid(), process.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readResolv, readLog, needHostLog: o.lane === 'ci', needTraceFs: o.lane === 'ci', statfs, traceWaitMs });
+    const pf = await preflight(dk, { cfg, arch: arch(), image: ctx.images.node24, cmd: ['node', '-e', 'console.log(process.getuid(), process.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readResolv, readLog, needHostLog: o.lane === 'ci', strict: o.lane === 'ci', statfs, run: hostRun, traceWaitMs });
     checked = true;
     Object.assign(shard.sandbox, { ok: pf.ok, reason: pf.reason, host_log: pf.hostLog });
     if (!pf.ok) throw new HarnessError(`the sandbox is not there (${pf.reason}): ${pf.detail}`);

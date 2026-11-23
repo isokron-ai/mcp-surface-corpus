@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { arch, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fakeFetch, tarGz } from './helpers.mjs';
+import { fakeFetch, fakeHostRun, tarGz } from './helpers.mjs';
 import { Docker } from '../src/docker.mjs';
 import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
@@ -47,14 +47,14 @@ class FakeDocker extends Docker {
 }
 
 /** The daemon: every runsc container leaves a trace in logDir, as runsc would. */
-function daemon({ logDir, flags, noTrace = null }) {
+function daemon({ logDir, flags, noTrace = null, runscPath = '/usr/local/lib/isokron-gvisor/current/runsc' }) {
   const nets = new Map();
   const box = new Map();
   let n = 0;
   return (argv) => {
     const [c0, c1] = argv;
     if (c0 === 'version') return { stdout: '27.3.1 linux/amd64\n' };
-    if (c0 === 'info') return { stdout: argv[2] === '{{.NCPU}}' ? '4\n' : JSON.stringify({ runc: { path: 'runc' }, ...(flags ? { runsc: { path: '/usr/local/bin/runsc', runtimeArgs: flags } } : {}) }) };
+    if (c0 === 'info') return { stdout: argv[2] === '{{.NCPU}}' ? '4\n' : JSON.stringify({ runc: { path: 'runc' }, ...(flags ? { runsc: { path: runscPath, runtimeArgs: flags } } : {}) }) };
     if (c0 === 'image') return { stdout: `sha256:${'e'.repeat(64)}\n` };
     if (c0 === 'volume' && c1 === 'inspect') return { exit: 1 };
     if (c0 === 'network' && c1 === 'create') { nets.set(argv[argv.length - 1], { internal: argv.includes('--internal'), subnet: val(argv, '--subnet') ?? '172.18.0.0/16' }); return {}; }
@@ -125,7 +125,7 @@ function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = n
   const fetchFn = fakeFetch({ archives: { '*': tarGz({ 'README.md': '# n\n' }, { commit: SHA }) } });
   // The trace folder as install-runsc.sh mounts it: its own filesystem of trace_fs_mb, mostly free.
   const statfs = (p) => (p === logDir ? { bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 - 10 } : { bsize: 4096, blocks: 1e9, bavail: 1e9 });
-  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs } };
+  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs, hostRun: fakeHostRun(cfg) } };
 }
 
 async function runMain(s) {

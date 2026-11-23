@@ -13,7 +13,8 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HarnessError, helperRunArgs, sandboxRunArgs } from './docker.mjs';
 import { RUNTIME, runscFlags, runtimeArgs, runtimeAvailable, traceLogPath } from './runsc.mjs';
-import { NETS, SANDBOX_RANGE, groupDrops, parseKernelLog, readHostLog, resolvConf } from './sandbox-net.mjs';
+import { NETS, SANDBOX_RANGE, firewallCounts, firewallProblems, groupDrops, parseKernelLog, readHostLog, resolvConf } from './sandbox-net.mjs';
+import { spawnSync } from 'node:child_process';
 import { settingsDigest, settingsManifest } from './sandbox-env.mjs';
 import { summarizeTraceFile } from './trace-summary.mjs';
 import { fromDrop, fromNetlog } from './telemetry.mjs';
@@ -37,6 +38,21 @@ export async function runtimeStatus(dk, cfg, hostArch) {
   const flagsDaemon = available ? runtimeArgs(json) : [];
   const same = JSON.stringify([...flagsDaemon].sort()) === JSON.stringify([...flagsExpected].sort());
   return { available, name: RUNTIME, release: cfg.release, flags_expected: flagsExpected, flags_daemon: flagsDaemon, flags_match: available && same };
+}
+
+/**
+ * null when the daemon's runsc is the one install-runsc.sh put in place: the runtime's path is
+ * <install_dir>/current/runsc and that binary says it is the pinned release. Else what is wrong.
+ */
+export function installProblem(cfg, runtimesJson, run = spawnSync) {
+  let path = null;
+  try { path = JSON.parse(String(runtimesJson))[RUNTIME].path; } catch { /* reported below */ }
+  const want = `${cfg.install_dir}/current/runsc`;
+  if (path !== want) return `the daemon's runsc is ${String(path).slice(0, 80)}, not ${want}`;
+  const r = run(want, ['--version'], { encoding: 'utf8', timeout: 30_000 });
+  const first = r.status === 0 ? String(r.stdout).split('\n')[0] : '';
+  if (!new RegExp(`release-${cfg.release.replace('.', '\\.')}(?:\\b|$)`).test(first)) return `runsc --version does not say release-${cfg.release}`;
+  return null;
 }
 
 /** null when the resolv.conf of a sandbox network is the one net-guard.sh writes, else what is wrong. */
@@ -176,7 +192,7 @@ async function smoke(dk, { cfg, image, cmd, expect, tel, labels, deadlineMs, tra
  * unreadable kernel log stops the run only when needHostLog is set (the self test and the corpus's
  * ci lane need the drops as evidence; the local lane records the skip and goes on).
  */
-export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels = {}, readResolv, readLog = readHostLog, needHostLog = true, needTraceFs = false, statfs = statfsSync, deadlineMs = 180_000, traceWaitMs = 5000 }) {
+export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels = {}, readResolv, readLog = readHostLog, needHostLog = true, strict = false, statfs = statfsSync, run = spawnSync, deadlineMs = 180_000, traceWaitMs = 5000 }) {
   const skip = (reason, detail) => tel.write('skip', { reason, detail: String(detail).slice(0, 300) });
   const fail = (reason, detail) => { skip(reason, detail); return { ok: false, reason, detail, hostLog: null }; };
   const rt = await runtimeStatus(dk, cfg, arch);
@@ -187,9 +203,14 @@ export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels
     const p = resolvProblem(net, readResolv);
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
   }
-  if (needTraceFs) {
-    const p = traceFsProblem(cfg, { statfs });
+  // strict (the self test and the corpus's ci lane): the host as install-runsc.sh and net-guard.sh
+  // left it, checked live: the pinned runsc in its place, the trace filesystem, the firewall rules.
+  if (strict) {
+    const p = installProblem(cfg, await dk.runtimes(), run) ?? traceFsProblem(cfg, { statfs });
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
+    const fw = firewallProblems(run);
+    tel.write('firewall', { live: fw.length === 0, problems: fw.map((x) => String(x).slice(0, 200)).slice(0, 20) });
+    if (fw.length) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', `the firewall is not the one net-guard.sh makes: ${fw.join('; ')}`); }
   }
   const sm = await smoke(dk, { cfg, image, cmd, expect, tel, labels, deadlineMs, traceWaitMs });
   runtimeRecord(sm.ok ? 'ok' : 'failed');
@@ -269,3 +290,25 @@ export function writeDrops(tel, groups, { subject = null, roles = {} } = {}) {
   }
   return n;
 }
+
+/**
+ * Where a log or a limit cut the evidence of one target or case short: the firewall dropped more
+ * than it logged (its LOG rules are rate limited), the network logger stopped printing, the trace
+ * summary was cut to fit. `fw0` and `fw1` are firewallCounts() before and after.
+ */
+export function limitsHit({ fw0, fw1, netlogLines = [], trace = null }) {
+  const out = [];
+  if (!fw0 || !fw1) out.push('the firewall counters could not be read');
+  else {
+    for (const [chain, c1] of Object.entries(fw1)) {
+      const c0 = fw0[chain] || { logged: 0, dropped: 0 };
+      const unlogged = (c1.dropped - c0.dropped) - (c1.logged - c0.logged);
+      if (unlogged > 0) out.push(`firewall ${chain}: ${unlogged} drop(s) not logged (rate limit)`);
+    }
+  }
+  for (const l of netlogLines) if (l && l.kind === 'stopped' && Number(l.dropped) > 0) out.push(`network logger: ${Number(l.dropped)} line(s) not printed (line limit)`);
+  if (trace && trace.shrunk) out.push('trace summary: lists cut to fit a record');
+  return out;
+}
+
+export { firewallCounts };

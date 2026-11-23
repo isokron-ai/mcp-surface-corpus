@@ -7,7 +7,8 @@ import { Docker } from '../src/docker.mjs';
 import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
 import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
-import { preflight, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
+import { fakeHostRun } from './helpers.mjs';
+import { preflight, installProblem, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
 
 const IMG = `docker.io/library/python:3.13-slim-bookworm@sha256:${'a'.repeat(64)}`;
 const ID = 'c'.repeat(64);
@@ -28,7 +29,7 @@ class FakeDocker extends Docker {
   }
 }
 
-const daemonWith = (flags) => JSON.stringify({ 'io.containerd.runc.v2': { path: 'runc' }, ...(flags ? { runsc: { path: '/usr/local/bin/runsc', runtimeArgs: flags } } : {}) });
+const daemonWith = (flags, path = '/usr/local/lib/isokron-gvisor/current/runsc') => JSON.stringify({ 'io.containerd.runc.v2': { path: 'runc' }, ...(flags ? { runsc: { path, runtimeArgs: flags } } : {}) });
 const inspect = (over = {}) => JSON.stringify([{ Id: ID, HostConfig: { Runtime: 'runsc', ...(over.HostConfig || {}) }, State: { ExitCode: 0, OOMKilled: false }, Config: { User: '65534:65534', Env: [] }, Mounts: [] }]);
 
 function smokeScript({ flags, runtime = 'runsc', out = '65534 65534\n', trace = TRACE, logDir }) {
@@ -233,4 +234,27 @@ test('the trace folder must be its own filesystem of the pinned size, and a targ
   assert.equal(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 1e7 } : own()) }), null);
   assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 10 } : own()) }), /GB free for the results/);
   assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 1e7 } : { bsize: 4096, bavail: 1 }) }), /trace filesystem has less room/);
+});
+
+test('the strict preflight checks the host live: the pinned runsc in its place, the trace filesystem, the firewall', async () => {
+  const own = (cfg) => () => ({ bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 });
+  const s = setup();
+  const r = await preflight(s.dk, { ...s.opts, strict: true, statfs: own(s.cfg), run: fakeHostRun(s.cfg) });
+  assert.equal(r.ok, true, r.detail);
+  assert.deepEqual(records(s.d).filter((x) => x.type === 'firewall').map((x) => [x.live, x.problems]), [[true, []]]);
+  const no = async (o) => { const t = setup(); const x = await preflight(t.dk, { ...t.opts, strict: true, statfs: own(t.cfg), run: fakeHostRun(t.cfg), ...o(t.cfg) }); assert.equal(x.ok, false); assert.equal(x.reason, 'sandbox_setup_missing'); return x.detail; };
+  assert.match(await no((cfg) => ({ run: fakeHostRun(cfg, { drop: { 'iptables INPUT': ['-A INPUT -i br-+ -j ISK-SBX-IN'] } }) })), /firewall is not the one net-guard.sh makes/);
+  assert.match(await no((cfg) => ({ run: fakeHostRun(cfg, { version: 'release-20250101.0' }) })), /does not say release-/);
+  assert.match(await no(() => ({ statfs: () => ({ bsize: 4096, blocks: 1e9, bavail: 1e9 }) })), /not a filesystem of its own/);
+  const cfg = loadRunscConfig();
+  assert.match(installProblem(cfg, daemonWith(['x'], '/usr/bin/runsc'), fakeHostRun(cfg)), /not \/usr\/local\/lib\/isokron-gvisor\/current\/runsc/);
+  assert.equal(installProblem(cfg, daemonWith(['x']), fakeHostRun(cfg)), null);
+});
+
+test('limits that cut evidence short are reported: firewall rate limit, logger line limit, a trace cut to fit', () => {
+  const fw0 = { 'ISK-SBX': { logged: 10, dropped: 10 }, 'ISK-SBX-IN': { logged: 5, dropped: 5 } };
+  assert.deepEqual(limitsHit({ fw0, fw1: { 'ISK-SBX': { logged: 12, dropped: 12 }, 'ISK-SBX-IN': { logged: 5, dropped: 5 } } }), []);
+  assert.deepEqual(limitsHit({ fw0, fw1: { 'ISK-SBX': { logged: 210, dropped: 900 }, 'ISK-SBX-IN': { logged: 5, dropped: 5 } } }), ['firewall ISK-SBX: 690 drop(s) not logged (rate limit)']);
+  assert.deepEqual(limitsHit({ fw0: null, fw1: null }), ['the firewall counters could not be read']);
+  assert.deepEqual(limitsHit({ fw0, fw1: fw0, netlogLines: [{ kind: 'stopped', lines: 20000, dropped: 7 }], trace: { shrunk: true } }), ['network logger: 7 line(s) not printed (line limit)', 'trace summary: lists cut to fit a record']);
 });

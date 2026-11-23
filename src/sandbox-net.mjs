@@ -71,3 +71,95 @@ export function readHostLog(since, run = spawnSync) {
   }
   return { ok: false, text: '', via: null };
 }
+
+/**
+ * The rules net-guard.sh makes, as patterns for `iptables -S` / `ip6tables -S` output: each of our
+ * chains holds exactly its lines in order; DOCKER-USER, INPUT and FORWARD hold our jumps.
+ */
+const LIMIT = String.raw`-m limit --limit 20/s(?:ec|econd)? --limit-burst 200`;
+const LOGR = (chain, prefix) => new RegExp(String.raw`^-A ${chain} ${LIMIT} -j LOG --log-prefix "?${prefix.replace(/ $/, String.raw`\s?`)}"? --log-level 4$`);
+const lit = (s) => new RegExp(`^${s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')}$`);
+const [RUN_NET, INSTALL_NET] = [NETS.run.subnet, NETS.install.subnet];
+export const FIREWALL = {
+  v4: {
+    'ISK-SBX': [lit(`-A ISK-SBX -s ${RUN_NET} -d ${RUN_NET} -j RETURN`), lit(`-A ISK-SBX -s ${INSTALL_NET} -d ${INSTALL_NET} -j RETURN`), LOGR('ISK-SBX', LOG_PREFIX.forward), lit('-A ISK-SBX -j DROP')],
+    'ISK-SBX-IN': [LOGR('ISK-SBX-IN', LOG_PREFIX.input), lit('-A ISK-SBX-IN -j DROP')],
+  },
+  v6: {
+    'ISK-SBX6': [LOGR('ISK-SBX6', LOG_PREFIX.forward6), lit('-A ISK-SBX6 -j DROP')],
+    'ISK-SBX6-IN': [LOGR('ISK-SBX6-IN', LOG_PREFIX.input6), lit('-A ISK-SBX6-IN -j DROP')],
+  },
+  jumps: {
+    v4: {
+      'DOCKER-USER': [`-A DOCKER-USER -s ${SANDBOX_RANGE} -j ISK-SBX`, `-A DOCKER-USER -d ${SANDBOX_RANGE} -j ISK-SBX`, '-A DOCKER-USER -d 169.254.0.0/16 -j DROP', '-A DOCKER-USER -d 168.63.129.16/32 -j DROP'],
+      INPUT: ['-A INPUT -i docker0 -j ISK-SBX-IN', '-A INPUT -i br-+ -j ISK-SBX-IN'],
+    },
+    v6: {
+      FORWARD: ['-A FORWARD -i docker0 -j ISK-SBX6', '-A FORWARD -o docker0 -j ISK-SBX6', '-A FORWARD -i br-+ -j ISK-SBX6', '-A FORWARD -o br-+ -j ISK-SBX6'],
+      INPUT: ['-A INPUT -i docker0 -j ISK-SBX6-IN', '-A INPUT -i br-+ -j ISK-SBX6-IN'],
+    },
+  },
+};
+
+/** `iptables -S CHAIN` (or ip6tables) as lines, directly or through `sudo -n`; null when neither works. */
+function ruleLines(tool, chain, run) {
+  for (const [cmd, argv] of [[tool, ['-S', chain]], ['sudo', ['-n', tool, '-S', chain]]]) {
+    const r = run(cmd, argv, { encoding: 'utf8', timeout: 30_000 });
+    if (r.status === 0) return String(r.stdout).split('\n').map((l) => l.trim()).filter((l) => l.startsWith('-A '));
+  }
+  return null;
+}
+
+/**
+ * Whether net-guard.sh's firewall is live on this host now: each of our chains holds exactly the
+ * rules it makes, DOCKER-USER, INPUT and the IPv6 FORWARD hold our jumps, and in FORWARD the jump to
+ * DOCKER-USER comes before any ACCEPT. Returns the problems; an empty list means live.
+ */
+export function firewallProblems(run = spawnSync) {
+  const out = [];
+  for (const [fam, tool] of [['v4', 'iptables'], ['v6', 'ip6tables']]) {
+    for (const [chain, want] of Object.entries(FIREWALL[fam])) {
+      const got = ruleLines(tool, chain, run);
+      if (got === null) { out.push(`${tool} ${chain} cannot be read`); continue; }
+      if (got.length !== want.length || !want.every((re, i) => re.test(got[i]))) out.push(`${tool} ${chain} is not the chain net-guard.sh makes`);
+    }
+    for (const [chain, want] of Object.entries(FIREWALL.jumps[fam])) {
+      const got = ruleLines(tool, chain, run);
+      if (got === null) { out.push(`${tool} ${chain} cannot be read`); continue; }
+      for (const w of want) if (!got.includes(w)) out.push(`${tool} ${chain} lacks: ${w}`);
+    }
+  }
+  const fwd = ruleLines('iptables', 'FORWARD', run);
+  if (fwd) {
+    const j = fwd.indexOf('-A FORWARD -j DOCKER-USER');
+    const a = fwd.findIndex((l) => / -j ACCEPT$/.test(l));
+    if (j < 0) out.push('iptables FORWARD does not jump to DOCKER-USER');
+    else if (a >= 0 && a < j) out.push('iptables FORWARD accepts traffic before DOCKER-USER');
+  } else out.push('iptables FORWARD cannot be read');
+  return out;
+}
+
+/**
+ * Packets each of our chains logged and dropped so far (`iptables -L CHAIN -v -x -n`): when a chain
+ * dropped more than it logged, its log hit the rate limit. { chain: { logged, dropped } }, or null.
+ */
+export function firewallCounts(run = spawnSync) {
+  const out = {};
+  for (const [fam, tool] of [['v4', 'iptables'], ['v6', 'ip6tables']]) {
+    for (const chain of Object.keys(FIREWALL[fam])) {
+      let text = null;
+      for (const [cmd, argv] of [[tool, ['-L', chain, '-v', '-x', '-n']], ['sudo', ['-n', tool, '-L', chain, '-v', '-x', '-n']]]) {
+        const r = run(cmd, argv, { encoding: 'utf8', timeout: 30_000 });
+        if (r.status === 0) { text = String(r.stdout); break; }
+      }
+      if (text === null) return null;
+      const c = { logged: 0, dropped: 0 };
+      for (const l of text.split('\n')) {
+        const m = /^\s*(\d+)\s+\d+\s+(LOG|DROP)\b/.exec(l);
+        if (m) c[m[2] === 'LOG' ? 'logged' : 'dropped'] += Number(m[1]);
+      }
+      out[chain] = c;
+    }
+  }
+  return out;
+}

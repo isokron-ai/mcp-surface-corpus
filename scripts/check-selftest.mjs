@@ -55,6 +55,8 @@ export function checkSelftest(file, cases = CASES) {
   const start = records.filter((r) => r.type === 'run_start');
   if (start.length !== 1 || start[0].kind !== 'selftest') problems.push('not exactly one self test run_start');
   if (new Set(records.map((r) => r.run)).size > 1) problems.push('records from more than one run');
+  const fw = records.filter((r) => r.type === 'firewall');
+  if (fw.length !== 1 || fw[0].live !== true) problems.push('the host firewall was not checked live at the preflight');
   for (const s of records.filter((r) => r.type === 'skip')) problems.push(`skipped: ${s.reason} (${s.detail})`.slice(0, 200));
   const end = records.filter((r) => r.type === 'run_end');
   if (end.length !== 1) problems.push('the run did not end');
@@ -68,6 +70,8 @@ export function checkSelftest(file, cases = CASES) {
     const verdicts = mine.filter((r) => r.type === 'bypass_result' && r.case === name);
     const why = [];
     const ev = evidenceFrom(mine);
+    const lim = mine.filter((r) => r.type === 'case_evidence').flatMap((r) => r.limits_hit || []);
+    if (lim.length) why.push(`a limit cut the evidence short: ${lim.join('; ')}`.slice(0, 300));
     if (!ev) why.push('evidence records missing');
     else {
       const v = evaluateCase(name, ev);

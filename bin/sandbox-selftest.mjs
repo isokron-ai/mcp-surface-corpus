@@ -31,7 +31,7 @@ import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, newRunId, readTelemetry } from '../src/telemetry.mjs';
 import { CASES, CANARY_PORT, evaluateCase } from '../src/selftest.mjs';
-import { hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { loadImages } from './run-shard.mjs';
 
@@ -109,6 +109,7 @@ async function runCase(name, ctx) {
   const lbl = dk.labels(name);
   const roles = rolesOn('run', { target: 'case' });
   const since = Date.now() / 1000;
+  const fw0 = firewallCounts();
   const ev = { trace: null, dns: [], conns: [], drops: [], canaryHits: null, inspect: null, container: null, telemetryHasNonce: null, output: null, outputRecorded: false, report: null, pidsLimit: Number(LIMITS.nproc) };
   let canary = null;
   let netlog = null;
@@ -171,6 +172,7 @@ async function runCase(name, ctx) {
     ev.report = rep && rep.case === name && rep.nonce === nonce ? rep : null;
 
     const lines = await stopNetlog(dk, netlog);
+    ev.netlogLines = lines.filter((o) => o.kind === 'stopped');
     netlog = null;
     writeNetlog(tel, lines, { subject, roles });
     const mine = lines.filter((o) => o.from === NETS.run.target).map(fromNetlog).filter(Boolean);
@@ -196,7 +198,8 @@ async function runCase(name, ctx) {
     ev.telemetryHasNonce = readFileSync(tel.file, 'utf8').includes(nonce) || back.bad.length > 0 || back.records.some((r) => r.run !== tel.run);
 
     // The evidence that is not in other records, so scripts/check-selftest.mjs can recompute the verdict.
-    tel.write('case_evidence', { case: name, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches.map((m) => String(m).slice(0, 200)).slice(0, 20), canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: ev.pidsLimit }, meta);
+    const limits = limitsHit({ fw0, fw1: firewallCounts(), netlogLines: ev.netlogLines || [], trace: ev.trace }).map((x) => x.slice(0, 200)).slice(0, 20);
+    tel.write('case_evidence', { case: name, limits_hit: limits, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches.map((m) => String(m).slice(0, 200)).slice(0, 20), canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: ev.pidsLimit }, meta);
     const v = evaluateCase(name, ev);
     tel.write('bypass_result', { case: name, ...v }, meta);
     return { case: name, ...v, ...extra };
@@ -241,7 +244,7 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
     checkDockerVersion(v.stdout.toString().trim().split(' ')[0]);
     await dk.image(images.python, 'python');
     await dk.image(images.node22, 'node22');
-    const pf = await preflight(dk, { cfg, arch: arch(), image: images.python, cmd: ['python3', '-c', 'import os; print(os.getuid(), os.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readLog, needHostLog: true, needTraceFs: true });
+    const pf = await preflight(dk, { cfg, arch: arch(), image: images.python, cmd: ['python3', '-c', 'import os; print(os.getuid(), os.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readLog, needHostLog: true, strict: true });
     if (!pf.ok) {
       results.skipped = { reason: pf.reason, detail: pf.detail };
       say(`selftest: skipped (${pf.reason}): ${pf.detail}`);

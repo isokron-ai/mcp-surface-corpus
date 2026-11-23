@@ -1,11 +1,13 @@
 import test from 'node:test';
+import { fakeHostRun } from './helpers.mjs';
+import { loadRunscConfig as loadCfg } from '../src/runsc.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NETS, SANDBOX_RANGE, RESOLV_DIR, LOG_PREFIX, SINK_TCP, SINK_UDP, resolvConf, parseKernelLog, groupDrops, readHostLog } from '../src/sandbox-net.mjs';
+import { NETS, SANDBOX_RANGE, RESOLV_DIR, LOG_PREFIX, SINK_TCP, SINK_UDP, resolvConf, parseKernelLog, groupDrops, readHostLog, firewallProblems } from '../src/sandbox-net.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const ipNum = (ip) => ip.split('.').reduce((n, x) => n * 256 + Number(x), 0);
@@ -122,4 +124,18 @@ test('net-guard: stops before changing anything when forwarded traffic would ski
   }
   const noIp6 = spawnSync('bash', [join(root, 'scripts', 'net-guard.sh')], { encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
   if (spawnSync('bash', ['-c', 'command -v iptables'], { env: { PATH: '/usr/bin:/bin' } }).status !== 0) assert.match(noIp6.stdout, /^harness error: iptables not found/);
+});
+
+test('the firewall is checked live: every chain net-guard.sh makes, and every jump to it', () => {
+  const cfg = loadCfg();
+  assert.deepEqual(firewallProblems(fakeHostRun(cfg)), []);
+  const bad = (drop) => firewallProblems(fakeHostRun(cfg, { drop }));
+  assert.match(bad({ 'iptables INPUT': ['-A INPUT -i br-+ -j ISK-SBX-IN'] }).join(), /INPUT lacks: -A INPUT -i br-\+ -j ISK-SBX-IN/);
+  assert.match(bad({ 'iptables ISK-SBX': ['-A ISK-SBX -j DROP'] }).join(), /ISK-SBX is not the chain/);
+  assert.match(bad({ 'iptables DOCKER-USER': ['-A DOCKER-USER -s 10.213.52.0/22 -j ISK-SBX'] }).join(), /DOCKER-USER lacks/);
+  assert.match(bad({ 'ip6tables ISK-SBX6-IN': true }).join(), /ip6tables ISK-SBX6-IN cannot be read/);
+  assert.match(bad({ 'ip6tables FORWARD': ['-A FORWARD -i br-+ -j ISK-SBX6'] }).join(), /ip6tables FORWARD lacks/);
+  const accept = (cmd, argv) => (argv.includes('FORWARD') && (cmd === 'iptables' || argv[1] === 'iptables') ? { status: 0, stdout: '-P FORWARD DROP\n-A FORWARD -j ACCEPT\n-A FORWARD -j DOCKER-USER' } : fakeHostRun(cfg)(cmd, argv));
+  assert.match(firewallProblems(accept).join(), /accepts traffic before DOCKER-USER/);
+  assert.equal(firewallProblems(() => ({ status: 1 })).length > 0, true, 'nothing readable is not live');
 });

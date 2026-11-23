@@ -75,3 +75,33 @@ export function row(i, o = {}) {
     timing: { total_ms: 1000 },
   };
 }
+
+/**
+ * The host as install-runsc.sh and net-guard.sh leave it, for the strict preflight: `iptables -S` /
+ * `ip6tables -S` of our chains and jumps (as iptables prints them) and `runsc --version`. `drop`
+ * removes rules: { 'iptables INPUT': [rule, ...] } or a whole chain with true.
+ */
+export function fakeHostRun(cfg, { drop = {}, version = null } = {}) {
+  const v4 = {
+    'ISK-SBX': ['-A ISK-SBX -s 10.213.53.0/24 -d 10.213.53.0/24 -j RETURN', '-A ISK-SBX -s 10.213.54.0/24 -d 10.213.54.0/24 -j RETURN', '-A ISK-SBX -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-fwd: " --log-level 4', '-A ISK-SBX -j DROP'],
+    'ISK-SBX-IN': ['-A ISK-SBX-IN -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-in: " --log-level 4', '-A ISK-SBX-IN -j DROP'],
+    'DOCKER-USER': ['-A DOCKER-USER -d 168.63.129.16/32 -j DROP', '-A DOCKER-USER -d 169.254.0.0/16 -j DROP', '-A DOCKER-USER -d 10.213.52.0/22 -j ISK-SBX', '-A DOCKER-USER -s 10.213.52.0/22 -j ISK-SBX', '-A DOCKER-USER -j RETURN'],
+    INPUT: ['-A INPUT -i br-+ -j ISK-SBX-IN', '-A INPUT -i docker0 -j ISK-SBX-IN'],
+    FORWARD: ['-A FORWARD -j DOCKER-USER', '-A FORWARD -j DOCKER-FORWARD'],
+  };
+  const v6 = {
+    'ISK-SBX6': ['-A ISK-SBX6 -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-fwd6: " --log-level 4', '-A ISK-SBX6 -j DROP'],
+    'ISK-SBX6-IN': ['-A ISK-SBX6-IN -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-in6: " --log-level 4', '-A ISK-SBX6-IN -j DROP'],
+    INPUT: ['-A INPUT -i br-+ -j ISK-SBX6-IN', '-A INPUT -i docker0 -j ISK-SBX6-IN'],
+    FORWARD: ['-A FORWARD -o br-+ -j ISK-SBX6', '-A FORWARD -i br-+ -j ISK-SBX6', '-A FORWARD -o docker0 -j ISK-SBX6', '-A FORWARD -i docker0 -j ISK-SBX6'],
+  };
+  return (cmd, argv) => {
+    if (String(cmd).endsWith('/runsc')) return { status: 0, stdout: `runsc version ${version ?? `release-${cfg.release}`}\nspec: 1.1.0\n` };
+    const [tool, a] = cmd === 'sudo' ? [argv[1], argv.slice(2)] : [cmd, argv];
+    const t = tool === 'iptables' ? v4 : tool === 'ip6tables' ? v6 : null;
+    if (!t || a[0] !== '-S' || !t[a[1]]) return { status: 1, stdout: '' };
+    const gone = drop[`${tool} ${a[1]}`];
+    if (gone === true) return { status: 1, stdout: '' };
+    return { status: 0, stdout: [`-N ${a[1]}`, ...t[a[1]].filter((l) => !(gone || []).includes(l))].join('\n') };
+  };
+}

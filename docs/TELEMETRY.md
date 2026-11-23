@@ -230,6 +230,7 @@ network logger, firewall, container and output records of the same `subject`).
 | Field | Type | Meaning |
 |---|---|---|
 | `case` | string | The case. |
+| `limits_hit` | array of strings | Where a log or limit cut the evidence short: the firewall dropped more than it logged (rate limit), the network logger stopped printing, the trace summary was cut to fit. A case with any fails the check. |
 | `canary_hits` | integer or null | Connections that reached the harness's listener on the host; null when it could not listen. |
 | `inspect` | object | From `docker inspect`: `runtime`, `mismatches` (against the settings manifest), `canary_in_env` (a host token value in the container's environment). |
 | `telemetry_has_nonce` | boolean or null | Whether the case's nonce, or another run's record, reached the telemetry. |
@@ -248,6 +249,18 @@ The target's report can make a case fail, never pass.
 | `pass` | boolean | `blocked` and `logged`. |
 | `evidence` | array of strings | At most 20 short lines saying what was seen. |
 | `detail` | string | One line. |
+
+### `firewall`
+
+The live check of the host firewall at the preflight of the self test and of a `ci` corpus shard
+(`src/sandbox-net.mjs` firewallProblems): each chain net-guard.sh makes holds exactly its rules,
+DOCKER-USER, INPUT and the IPv6 FORWARD hold its jumps, and FORWARD reaches DOCKER-USER before any
+ACCEPT. A self test passes only with one `firewall` record that is live.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `live` | boolean | The rules are in place. |
+| `problems` | array of strings | What is missing or different; empty when live. |
 
 ### `run_end`
 

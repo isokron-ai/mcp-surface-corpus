@@ -20,11 +20,12 @@ const hex = (c) => c.repeat(64);
  * a container with other settings, `logged: false` drops its trace, `runtime` changes its container
  * record, `harness` sets the harness's own verdict apart from the evidence.
  */
-function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit = [], dropped = 0 } = {}) {
+function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit = [], dropped = 0, firewall = true } = {}) {
   const f = join(mkdtempSync(join(tmpdir(), 'chk-')), 'telemetry.jsonl');
   const tel = new Telemetry(f, { run: '20261121t100000-000001', clock: fixed });
   tel.write('run_start', { kind: 'selftest', lane: 'ci', node: 'v22.0.0', platform: 'linux/x64', runtime: 'runsc', gvisor_release: '20261116.0' });
   tel.write('runtime', { available: true, name: 'runsc', release: '20261116.0', flags_expected: [], flags_daemon: [], flags_match: true, smoke: 'ok' });
+  if (firewall !== null) tel.write('firewall', { live: firewall, problems: firewall ? [] : ['iptables INPUT lacks: -A INPUT -i br-+ -j ISK-SBX-IN'] });
   if (skip) tel.write('skip', { reason: 'trace_unavailable', detail: 'no trace' });
   for (const name of cases) {
     const meta = { subject: `case:${name}`, role: 'case' };
@@ -39,7 +40,7 @@ function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit
     for (const c of ev.conns) tel.write('connection', { ...c, from: c.from ?? null }, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
     if (!omit.includes(`${name}:trace`) && ev.trace) tel.write('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
-    if (!omit.includes(`${name}:evidence`)) tel.write('case_evidence', { case: name, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
+    if (!omit.includes(`${name}:evidence`)) tel.write('case_evidence', { case: name, limits_hit: t.limits ?? [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
     if (!omit.includes(`${name}:result`)) {
       const pass = t.harness ?? ((t.blocked ?? true) && (t.logged ?? true));
       tel.write('bypass_result', { case: name, blocked: pass, logged: pass, pass, evidence: ['trace: x'], detail: 'ok' }, meta);
@@ -116,4 +117,18 @@ test('check-selftest: the verdict comes from the evidence; a harness that says p
   assert.ok(r.lines.some((l) => /^metadata: FAIL \(not blocked/.test(l)), r.lines.join('\n'));
   const v = checkSelftest(telemetry({ tweak: { icmp: { harness: false } } }));
   assert.equal(v.ok, false, 'a harness verdict that is not a pass still vetoes');
+});
+
+test('check-selftest: the host firewall must have been checked live at the preflight', () => {
+  for (const firewall of [false, null]) {
+    const r = checkSelftest(telemetry({ firewall }));
+    assert.equal(r.ok, false, String(firewall));
+    assert.ok(r.lines.some((l) => /firewall was not checked live/.test(l)), r.lines.join('\n'));
+  }
+});
+
+test('check-selftest: a case whose evidence a log or rate limit cut short fails', () => {
+  const r = checkSelftest(telemetry({ tweak: { 'docker-host': { limits: ['firewall ISK-SBX-IN: 4 drop(s) not logged (rate limit)'] } } }));
+  assert.equal(r.ok, false);
+  assert.ok(r.lines.some((l) => /^docker-host: FAIL .*rate limit/.test(l)), r.lines.join('\n'));
 });
