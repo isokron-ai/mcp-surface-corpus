@@ -118,6 +118,9 @@ test('a file name with a line break cannot pass for a trace line unnoticed', () 
   assert.equal(parseStraceLine('[   7:   7] python3 X connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10) = 0x0'), null);
   const clean = summarizeTrace(TRACE, cfg);
   assert.deepEqual([clean.injection_suspected, clean.headerless_lines, clean.broken_lines, clean.target_influenced], [false, 0, 0, true]);
+  // runsc's own headerless block as the sandbox starts, before any call, is not a sign of forgery.
+  const boot = summarizeTrace(`{\n  "ociVersion": "1.0.0"\n}\n${TRACE}`, cfg);
+  assert.deepEqual([boot.injection_suspected, boot.headerless_before_calls, boot.headerless_lines], [false, 3, 0]);
 });
 
 test('a flood of refused calls cannot push out the one that worked', () => {

@@ -42,6 +42,7 @@ export const TYPES = {
   host_drop: { chain: oneOf(['forward', 'input', 'forward6', 'input6']), family: oneOf([4, 6]), proto: str(12), src: ipOrNull, dst: ipOrNull, dpt: port },
   trace_summary: { summary: obj },
   target_output: { stream: oneOf(['stdout', 'stderr', 'file']), bytes: int, sha256: hex64, untrusted: (v) => v === true },
+  case_evidence: { case: str(40), canary_hits: intOrNull, inspect: obj, telemetry_has_nonce: boolOrNull, pids_limit: int },
   bypass_result: { case: str(40), blocked: bool, logged: bool, pass: bool, evidence: arr, detail: str(600) },
   run_end: { records: int, skipped: int, ok: bool },
 };

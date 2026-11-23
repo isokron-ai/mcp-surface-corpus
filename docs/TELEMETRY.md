@@ -220,6 +220,20 @@ parsed as results.
 | `untrusted` | `true` | Always true. |
 | `truncated` | boolean, optional | More was printed than was kept. |
 
+### `case_evidence`
+
+The evidence of one self test case that no other record holds, written just before its verdict, so
+`scripts/check-selftest.mjs` can recompute the verdict from the telemetry alone (with the trace,
+network logger, firewall, container and output records of the same `subject`).
+
+| Field | Type | Meaning |
+|---|---|---|
+| `case` | string | The case. |
+| `canary_hits` | integer or null | Connections that reached the harness's listener on the host; null when it could not listen. |
+| `inspect` | object | From `docker inspect`: `runtime`, `mismatches` (against the settings manifest), `canary_in_env` (a host token value in the container's environment). |
+| `telemetry_has_nonce` | boolean or null | Whether the case's nonce, or another run's record, reached the telemetry. |
+| `pids_limit` | integer | The process limit the case was held to (`--ulimit nproc`). |
+
 ### `bypass_result`
 
 The verdict of one self test case (`src/selftest.mjs`). The harness's own evidence decides it.

@@ -25,7 +25,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, helperRunArgs, sandboxRunArgs, LIMITS } from '../src/docker.mjs';
+import { Docker, HarnessError, checkDockerVersion, dockerEnvFrom, helperRunArgs, sandboxRunArgs, LIMITS } from '../src/docker.mjs';
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
@@ -113,6 +113,11 @@ async function runCase(name, ctx) {
   let canary = null;
   let netlog = null;
   const extra = { canary_bound: null };
+  // The canaries go where a runner keeps its tokens: in the driver's own environment, for the whole
+  // case. Every path that could carry them on (the docker client's environment, the target's
+  // environment check) reads process.env, so a leak anywhere shows up in docker inspect.
+  const savedEnv = Object.fromEntries(Object.keys(canaries).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, canaries);
   try {
     const network = await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
     const work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
@@ -127,13 +132,14 @@ async function runCase(name, ctx) {
       name: cname, image: images.python, network, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, workdir: P.work,
       mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: CASE_ENV,
       cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NETS.run.gateway, String(CANARY_PORT)],
-      hostEnv: { ...process.env, ...canaries },
+      hostEnv: process.env,
     });
     const manifest = settingsManifest(argv, { role: 'case' });
     tel.write('settings', { digest: settingsDigest(manifest), manifest }, meta);
     const t0 = Date.now();
-    // The docker client gets the canaries in its own environment, as a runner's would hold tokens.
-    const started = await dk.d(argv, { env: { ...dk.env, ...canaries }, keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 120_000 });
+    // The docker client's environment is built from process.env the way every run builds it, and is
+    // then given the canaries outright too, as a runner's own docker client would hold its tokens.
+    const started = await dk.d(argv, { env: { ...dockerEnvFrom(process.env), ...canaries }, keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 120_000 });
     const id = started.stdout.toString().trim();
     if (started.exit !== 0 || !/^[0-9a-f]{64}$/.test(id)) throw new HarnessError(`the case container did not start (exit ${started.exit})`);
     const w = await dk.d(['wait', id], { keepStdout: true, logStdout: false, cap: 64, deadline: Date.now() + CASE_MS, onTimeout: () => dk.d(['kill', id], { deadline: Date.now() + 30_000 }) });
@@ -185,6 +191,8 @@ async function runCase(name, ctx) {
     const back = readTelemetry(tel.file);
     ev.telemetryHasNonce = readFileSync(tel.file, 'utf8').includes(nonce) || back.bad.length > 0 || back.records.some((r) => r.run !== tel.run);
 
+    // The evidence that is not in other records, so scripts/check-selftest.mjs can recompute the verdict.
+    tel.write('case_evidence', { case: name, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches.map((m) => String(m).slice(0, 200)).slice(0, 20), canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: ev.pidsLimit }, meta);
     const v = evaluateCase(name, ev);
     tel.write('bypass_result', { case: name, ...v }, meta);
     return { case: name, ...v, ...extra };
@@ -193,6 +201,7 @@ async function runCase(name, ctx) {
     tel.write('bypass_result', { case: name, ...v }, meta);
     return { case: name, ...v, ...extra };
   } finally {
+    for (const [k, val] of Object.entries(savedEnv)) { if (val === undefined) delete process.env[k]; else process.env[k] = val; }
     if (canary) canary.close();
     if (netlog) await dk.kill(netlog);
     await dk.sweep(name);

@@ -7,13 +7,19 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Telemetry } from '../src/telemetry.mjs';
 import { CASES } from '../src/selftest.mjs';
+import { GOOD } from './selftest-fixtures.mjs';
 import { checkSelftest } from '../scripts/check-selftest.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const fixed = () => new Date('2026-11-21T10:00:00.000Z');
 const hex = (c) => c.repeat(64);
 
-/** A synthetic self test run: every case blocked and logged, unless `tweak` changes a case. */
+/**
+ * A synthetic self test run with the evidence of a working sandbox for every case (the same fixtures
+ * as test/selftest.test.mjs), unless `tweak` changes a case: `blocked: false` makes the evidence show
+ * a container with other settings, `logged: false` drops its trace, `runtime` changes its container
+ * record, `harness` sets the harness's own verdict apart from the evidence.
+ */
 function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit = [], dropped = 0 } = {}) {
   const f = join(mkdtempSync(join(tmpdir(), 'chk-')), 'telemetry.jsonl');
   const tel = new Telemetry(f, { run: '20261121t100000-000001', clock: fixed });
@@ -23,12 +29,20 @@ function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit
   for (const name of cases) {
     const meta = { subject: `case:${name}`, role: 'case' };
     const t = tweak[name] || {};
+    const ev = GOOD[name]();
+    if (t.blocked === false) ev.inspect.mismatches = ['the root filesystem is not read-only'];
+    if (t.logged === false) ev.trace = null;
     if (!omit.includes(`${name}:settings`)) tel.write('settings', { digest: hex('a'), manifest: { runtime: 'runsc' } }, meta);
     if (!omit.includes(`${name}:container`)) tel.write('container', { runtime: t.runtime ?? 'runsc', exit: 0, signal: null, timed_out: false, oom_killed: false, ms: 10 }, meta);
-    if (!omit.includes(`${name}:trace`)) tel.write('trace_summary', { summary: { syscalls: 5 } }, { source: 'runsc', ...meta });
+    tel.write('target_output', { stream: 'stdout', bytes: ev.output.bytes, sha256: hex('b'), untrusted: true }, meta);
+    for (const d of ev.dns) tel.write('dns_query', { from: d.from ?? null, proto: d.proto, qname: d.qname, qtype: d.qtype, answer: d.answer }, { ...meta, source: 'netlog' });
+    for (const c of ev.conns) tel.write('connection', { ...c, from: c.from ?? null }, { ...meta, source: 'netlog' });
+    for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
+    if (!omit.includes(`${name}:trace`) && ev.trace) tel.write('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
+    if (!omit.includes(`${name}:evidence`)) tel.write('case_evidence', { case: name, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
     if (!omit.includes(`${name}:result`)) {
-      const blocked = t.blocked ?? true; const logged = t.logged ?? true;
-      tel.write('bypass_result', { case: name, blocked, logged, pass: blocked && logged, evidence: ['trace: x'], detail: 'ok' }, meta);
+      const pass = t.harness ?? ((t.blocked ?? true) && (t.logged ?? true));
+      tel.write('bypass_result', { case: name, blocked: pass, logged: pass, pass, evidence: ['trace: x'], detail: 'ok' }, meta);
     }
   }
   tel.dropped = dropped;
@@ -51,7 +65,7 @@ test('check-selftest: a case that got through, or was not logged, fails the run'
 });
 
 test('check-selftest: missing evidence in the telemetry is a failure, not a pass', () => {
-  for (const o of ['icmp:trace', 'icmp:settings', 'icmp:container', 'icmp:result']) {
+  for (const o of ['icmp:trace', 'icmp:settings', 'icmp:container', 'icmp:result', 'icmp:evidence']) {
     const r = checkSelftest(telemetry({ omit: [o] }));
     assert.equal(r.ok, false, o);
     assert.ok(r.lines.some((l) => l.startsWith('icmp: FAIL')), `${o}: ${r.lines.join('\n')}`);
@@ -94,4 +108,12 @@ test('check-selftest: evidence the schema refused and left out fails the run', (
   const r = checkSelftest(telemetry({ dropped: 2 }));
   assert.equal(r.ok, false);
   assert.ok(r.lines.some((l) => /2 record\(s\) of evidence were refused/.test(l)), r.lines.join('\n'));
+});
+
+test('check-selftest: the verdict comes from the evidence; a harness that says pass cannot make one', () => {
+  const r = checkSelftest(telemetry({ tweak: { metadata: { blocked: false, harness: true } } }));
+  assert.equal(r.ok, false);
+  assert.ok(r.lines.some((l) => /^metadata: FAIL \(not blocked/.test(l)), r.lines.join('\n'));
+  const v = checkSelftest(telemetry({ tweak: { icmp: { harness: false } } }));
+  assert.equal(v.ok, false, 'a harness verdict that is not a pass still vetoes');
 });

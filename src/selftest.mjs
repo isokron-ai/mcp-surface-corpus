@@ -26,6 +26,14 @@ const NET = NETS.run;
 const list = (x) => (Array.isArray(x) ? x : []);
 /** A traced call that never got through: every try failed, and not with "in progress" (which says nothing). */
 const failedAll = (e) => e.n > 0 && e.failed === e.n && !EINPROGRESS.has(e.errno);
+/**
+ * For an outside address, failing is not enough: a connect cut short by the target's own alarm
+ * (EINTR, ERESTARTSYS) says nothing about the route. Only a definite refusal counts: EPERM, EACCES,
+ * ENETUNREACH, ECONNREFUSED, EHOSTUNREACH. (The host's own address is different: there the firewall
+ * drops packets silently, a connect can only time out, and the drop log and the listener decide.)
+ */
+const REFUSED = new Set([1, 13, 101, 111, 113]);
+const refusedAll = (e) => e.n > 0 && e.failed === e.n && REFUSED.has(e.errno);
 const fmt = (e) => `${e.family ?? ''} ${e.addr ?? e.path ?? e.name ?? ''}${e.port !== undefined && e.port !== null ? `:${e.port}` : ''} failed ${e.failed}/${e.n}${e.errno !== null && e.errno !== undefined ? ` (errno ${e.errno})` : ''}`.trim().slice(0, 200);
 const attemptsOf = (report) => {
   const r = report && typeof report === 'object' && report.result && typeof report.result === 'object' ? report.result : {};
@@ -48,7 +56,7 @@ const RULES = {
   'direct-ip': (ev) => {
     const n = net(ev.trace);
     const att = [...to(n.connects, ['1.1.1.1', '8.8.8.8', '140.82.112.3']), ...to(n.sends, ['8.8.8.8'])];
-    const blocked = att.length >= 2 && att.every(failedAll) && !reportGotThrough(ev.report);
+    const blocked = att.length >= 2 && att.every(refusedAll) && !reportGotThrough(ev.report);
     return verdict(blocked, att.length >= 2, att.map((e) => `trace: ${fmt(e)}`), blocked ? 'no connection to an outside address got through' : 'an outside address was reached, or nothing was tried');
   },
   'doh-ip': (ev) => {
@@ -56,7 +64,7 @@ const RULES = {
     const att = to(n.connects, ['1.1.1.1', '8.8.8.8', '9.9.9.9']);
     const q = list(ev.dns).find((d) => d.qname === 'dns.google');
     const sink = list(ev.conns).find((c) => c.sni === 'dns.google');
-    const blocked = att.length >= 3 && att.every(failedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report, (a) => a.tls === true || Number(a.received) > 0);
+    const blocked = att.length >= 3 && att.every(refusedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report, (a) => a.tls === true || Number(a.received) > 0);
     const logged = att.length >= 3 && !!q && !!sink;
     return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} ${q.qtype} -> ${q.answer}` : 'dns: no query for dns.google', sink ? `sinkhole: TLS hello for ${sink.sni} on ${sink.port}, closed unanswered` : 'sinkhole: no TLS hello'], blocked ? 'DNS over HTTPS reached neither a literal resolver address nor a real resolver by name' : 'a DNS over HTTPS exchange may have completed, or nothing was tried');
   },
@@ -71,7 +79,7 @@ const RULES = {
     const v6sock = n.sockets.filter((s) => s.family === 'AF_INET6');
     const drops6 = list(ev.drops).filter((d) => d.family === 6);
     const tried = v6.length > 0 || v6sock.length > 0;
-    const blocked = tried && v6.every(failedAll) && (v6.length > 0 || v6sock.every(failedAll)) && !reportGotThrough(ev.report);
+    const blocked = tried && v6.every(refusedAll) && (v6.length > 0 || v6sock.every(failedAll)) && !reportGotThrough(ev.report);
     return verdict(blocked, tried, [...v6.map((e) => `trace: ${fmt(e)}`), ...v6sock.filter(failedAll).map((s) => `trace: socket AF_INET6 failed (errno ${s.errno})`), ...drops6.map((d) => `host: ${d.chain} ${d.proto} dropped x${d.n}`)], blocked ? 'nothing got out over IPv6' : 'an IPv6 connection got through, or nothing was tried');
   },
   icmp: (ev) => {
@@ -82,7 +90,7 @@ const RULES = {
     const dropped = list(ev.drops).some((d) => d.chain === 'input' && /^ICMP$/i.test(d.proto) && d.dst === NET.gateway);
     const gwSent = gw.some((e) => e.failed < e.n);
     const tried = socks.length > 0;
-    const blocked = tried && (socks.every(failedAll) || (outside.every(failedAll) && (!gwSent || dropped))) && !reportGotThrough(ev.report);
+    const blocked = tried && (socks.every(failedAll) || (outside.every(refusedAll) && (!gwSent || dropped))) && !reportGotThrough(ev.report);
     const logged = tried && (!gwSent || dropped);
     return verdict(blocked, logged, [...socks.map((s) => `trace: socket ${s.type} ${s.protocol} failed ${s.failed}/${s.n}`), ...[...outside, ...gw].map((e) => `trace: sendto ${fmt(e)}`), dropped ? `host: ICMP to ${NET.gateway} dropped and logged` : 'host: no ICMP drop logged'], blocked ? 'no echo left the sandbox network or reached the host' : 'an echo may have got through, or nothing was tried');
   },
@@ -102,7 +110,7 @@ const RULES = {
     const att = to(n.connects, ['169.254.169.254', '168.63.129.16']);
     const q = list(ev.dns).find((d) => d.qname === 'metadata.google.internal');
     const c = list(ev.conns).find((x) => x.http && x.http.host === 'metadata.google.internal');
-    const blocked = att.length >= 2 && att.every(failedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report);
+    const blocked = att.length >= 2 && att.every(refusedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report);
     const logged = att.length >= 2 && !!q && !!c;
     return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no metadata name query', c ? `sinkhole: ${c.http.method} ${c.http.path}, closed unanswered` : 'sinkhole: no metadata request'], blocked ? 'no instance metadata or host agent address answered' : 'a metadata address was reached, or nothing was tried');
   },
@@ -137,6 +145,20 @@ const RULES = {
 };
 
 /**
+ * Why a trace cannot carry a verdict: lines a target may have forged (a path with a line break in
+ * it, src/trace-summary.mjs), a trace cut short, or a call that worked and found no place in a list.
+ */
+export function traceProblems(t) {
+  if (!t) return [];
+  const out = [];
+  if (t.injection_suspected) out.push(`the trace has lines a target may have forged (${Number(t.headerless_lines) || 0} without a header, ${Number(t.broken_lines) || 0} cut short)`);
+  if (t.truncated) out.push('the trace was cut at its size limit');
+  const lost = Object.values(t.omitted_ok || {}).reduce((s, n) => s + (Number(n) || 0), 0);
+  if (lost) out.push(`${lost} call(s) that worked were left out of the trace summary`);
+  return out;
+}
+
+/**
  * The verdict of one case: { blocked, logged, pass, evidence, detail }. A container that was not the
  * declared sandbox (not runsc, or settings that differ from the manifest) is never "blocked", and
  * without a trace nothing is "logged".
@@ -150,6 +172,8 @@ export function evaluateCase(name, ev = {}) {
   else if (list(ins.mismatches).length) pre.push(`settings differ from the manifest: ${list(ins.mismatches).join('; ')}`);
   if (pre.length) { v.blocked = false; v.pass = false; v.detail = `${pre.join('; ')}; ${v.detail}`.slice(0, 600); }
   if (!ev.trace) { v.logged = false; v.pass = false; v.detail = `no syscall trace; ${v.detail}`.slice(0, 600); }
+  const tq = traceProblems(ev.trace);
+  if (tq.length) { v.blocked = false; v.pass = false; v.detail = `${tq.join('; ')}; ${v.detail}`.slice(0, 600); }
   v.evidence = [`runtime: ${ins ? String(ins.runtime).slice(0, 20) : 'unknown'}, settings ${ins && !list(ins.mismatches).length ? 'as declared' : 'differ'}`, ...v.evidence].slice(0, 20);
   return v;
 }

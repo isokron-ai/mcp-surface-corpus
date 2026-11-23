@@ -164,7 +164,7 @@ export class TraceSummary {
   constructor(cfg, { cap = 40 } = {}) {
     this.cfg = cfg;
     this.cred = cfg.summary.credential.map((r) => new RegExp(r));
-    this.lines = 0; this.parsed = 0; this.headerless = 0; this.broken = 0;
+    this.lines = 0; this.parsed = 0; this.headerless = 0; this.headerlessBefore = 0; this.broken = 0;
     this.counts = Object.fromEntries([...FAMILIES, 'other'].map((f) => [f, 0]));
     this.failed = Object.fromEntries([...FAMILIES, 'other'].map((f) => [f, 0]));
     this.pending = new Map();
@@ -176,7 +176,9 @@ export class TraceSummary {
 
   add(line) {
     this.lines++;
-    if (!HEAD.test(line)) { this.headerless++; return; }
+    // runsc prints a block of its own without headers as the sandbox starts, before the first traced
+    // call: only a headerless line after a call can be a target's doing.
+    if (!HEAD.test(line)) { if (this.parsed || this.broken) this.headerless++; else this.headerlessBefore++; return; }
     const r = parseStraceLine(line);
     if (!r) return;
     if (r.broken) { this.broken++; return; }
@@ -236,7 +238,7 @@ export class TraceSummary {
     const t = (x) => x.list();
     return {
       format: SUMMARY_FORMAT, target_influenced: true, lines: this.lines, syscalls: Object.values(this.counts).reduce((s, n) => s + n, 0),
-      headerless_lines: this.headerless, broken_lines: this.broken, injection_suspected: this.headerless > 0 || this.broken > 0,
+      headerless_lines: this.headerless, headerless_before_calls: this.headerlessBefore, broken_lines: this.broken, injection_suspected: this.headerless > 0 || this.broken > 0,
       counts: this.counts, failed: this.failed,
       opens_outside: t(this.opens), credential_paths: t(this.creds), exec: t(this.execs),
       process: { clones: this.clones, clone_failed: this.cloneFailed },
