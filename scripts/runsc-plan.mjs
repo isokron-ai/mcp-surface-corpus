@@ -9,6 +9,7 @@
 //   sha512=<128 hex>
 //   install_dir=/usr/local/lib/isokron-gvisor
 //   log_dir=/var/log/isokron-runsc
+//   trace_fs_mb=2048                 (the size of the trace folder's own filesystem)
 //   flag=--network=sandbox          (one line per runsc flag, in the order src/runsc.mjs gives)
 //
 // The flags are exactly runscFlags(): the runtime the install registers and the flags the harness
@@ -35,6 +36,7 @@ export function plan(cfg, arch) {
     `sha512=${b.sha512}`,
     `install_dir=${cfg.install_dir}`,
     `log_dir=${cfg.log_dir}`,
+    `trace_fs_mb=${cfg.trace_fs_mb}`,
     ...runscFlags(cfg, a).map((f) => `flag=${f}`),
   ];
 }

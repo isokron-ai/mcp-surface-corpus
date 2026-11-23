@@ -42,7 +42,7 @@
  * hit its time limit, 125 harness error. The process exits 0 when every N is 0.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, statfsSync } from 'node:fs';
 import { arch, platform, release } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -56,7 +56,7 @@ import { envNameAllowed, settingsDigest, settingsManifest } from '../src/sandbox
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { Telemetry, fromProxy } from '../src/telemetry.mjs';
-import { hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { diskProblem, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { sdkFromFile } from '../src/sdk.mjs';
 import { buildRow, buildState, RECORD_FORMAT } from '../src/record.mjs';
 import { probeStdio, listed, PROTOCOL_OFFERED } from '../sandbox/probe.mjs';
@@ -299,6 +299,8 @@ async function runTarget(t, list, ctx, dk) {
   // ci lane any of it missing makes the target a harness error whose row is left out.
   const missing = [];
   ctx.missing = missing;
+  // A trace past trace_max_mb (or a trace filesystem running short) stops the target's containers.
+  const watch = watchTraces(ctx.cfg, { sinceMs: t0, statfs: ctx.statfs, onOverflow: () => dk.killAll(id) });
 
   try {
     // 1. Repository facts and the commit (host fetch, fixed hosts).
@@ -504,6 +506,13 @@ async function runTarget(t, list, ctx, dk) {
   } finally {
     try { await dk.sweep(id); } catch { /* the shard's last sweep runs too */ }
     // What the host firewall dropped while this target ran, and the traces of our helpers (not summarised).
+    watch.stop();
+    const over = watch.overflow();
+    if (over) {
+      ctx.tel.write('skip', { reason: 'trace_overflow', detail: `a syscall trace reached ${Math.round(over.bytes / 1048576)} MB (limit ${ctx.cfg.trace_max_mb} MB) or the trace filesystem ran short; the target's containers were stopped` }, { subject: id });
+      rec.errors.push({ step: 'trace', error: 'trace_overflow', harness: true });
+      missing.push('a complete syscall trace (overflow)');
+    }
     let drops = false;
     try { drops = recordDrops(ctx, t0, id); } catch (e) { appendFileSync(join(ctx.out, '_shard', 'driver-errors.log'), `${id}: host drops: ${String(e && e.message).slice(0, 300)}\n`); }
     if (!drops && ctx.hostLog !== false) missing.push('the host firewall log');
@@ -536,7 +545,7 @@ async function runTarget(t, list, ctx, dk) {
  * Options are for the tests (a scripted daemon, no network): makeDocker, probe (the stdio probe),
  * runscConfig, readResolv, readLog, traceWaitMs. The defaults are what CI runs.
  */
-export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000 } = {}) {
+export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync } = {}) {
   const o = parseArgs(argv);
   const list = validateList(JSON.parse(readFileSync(o.targets, 'utf8')));
   if (o.consume) rmSync(o.targets, { force: true });
@@ -551,7 +560,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     githubToken: process.env.GH_TOKEN || null,
     runner: { os: platform(), arch: arch(), kernel: release(), node: process.version },
     baselineMs: null,
-    cfg, tel, probe, readLog, traceWaitMs, hostLog: false, cidDir: join(out, '_shard', 'cid'),
+    cfg, tel, probe, readLog, traceWaitMs, statfs, hostLog: false, cidDir: join(out, '_shard', 'cid'),
   };
   const dk = makeDocker({ runId, log: join(out, '_shard', 'docker.log') });
   const targets = shardTargets(list.targets, o.shard, o.shards, o.only);
@@ -569,7 +578,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     await prepare(ctx, dk);
     // Nothing runs unless gVisor is there: no runsc with our flags, no resolv.conf, no smoke container
     // under runsc as 65534, no trace: a skip record, a harness error, and no fallback.
-    const pf = await preflight(dk, { cfg, arch: arch(), image: ctx.images.node24, cmd: ['node', '-e', 'console.log(process.getuid(), process.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readResolv, readLog, needHostLog: o.lane === 'ci', traceWaitMs });
+    const pf = await preflight(dk, { cfg, arch: arch(), image: ctx.images.node24, cmd: ['node', '-e', 'console.log(process.getuid(), process.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readResolv, readLog, needHostLog: o.lane === 'ci', needTraceFs: o.lane === 'ci', statfs, traceWaitMs });
     checked = true;
     Object.assign(shard.sandbox, { ok: pf.ok, reason: pf.reason, host_log: pf.hostLog });
     if (!pf.ok) throw new HarnessError(`the sandbox is not there (${pf.reason}): ${pf.detail}`);
@@ -578,6 +587,9 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     ctx.baselineMs = await baseline(ctx, dk);
     Object.assign(shard, { tools_sha256: ctx.toolsSha, install_ca: ctx.installCa, baseline_initialize_ms: ctx.baselineMs, image_ids: ctx.imageIds, cpus: ctx.cpus });
     for (const t of shuffled(targets, runId)) {
+      // Room for one more target, or the shard stops here: a full disk would lose every result.
+      const low = o.lane === 'ci' ? diskProblem(cfg, out, { statfs }) : null;
+      if (low) throw new HarnessError(`not enough disk before ${t.id}: ${low}`);
       let rc = 125;
       try { rc = await runTarget(t, list, ctx, dk); } catch (e) { appendFileSync(join(out, '_shard', 'driver-errors.log'), `${t.id}: ${String(e && e.stack).slice(0, 2000)}\n`); }
       shard.results[t.id] = rc;

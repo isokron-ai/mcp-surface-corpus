@@ -16,7 +16,9 @@
 #      <install_dir>/current pointing at it and /usr/local/bin/runsc and
 #      /usr/local/bin/containerd-shim-runsc-v1 pointing into it;
 #   5. the trace folder <log_dir> is made, mode 0750 (setgid, group of the user who ran sudo, so the
-#      harness can read the traces and nobody else can);
+#      harness can read the traces and nobody else can), as a filesystem of its own: an ext4 file of
+#      trace_fs_mb, loop-mounted nosuid,nodev,noexec, so a target's trace can never fill the
+#      runner's disk (not under RUNSC_PREFIX, which is for the tests);
 #   6. /etc/docker/daemon.json gets the runtime (other settings kept), the daemon restarts, and
 #      `docker info` must then show runsc with exactly the pinned flags (runsc-plan.mjs
 #      --verify-runtimes). A mismatch is a harness error: the harness never falls back to runc.
@@ -39,7 +41,7 @@ plan_args=(--arch "$(uname -m)")
 [ -z "${RUNSC_CONFIG:-}" ] || plan_args+=(--config "$RUNSC_CONFIG")
 plan_out="$("$node_bin" "$here/runsc-plan.mjs" "${plan_args[@]}")" || { echo "$plan_out" >&2; nothing "no install plan"; }
 
-release='' url='' sha512='' install_dir='' log_dir='' runtime=''
+release='' url='' sha512='' install_dir='' log_dir='' runtime='' trace_fs_mb=''
 flags=()
 while IFS= read -r line; do
   key="${line%%=*}" val="${line#*=}"
@@ -50,6 +52,7 @@ while IFS= read -r line; do
     sha512) sha512="$val" ;;
     install_dir) install_dir="$val" ;;
     log_dir) log_dir="$val" ;;
+    trace_fs_mb) trace_fs_mb="$val" ;;
     flag) flags+=("$val") ;;
     *) nothing "unexpected plan line" ;;
   esac
@@ -57,6 +60,7 @@ done <<<"$plan_out"
 [[ "$release" =~ ^[0-9]{8}\.[0-9]+$ && "$sha512" =~ ^[0-9a-f]{128}$ && "$runtime" = runsc ]] || nothing "the plan is incomplete"
 [[ "$install_dir" =~ ^/[A-Za-z0-9/_.-]+$ && "$log_dir" =~ ^/[A-Za-z0-9/_.-]+$ ]] || nothing "the plan's folders are not plain absolute paths"
 [ "${#flags[@]}" -gt 0 ] || nothing "the plan has no runsc flags"
+[[ "$trace_fs_mb" =~ ^[0-9]{3,5}$ ]] || nothing "the plan has no trace filesystem size"
 
 prefix="${RUNSC_PREFIX:-}"
 dest_root="$prefix$install_dir"
@@ -111,15 +115,27 @@ ln -sfn "$release" "$dest_root/current"
 ln -sfn "$install_dir/$release/runsc" "$bin_dir/runsc"
 ln -sfn "$install_dir/$release/containerd-shim-runsc-v1" "$bin_dir/containerd-shim-runsc-v1"
 
-# 5. The trace folder.
+# 5. The trace folder, on a filesystem of its own of a fixed size.
 mkdir -p "$prefix$log_dir"
+if [ -z "$prefix" ]; then
+  for c in fallocate mkfs.ext4 mount mountpoint; do command -v "$c" >/dev/null || fail "$c not found"; done
+  img="$install_dir/trace-fs.img"
+  if ! mountpoint -q "$log_dir"; then
+    rm -f "$img"
+    fallocate -l "${trace_fs_mb}M" "$img" || fail "the trace filesystem could not be made"
+    chmod 0600 "$img"
+    mkfs.ext4 -q -F -m 0 "$img" >/dev/null || fail "the trace filesystem could not be formatted"
+    mount -o loop,nosuid,nodev,noexec "$img" "$log_dir" || fail "the trace filesystem could not be mounted"
+  fi
+  mountpoint -q "$log_dir" || fail "the trace folder is not its own filesystem"
+fi
 chmod 0750 "$prefix$log_dir"
 if [ -n "${SUDO_GID:-}" ] && [[ "$SUDO_GID" =~ ^[0-9]+$ ]]; then
   chgrp "$SUDO_GID" "$prefix$log_dir"
   chmod g+s "$prefix$log_dir"
 fi
 
-echo "gVisor $release installed: $install_dir/$release, traces in $log_dir"
+echo "gVisor $release installed: $install_dir/$release, traces in $log_dir (${trace_fs_mb} MB of their own)"
 
 # 6. The Docker runtime.
 if [ -n "${RUNSC_SKIP_DAEMON:-}" ]; then

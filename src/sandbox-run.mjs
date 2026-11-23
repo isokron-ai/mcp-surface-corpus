@@ -8,7 +8,7 @@
 //   - the network logger at .2 of a sandbox network, and its lines as telemetry;
 //   - the syscall trace of one container, summarised and then removed;
 //   - the host firewall's drops for the sandbox range in a time window.
-import { existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, rmSync, statSync, statfsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { HarnessError, helperRunArgs, sandboxRunArgs } from './docker.mjs';
@@ -92,6 +92,55 @@ export function sweepTraces(cfg, sinceMs) {
   return n;
 }
 
+const TRACE_FILE = /^[0-9a-f]{64}\.[a-z-]{1,20}\.log$/;
+
+/**
+ * Watches the traces runsc writes from `sinceMs` on (one target, or one self test case, at a time)
+ * and calls onOverflow once, with the file and its size, when one passes trace_max_mb or the trace
+ * filesystem has less than that left. The caller stops the containers and records `trace_overflow`.
+ * Returns { stop(), overflow() }: overflow() is null or { file, bytes, free }.
+ */
+export function watchTraces(cfg, { sinceMs, onOverflow, intervalMs = 1000, statfs = statfsSync } = {}) {
+  const max = cfg.trace_max_mb * 1024 * 1024;
+  let hit = null;
+  const check = () => {
+    if (hit) return;
+    let free = Infinity;
+    try { const s = statfs(cfg.log_dir); free = Number(s.bavail) * Number(s.bsize); } catch { /* no filesystem to ask */ }
+    let names = [];
+    try { names = readdirSync(cfg.log_dir); } catch { return; }
+    for (const f of names) {
+      if (!TRACE_FILE.test(f)) continue;
+      let st; try { st = statSync(join(cfg.log_dir, f)); } catch { continue; }
+      if (st.mtimeMs < sinceMs - 1000) continue;
+      if (st.size > max || free < max) { hit = { file: f, bytes: st.size, free: Number.isFinite(free) ? free : null }; break; }
+    }
+    if (hit) Promise.resolve().then(() => onOverflow(hit)).catch(() => {});
+  };
+  const timer = setInterval(check, intervalMs);
+  timer.unref?.();
+  return { stop: () => { clearInterval(timer); check(); }, overflow: () => hit, check };
+}
+
+/** null when the trace folder is its own filesystem of about trace_fs_mb (install-runsc.sh), else why not. */
+export function traceFsProblem(cfg, { statfs = statfsSync } = {}) {
+  let s;
+  try { s = statfs(cfg.log_dir); } catch { return `${cfg.log_dir} cannot be read`; }
+  const total = Number(s.blocks) * Number(s.bsize);
+  if (!(total > 0) || total > cfg.trace_fs_mb * 1024 * 1024 * 1.05) return `${cfg.log_dir} is not a filesystem of its own of ${cfg.trace_fs_mb} MB (run scripts/install-runsc.sh)`;
+  return null;
+}
+
+/** null when there is room to run one more target: the output folder and the trace filesystem, else why not. */
+export function diskProblem(cfg, outDir, { minOutBytes = 2 * 1024 ** 3, statfs = statfsSync } = {}) {
+  const free = (p) => { try { const s = statfs(p); return Number(s.bavail) * Number(s.bsize); } catch { return null; } };
+  const out = free(outDir);
+  if (out === null || out < minOutBytes) return `less than ${Math.round(minOutBytes / 1024 ** 3)} GB free for the results`;
+  const tr = free(cfg.log_dir);
+  if (tr === null || tr < cfg.trace_max_mb * 1024 * 1024) return 'the trace filesystem has less room than one trace may take';
+  return null;
+}
+
 async function smoke(dk, { cfg, image, cmd, expect, tel, labels, deadlineMs, traceWaitMs }) {
   const name = dk.name(null, 'smoke');
   const argv = sandboxRunArgs({ name, image, network: 'none', labels, detach: true, env: { HOME: '/tmp', SURFACE_SANDBOX: '1' }, cmd });
@@ -127,7 +176,7 @@ async function smoke(dk, { cfg, image, cmd, expect, tel, labels, deadlineMs, tra
  * unreadable kernel log stops the run only when needHostLog is set (the self test and the corpus's
  * ci lane need the drops as evidence; the local lane records the skip and goes on).
  */
-export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels = {}, readResolv, readLog = readHostLog, needHostLog = true, deadlineMs = 180_000, traceWaitMs = 5000 }) {
+export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels = {}, readResolv, readLog = readHostLog, needHostLog = true, needTraceFs = false, statfs = statfsSync, deadlineMs = 180_000, traceWaitMs = 5000 }) {
   const skip = (reason, detail) => tel.write('skip', { reason, detail: String(detail).slice(0, 300) });
   const fail = (reason, detail) => { skip(reason, detail); return { ok: false, reason, detail, hostLog: null }; };
   const rt = await runtimeStatus(dk, cfg, arch);
@@ -136,6 +185,10 @@ export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels
   if (!rt.flags_match) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', 'runsc is registered with other flags than gvisor.json gives (run scripts/install-runsc.sh)'); }
   for (const net of Object.keys(NETS)) {
     const p = resolvProblem(net, readResolv);
+    if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
+  }
+  if (needTraceFs) {
+    const p = traceFsProblem(cfg, { statfs });
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
   }
   const sm = await smoke(dk, { cfg, image, cmd, expect, tel, labels, deadlineMs, traceWaitMs });

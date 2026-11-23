@@ -157,7 +157,16 @@ What the sandbox does not do:
   proxy runs under runc with Docker's default seccomp profile; it runs no target code but parses
   the `CONNECT` lines an install sends.
 - The syscall trace covers the families listed in `gvisor.json` and is summarised, not kept whole;
-  runsc limits each logged argument to `strace.log_size` bytes.
+  runsc limits each logged argument to `strace.log_size` bytes. Traces live on a filesystem of
+  their own (`trace_fs_mb`, a loop-mounted ext4 file made by `install-runsc.sh`), so they cannot
+  fill the runner's disk; a container whose trace passes `trace_max_mb` is stopped and recorded as
+  `trace_overflow`, and the ci lane checks free disk before each target.
+- runsc prints path arguments without quoting, so a target can put a line break in a file name and
+  write lines into its own trace that look like runsc's, header included. The summary ignores lines
+  without runsc's header, flags headerless lines after the first call and call lines that do not
+  close (`injection_suspected`), and marks every summary `target_influenced`. The self test refuses
+  a verdict from a flagged trace. A trace is evidence a target could have shaped; structured trace
+  output in place of the text log is the follow-up that removes this.
 - The network logger and the firewall log are rate limited and capped (net-guard.sh logs at most
   about 20 lines a second after a burst of 200; a logger container prints at most 20,000 lines),
   so a target that floods them is counted, not logged line by line.

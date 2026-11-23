@@ -274,6 +274,13 @@ export class Docker {
   /** Kills a container and with it every process in it (its pid namespace ends). */
   async kill(name) { await this.d(['rm', '-f', '-v', name], { deadline: Date.now() + 30_000 }); }
 
+  /** Kills every container of one target (or of the shard), leaving its networks and volumes. */
+  async killAll(target = null) {
+    const f = ['--filter', `label=${LABEL_RUN}=${this.runId}`, ...(target ? ['--filter', `label=${LABEL_TARGET}=${target}`] : [])];
+    const ids = (await this.d(['ps', '-aq', ...f], { keepStdout: true, logStdout: false, deadline: Date.now() + 30_000 })).stdout.toString().split('\n').filter(Boolean);
+    if (ids.length) await this.d(['rm', '-f', '-v', ...ids], { deadline: Date.now() + 60_000 });
+  }
+
   /** Remove everything this shard (or one target) created: containers, then networks and volumes. */
   async sweep(target = null) {
     const f = ['--filter', `label=${LABEL_RUN}=${this.runId}`, ...(target ? ['--filter', `label=${LABEL_TARGET}=${target}`] : [])];

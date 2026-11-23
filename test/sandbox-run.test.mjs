@@ -7,7 +7,7 @@ import { Docker } from '../src/docker.mjs';
 import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
 import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
-import { preflight, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem } from '../src/sandbox-run.mjs';
+import { preflight, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
 
 const IMG = `docker.io/library/python:3.13-slim-bookworm@sha256:${'a'.repeat(64)}`;
 const ID = 'c'.repeat(64);
@@ -201,4 +201,36 @@ test('sweepTraces: removes the run\'s leftover traces (helpers\' too), nothing o
   assert.equal(sweepTraces(cfg, Date.now() - 60_000), 1);
   assert.deepEqual([existsSync(old), existsSync(fresh), existsSync(other)], [true, false, true]);
   assert.equal(sweepTraces({ ...cfg, log_dir: join(d, 'missing') }, 0), 0);
+});
+
+test('a trace that grows past its limit, or a trace filesystem running short, stops the containers', async () => {
+  const d = mkdtempSync(join(tmpdir(), 'tw-'));
+  const cfg = { ...loadRunscConfig(), log_dir: d, trace_max_mb: 1 / 1024 }; // 1 KiB, for the test
+  const roomy = () => ({ bsize: 4096, blocks: 1e6, bavail: 1e6 });
+  const hits = [];
+  const w = watchTraces(cfg, { sinceMs: Date.now(), intervalMs: 20, statfs: roomy, onOverflow: (h) => hits.push(h) });
+  const f = join(d, `${'a'.repeat(64)}.boot.log`);
+  writeFileSync(f, 'x'.repeat(100));
+  await new Promise((r) => setTimeout(r, 80));
+  assert.equal(w.overflow(), null, 'under the limit');
+  writeFileSync(f, 'x'.repeat(4096));
+  await new Promise((r) => setTimeout(r, 80));
+  w.stop();
+  assert.equal(hits.length, 1);
+  assert.deepEqual([w.overflow().file, w.overflow().bytes], [`${'a'.repeat(64)}.boot.log`, 4096]);
+  const full = watchTraces(cfg, { sinceMs: Date.now() - 5000, intervalMs: 1000, statfs: () => ({ bsize: 4096, blocks: 1e6, bavail: 0 }), onOverflow: () => {} });
+  full.stop();
+  assert.ok(full.overflow(), 'a trace filesystem with no room left counts as an overflow');
+});
+
+test('the trace folder must be its own filesystem of the pinned size, and a target needs room to run', () => {
+  const cfg = loadRunscConfig();
+  const own = () => ({ bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 });
+  const rootFs = () => ({ bsize: 4096, blocks: 20 * 1024 * 256 * 10, bavail: 1e7 });
+  assert.equal(traceFsProblem(cfg, { statfs: own }), null);
+  assert.match(traceFsProblem(cfg, { statfs: rootFs }), /not a filesystem of its own/);
+  assert.match(traceFsProblem(cfg, { statfs: () => { throw new Error('no'); } }), /cannot be read/);
+  assert.equal(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 1e7 } : own()) }), null);
+  assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 10 } : own()) }), /GB free for the results/);
+  assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 1e7 } : { bsize: 4096, bavail: 1 }) }), /trace filesystem has less room/);
 });

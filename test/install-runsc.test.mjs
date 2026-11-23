@@ -114,8 +114,8 @@ test('install-runsc: a bundle with anything else in it is refused, even when the
 test('runsc-plan: the plan is gvisor.json and runscFlags, line for line; the install checks the daemon with it', () => {
   for (const a of ['x86_64', 'aarch64']) {
     const lines = plan(cfg, a);
-    assert.deepEqual(lines.slice(0, 6), [`release=${cfg.release}`, 'runtime=runsc', `url=${cfg.bundles[a].url}`, `sha512=${cfg.bundles[a].sha512}`, `install_dir=${cfg.install_dir}`, `log_dir=${cfg.log_dir}`]);
-    assert.deepEqual(lines.slice(6), runscFlags(cfg, a).map((f) => `flag=${f}`));
+    assert.deepEqual(lines.slice(0, 7), [`release=${cfg.release}`, 'runtime=runsc', `url=${cfg.bundles[a].url}`, `sha512=${cfg.bundles[a].sha512}`, `install_dir=${cfg.install_dir}`, `log_dir=${cfg.log_dir}`, `trace_fs_mb=${cfg.trace_fs_mb}`]);
+    assert.deepEqual(lines.slice(7), runscFlags(cfg, a).map((f) => `flag=${f}`));
   }
   const run = (args, input = '') => spawnSync(process.execPath, [join(root, 'scripts/runsc-plan.mjs'), ...args], { input, encoding: 'utf8' });
   assert.equal(run(['--arch', 'x86_64']).stdout, `${plan(cfg, 'x86_64').join('\n')}\n`);

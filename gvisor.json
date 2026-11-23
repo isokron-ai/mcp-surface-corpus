@@ -1,5 +1,5 @@
 {
-  "about": "The pinned gVisor (runsc) release, the flags every runsc container gets, the syscall families runsc traces, and the paths the trace summary treats as expected. scripts/install-runsc.sh installs exactly this bundle (sha512 checked, nothing else accepted) and registers it as the Docker runtime 'runsc'; src/runsc.mjs turns this file into runsc flags and summarises the traces. Recorded 21 Nov 2026; change only by a reviewed commit.",
+  "about": "The pinned gVisor (runsc) release, the flags every runsc container gets, the syscall families runsc traces, and the paths the trace summary treats as expected. scripts/install-runsc.sh installs exactly this bundle (sha512 checked, nothing else accepted) and registers it as the Docker runtime 'runsc', and mounts log_dir as a filesystem of its own of trace_fs_mb (a loop-mounted ext4 file), so traces can never fill the runner's disk; the harness stops a container whose trace passes trace_max_mb; src/runsc.mjs turns this file into runsc flags and summarises the traces. Recorded 21 Nov 2026; change only by a reviewed commit.",
   "release": "20261116.0",
   "runtime": "runsc",
   "bundles": {
@@ -14,6 +14,8 @@
   },
   "install_dir": "/usr/local/lib/isokron-gvisor",
   "log_dir": "/var/log/isokron-runsc",
+  "trace_fs_mb": 2048,
+  "trace_max_mb": 512,
   "flags": {
     "network": "sandbox",
     "net-raw": "false",

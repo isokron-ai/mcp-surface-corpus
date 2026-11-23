@@ -25,6 +25,8 @@ export function validateRunscConfig(c) {
     if (b.url !== `https://storage.googleapis.com/gvisor/releases/release/${c.release}/${a}/gvisor.tar.bz2`) bad(`${a}: the url is not the release's bundle`);
   }
   for (const k of ['install_dir', 'log_dir']) if (!/^\/[A-Za-z0-9/_.-]+$/.test(String(c[k])) || String(c[k]).includes('..')) bad(`${k} is not an absolute path`);
+  if (!(Number.isInteger(c.trace_fs_mb) && c.trace_fs_mb >= 256 && c.trace_fs_mb <= 16384)) bad('trace_fs_mb must be 256 to 16384');
+  if (!(Number.isInteger(c.trace_max_mb) && c.trace_max_mb >= 16 && c.trace_max_mb * 2 <= c.trace_fs_mb)) bad('trace_max_mb must be at least 16 and at most half of trace_fs_mb');
   const f = c.flags || {};
   if (f.network !== 'sandbox') bad('flags.network must be sandbox (gVisor\'s own network stack)');
   if (f['net-raw'] !== 'false') bad('flags.net-raw must be false');

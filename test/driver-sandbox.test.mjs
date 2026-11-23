@@ -123,7 +123,9 @@ function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = n
   ] };
   writeFileSync(join(d, 'targets.json'), JSON.stringify(list));
   const fetchFn = fakeFetch({ archives: { '*': tarGz({ 'README.md': '# n\n' }, { commit: SHA }) } });
-  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0 } };
+  // The trace folder as install-runsc.sh mounts it: its own filesystem of trace_fs_mb, mostly free.
+  const statfs = (p) => (p === logDir ? { bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 - 10 } : { bsize: 4096, blocks: 1e9, bavail: 1e9 });
+  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs } };
 }
 
 async function runMain(s) {

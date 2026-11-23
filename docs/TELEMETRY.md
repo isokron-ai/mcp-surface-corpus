@@ -114,6 +114,7 @@ running without it. There is never a fallback to runc.
 | `sandbox_setup_missing` | runsc is registered with flags other than `gvisor.json` gives, `scripts/net-guard.sh` has not written its resolv.conf files, or the harness stopped before its sandbox check. |
 | `network_setup_failed` | A sandbox network could not be made as declared. Defined in the schema; this version reports that case as a harness error instead. |
 | `trace_unavailable` | runsc wrote no syscall trace for a container. In the preflight this stops the run. For one container on the `ci` lane, its target becomes a harness error (exit 125) and its row is left out of the results; on the `local` lane it is recorded and the evidence is incomplete. |
+| `trace_overflow` | A container's syscall trace passed `trace_max_mb` (gvisor.json), or the trace filesystem ran short: the harness stopped the target's containers. On the `ci` lane the target is a harness error with no row; in the self test the case fails. |
 | `host_log_unavailable` | The kernel log (the firewall's drops) cannot be read. The self test and a `ci` corpus shard stop at the preflight; a `ci` target whose window cannot be read becomes a harness error with no row; the `local` lane records it and goes on. |
 | `disabled` | The run was switched off. Defined in the schema; in this version the workflows stop before the harness starts, so it is not written. |
 

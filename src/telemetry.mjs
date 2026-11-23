@@ -8,7 +8,7 @@ import { appendFileSync, readFileSync } from 'node:fs';
 export const TELEMETRY_VERSION = 1;
 export const SOURCES = ['harness', 'netlog', 'proxy', 'runsc', 'host'];
 export const ROLES = ['install', 'server', 'probe', 'netlog', 'proxy', 'helper', 'baseline', 'smoke', 'case'];
-export const SKIP_REASONS = ['runtime_unavailable', 'sandbox_setup_missing', 'network_setup_failed', 'trace_unavailable', 'host_log_unavailable', 'disabled'];
+export const SKIP_REASONS = ['runtime_unavailable', 'sandbox_setup_missing', 'network_setup_failed', 'trace_unavailable', 'trace_overflow', 'host_log_unavailable', 'disabled'];
 
 const str = (max = 300) => (v) => typeof v === 'string' && v.length <= max;
 const strOrNull = (max = 300) => (v) => v === null || (typeof v === 'string' && v.length <= max);

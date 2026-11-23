@@ -31,7 +31,7 @@ import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, newRunId, readTelemetry } from '../src/telemetry.mjs';
 import { CASES, CANARY_PORT, evaluateCase } from '../src/selftest.mjs';
-import { hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { loadImages } from './run-shard.mjs';
 
@@ -112,6 +112,7 @@ async function runCase(name, ctx) {
   const ev = { trace: null, dns: [], conns: [], drops: [], canaryHits: null, inspect: null, container: null, telemetryHasNonce: null, output: null, outputRecorded: false, report: null, pidsLimit: Number(LIMITS.nproc) };
   let canary = null;
   let netlog = null;
+  let watch = null;
   const extra = { canary_bound: null };
   // The canaries go where a runner keeps its tokens: in the driver's own environment, for the whole
   // case. Every path that could carry them on (the docker client's environment, the target's
@@ -137,6 +138,7 @@ async function runCase(name, ctx) {
     const manifest = settingsManifest(argv, { role: 'case' });
     tel.write('settings', { digest: settingsDigest(manifest), manifest }, meta);
     const t0 = Date.now();
+    watch = watchTraces(cfg, { sinceMs: t0, onOverflow: () => dk.kill(cname) });
     // The docker client's environment is built from process.env the way every run builds it, and is
     // then given the canaries outright too, as a runner's own docker client would hold its tokens.
     const started = await dk.d(argv, { env: { ...dockerEnvFrom(process.env), ...canaries }, keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 120_000 });
@@ -175,6 +177,8 @@ async function runCase(name, ctx) {
     ev.dns = mine.filter(([t]) => t === 'dns_query').map(([, f]) => f);
     ev.conns = mine.filter(([t]) => t === 'connection').map(([, f]) => f);
 
+    watch.stop();
+    if (watch.overflow()) tel.write('skip', { reason: 'trace_overflow', detail: `the case's syscall trace passed ${cfg.trace_max_mb} MB, or the trace filesystem ran short; the container was stopped` }, meta);
     ev.trace = await takeTrace(cfg, id);
     if (ev.trace) tel.tryWrite('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
     else tel.write('skip', { reason: 'trace_unavailable', detail: 'runsc wrote no syscall trace for the case container' }, meta);
@@ -201,6 +205,7 @@ async function runCase(name, ctx) {
     tel.write('bypass_result', { case: name, ...v }, meta);
     return { case: name, ...v, ...extra };
   } finally {
+    if (watch) watch.stop();
     for (const [k, val] of Object.entries(savedEnv)) { if (val === undefined) delete process.env[k]; else process.env[k] = val; }
     if (canary) canary.close();
     if (netlog) await dk.kill(netlog);
@@ -236,7 +241,7 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
     checkDockerVersion(v.stdout.toString().trim().split(' ')[0]);
     await dk.image(images.python, 'python');
     await dk.image(images.node22, 'node22');
-    const pf = await preflight(dk, { cfg, arch: arch(), image: images.python, cmd: ['python3', '-c', 'import os; print(os.getuid(), os.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readLog, needHostLog: true });
+    const pf = await preflight(dk, { cfg, arch: arch(), image: images.python, cmd: ['python3', '-c', 'import os; print(os.getuid(), os.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readLog, needHostLog: true, needTraceFs: true });
     if (!pf.ok) {
       results.skipped = { reason: pf.reason, detail: pf.detail };
       say(`selftest: skipped (${pf.reason}): ${pf.detail}`);
