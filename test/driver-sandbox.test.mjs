@@ -59,7 +59,8 @@ function daemon({ logDir, flags, noTrace = null, runscPath = '/usr/local/lib/iso
     if (c0 === 'volume' && c1 === 'inspect') return { exit: 1 };
     if (c0 === 'network' && c1 === 'create') { nets.set(argv[argv.length - 1], { internal: argv.includes('--internal'), subnet: val(argv, '--subnet') ?? '172.18.0.0/16' }); return {}; }
     if (c0 === 'network' && c1 === 'inspect') { const x = nets.get(argv[argv.length - 1]); return { stdout: `${x.internal} false ${x.subnet}\n` }; }
-    if (c0 === 'run') {
+    if (c0 === 'start') return {};
+    if (c0 === 'run' || c0 === 'create') {
       const id = (++n).toString(16).padStart(64, '0');
       const name = val(argv, '--name');
       const cmd = argv.join(' ');
@@ -67,7 +68,7 @@ function daemon({ logDir, flags, noTrace = null, runscPath = '/usr/local/lib/iso
       box.set(name, { id, what }); box.set(id, { id, what });
       if (val(argv, '--runtime') === 'runsc' && what !== noTrace) writeFileSync(join(logDir, `${id}.boot.log`), TRACE);
       if (val(argv, '--cidfile')) writeFileSync(val(argv, '--cidfile'), `${id}`);
-      if (argv.includes('--detach')) return { stdout: `${id}\n` };
+      if (argv.includes('--detach') || c0 === 'create') return { stdout: `${id}\n` };
       if (/npm-entry\.mjs/.test(cmd)) return { stdout: JSON.stringify({ script: '/work/pkg/node_modules/n/index.js', version: '1.2.3' }) };
       if (/test -f/.test(cmd)) return { stdout: '{"lockfileVersion":3,"packages":{}}' };
       if (/probe\.mjs/.test(cmd)) return { stdout: JSON.stringify({ format: 'isokron-surface-probe/1', mode: 'http', error: 'no answer', lists: {}, transcript: [], transport: {} }) };
@@ -125,7 +126,7 @@ function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = n
   const fetchFn = fakeFetch({ archives: { '*': tarGz({ 'README.md': '# n\n' }, { commit: SHA }) } });
   // The trace folder as install-runsc.sh mounts it: its own filesystem of trace_fs_mb, mostly free.
   const statfs = (p) => (p === logDir ? { bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 - 10 } : { bsize: 4096, blocks: 1e9, bavail: 1e9 });
-  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs, hostRun: fakeHostRun(cfg) } };
+  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs, hostRun: fakeHostRun(cfg), resolveHost: async (h) => (h === 'registry.npmjs.org' ? [{ address: '104.16.1.34', family: 4 }, { address: '10.0.0.9', family: 4 }] : []) } };
 }
 
 async function runMain(s) {
@@ -161,18 +162,22 @@ for (const [what, flags, reason] of [['no runsc runtime', null, 'runtime_unavail
   });
 }
 
-test('a shard in the sandbox: runsc for every container but the egress proxy, fixed addresses, our resolv.conf, and the run telemetry', async () => {
+test('a shard in the sandbox: runsc for every container, the egress proxy too, fixed addresses, our resolv.conf, and the run telemetry', async () => {
   const s = setup();
   const r = await runMain(s);
   assert.equal(r.rc, 0);
   assert.deepEqual(r.lines, ['run finished, exit 0', 'run finished, exit 0']);
-  const runs = s.box.dk.calls.filter((a) => a[0] === 'run');
-  assert.ok(runs.every((a) => a.includes('--runtime')), 'every container names its runtime');
-  const notRunsc = runs.filter((a) => val(a, '--runtime') !== 'runsc');
-  assert.equal(notRunsc.length, 1);
-  assert.equal(val(notRunsc[0], '--runtime'), 'runc');
-  assert.ok(notRunsc[0].some((x) => x.endsWith('/sandbox/egress-proxy.mjs')), 'the one runc container is the egress proxy');
-  assert.equal(val(notRunsc[0], '--user'), '65534:65534');
+  const runs = s.box.dk.calls.filter((a) => a[0] === 'run' || a[0] === 'create');
+  assert.ok(runs.every((a) => val(a, '--runtime') === 'runsc'), 'every container runs under gVisor');
+  // The egress proxy: created, given its install-network address, then started; registry names as
+  // fixed host entries the host resolved, public addresses only.
+  const proxy = runs.find((a) => a.some((x) => x.endsWith('/sandbox/egress-proxy.mjs')));
+  assert.equal(proxy[0], 'create');
+  assert.equal(val(proxy, '--user'), '65534:65534');
+  assert.deepEqual(proxy.filter((x, i) => proxy[i - 1] === '--add-host'), ['registry.npmjs.org:104.16.1.34']);
+  const pName = val(proxy, '--name');
+  const seq = s.box.dk.calls.map((a) => a.join(' ')).filter((l) => l.includes(pName) && /^(create|network connect|start)/.test(l)).map((l) => l.split(' ')[0]);
+  assert.deepEqual(seq, ['create', 'network', 'start']);
   assert.ok(s.box.probes.length === 2 && s.box.probes.every((a) => a[0] === 'docker' && val(a, '--runtime') === 'runsc'));
 
   // Install: the target's container at .4 of the install network, the proxy at .3, the logger at .2.

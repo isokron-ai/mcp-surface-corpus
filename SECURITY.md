@@ -75,9 +75,8 @@ runtime `runsc` with exactly the flags `src/runsc.mjs` derives from that file: g
 stack (`--network=sandbox`), no raw sockets (`--net-raw=false`), and a syscall trace of the file,
 process, network and privileged families written to `/var/log/isokron-runsc/` (mode 0750, readable
 by the group of the user who ran the install, nobody else). Every container that runs target code,
-and every helper of ours but one, runs with `--runtime runsc`. The exception is the egress proxy,
-which runs no target code; it runs under runc because it resolves registry names through the
-daemon's DNS, which gVisor's network stack does not reach. Before any target the driver
+and every helper of ours, the egress proxy included, runs with `--runtime runsc`; no container
+may name runc. Before any target the driver
 (`src/sandbox-run.mjs` preflight) checks that the daemon's runsc has exactly the pinned flags, that
 net-guard.sh's resolv.conf files are in place, and that a smoke container runs under runsc as 65534
 and leaves its trace. If any of that fails it writes a `skip` record with the reason and stops with a
@@ -154,8 +153,10 @@ What the sandbox does not do:
 - gVisor narrows the host kernel surface a target can reach; it does not remove it. An escape needs
   a gVisor bug and then a host kernel bug, and would reach a GitHub-hosted runner that is discarded
   after the job and holds only the read-only token and, during two steps, the CI key. The egress
-  proxy runs under runc with Docker's default seccomp profile; it runs no target code but parses
-  the `CONNECT` lines an install sends.
+  proxy runs under gVisor too: gVisor's own network stack does not reach Docker's DNS, so the host
+  resolves the allowlisted registry names and the proxy gets them as fixed host entries (public
+  IPv4 addresses only) and looks nothing up itself. It runs no target code but parses the
+  `CONNECT` lines an install sends.
 - The syscall trace covers the families listed in `gvisor.json` and is summarised, not kept whole;
   runsc limits each logged argument to `strace.log_size` bytes. Traces live on a filesystem of
   their own (`trace_fs_mb`, a loop-mounted ext4 file made by `install-runsc.sh`), so they cannot

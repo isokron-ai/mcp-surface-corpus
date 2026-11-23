@@ -55,7 +55,7 @@ function parseMount(s) {
  * fixed host entries, mounts, the env names (values only as a digest), the image and a digest of the command.
  */
 export function settingsManifest(argv, { role = null } = {}) {
-  const a = argv[0] === 'run' ? argv.slice(1) : [...argv];
+  const a = argv[0] === 'run' || argv[0] === 'create' ? argv.slice(1) : [...argv];
   const m = { format: 'isokron-sandbox-settings/1', role, runtime: null, user: null, cap_drop: [], cap_add: [], security_opt: [], read_only: false, init: false, tmpfs: [], pids_limit: null, memory: null, memory_swap: null, cpus: null, ulimits: [], network: null, ip: null, aliases: [], hosts: [], workdir: null, mounts: [], env_names: [], env_sha256: null, entrypoint: null, image: null, cmd_sha256: null, cmd_argc: 0 };
   const env = [];
   let i = 0;

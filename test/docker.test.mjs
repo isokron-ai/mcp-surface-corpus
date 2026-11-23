@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run, tailLine, STDERR_TAIL } from '../src/docker.mjs';
+import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run, tailLine, STDERR_TAIL, isPublicIp4 } from '../src/docker.mjs';
 import { decide, makeProxy } from '../sandbox/egress-proxy.mjs';
 import { connect } from 'node:net';
 
@@ -51,11 +51,10 @@ test('gVisor everywhere: every sandbox container gets --runtime runsc, with no w
   assert.equal(pair(sb(), '--runtime'), 'runsc');
   assert.equal(sb().filter((x) => x === '--runtime').length, 1);
   assert.equal(pair(sb({ runtime: 'runc' }), '--runtime'), 'runsc', 'an option to change it is ignored, not honoured');
-  // Helpers (our code reading target data) run under gVisor too; only the egress proxy, which needs
-  // the host's DNS to reach the registry, may name runc, and it has to ask for it by name.
+  // Helpers (our code reading target data) run under gVisor too, the egress proxy included: no
+  // helper may name runc.
   assert.equal(pair(helperRunArgs({ name: 'h', image: IMG, cmd: ['true'] }), '--runtime'), 'runsc');
-  assert.equal(pair(helperRunArgs({ name: 'h', image: IMG, cmd: ['true'], runtime: 'runc' }), '--runtime'), 'runc');
-  for (const runtime of ['', 'kata', 'io.containerd.runc.v2', 'runsc --debug']) assert.throws(() => helperRunArgs({ name: 'h', image: IMG, cmd: ['true'], runtime }), /runtime/);
+  for (const runtime of ['runc', '', 'kata', 'io.containerd.runc.v2', 'runsc --debug']) assert.throws(() => helperRunArgs({ name: 'h', image: IMG, cmd: ['true'], runtime }), /runtime/);
 });
 
 test('a sandbox container runs as 65534 (nobody) with a pid, memory and CPU limit and a small /tmp', () => {
@@ -156,4 +155,18 @@ test('names stay unique across a per-target view of the session (Object.create s
   const view = Object.create(dk); view.log = '/dev/null';
   const names = [dk.name('s001', 'h'), view.name('s001', 'h'), dk.name('s001', 'h'), view.name('s001', 'h')];
   assert.equal(new Set(names).size, 4);
+});
+
+test('the egress proxy gets registry names as fixed host entries: DNS names, public IPv4 addresses only', () => {
+  const a = helperRunArgs({ name: 'p', image: IMG, network: 'surface-x-out', create: true, cmd: ['node', 'egress-proxy.mjs'], publicHosts: [['registry.npmjs.org', '104.16.1.34']] });
+  assert.equal(a[0], 'create');
+  assert.ok(!a.includes('--rm') && !a.includes('--detach'));
+  assert.equal(pair(a, '--runtime'), 'runsc');
+  assert.equal(pair(a, '--add-host'), 'registry.npmjs.org:104.16.1.34');
+  for (const ip of ['10.0.0.1', '127.0.0.1', '169.254.169.254', '172.17.0.1', '192.168.1.1', '100.64.0.1', '10.213.53.2', '0.0.0.0', '224.0.0.1', '1.2.3', '::1', '2606:4700::1111']) {
+    assert.equal(isPublicIp4(ip), false, ip);
+    assert.throws(() => helperRunArgs({ name: 'p', image: IMG, cmd: ['x'], publicHosts: [['registry.npmjs.org', ip]] }), /public IPv4/, ip);
+  }
+  for (const n of ['host.docker.internal:1', 'localhost', 'a b.org', '-x.org', 'Registry.npmjs.org']) assert.throws(() => helperRunArgs({ name: 'p', image: IMG, cmd: ['x'], publicHosts: [[n, '104.16.1.34']] }), /DNS name/, n);
+  assert.equal(isPublicIp4('104.16.1.34'), true);
 });

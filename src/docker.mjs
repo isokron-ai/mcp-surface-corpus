@@ -127,20 +127,36 @@ const hostArgs = (hosts, network) => hosts.flatMap(([n, ip]) => {
   return ['--add-host', `${n}:${checkSandboxIp(ip, network)}`];
 });
 
-/** Runtimes a helper may name: gVisor, or runc for the egress proxy alone (it resolves registry names through the daemon's DNS, which gVisor's own network stack does not reach). */
-const HELPER_RUNTIMES = [RUNTIME, 'runc'];
+/** Runtimes a helper may name: gVisor only. (The egress proxy too: the registry names it may reach come as fixed host entries, so it needs no DNS.) */
+const HELPER_RUNTIMES = [RUNTIME];
+
+const PRIVATE4 = [['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16], ['172.16.0.0', 12], ['192.0.0.0', 24], ['192.0.2.0', 24], ['192.168.0.0', 16], ['198.18.0.0', 15], ['198.51.100.0', 24], ['203.0.113.0', 24], ['224.0.0.0', 3]];
+const ip4n = (s) => s.split('.').reduce((n, o) => n * 256 + Number(o), 0);
+/** A public IPv4 address: not private, loopback, link-local, shared, documentation, multicast or reserved. */
+export function isPublicIp4(ip) {
+  if (typeof ip !== 'string' || !/^(?:\d{1,3}\.){3}\d{1,3}$/.test(ip) || !ip.split('.').every((o) => Number(o) <= 255)) return false;
+  const n = ip4n(ip);
+  return !PRIVATE4.some(([net, bits]) => Math.floor(n / 2 ** (32 - bits)) === Math.floor(ip4n(net) / 2 ** (32 - bits)));
+}
+
+/** `--add-host` entries for the egress proxy: a registry's DNS name and a public IPv4 address the host resolved for it. */
+const publicHostArgs = (hosts) => hosts.flatMap(([n, ip]) => {
+  if (!/^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(String(n))) throw new HarnessError('a public host entry takes a DNS name');
+  if (!isPublicIp4(ip)) throw new HarnessError(`the address for ${String(n).slice(0, 60)} is not a public IPv4 address`);
+  return ['--add-host', `${n}:${ip}`];
+});
 
 /**
  * Our own code in a container (the static reader, the analyser, the HTTP probe, the network logger,
  * the egress proxy, a file copy): never target code, but it reads target data, so it is boxed the
  * same way and runs under gVisor too. No network unless one is named.
  */
-export function helperRunArgs({ name, image, network = 'none', mounts = [], env = {}, labels = {}, stdin = false, detach = false, memory = '2g', cpus = 1, cmd, user = SANDBOX_USER, capAdd = [], runtime = RUNTIME, ip = null, resolv = null, cidfile = null, hosts = [] }) {
+export function helperRunArgs({ name, image, network = 'none', mounts = [], env = {}, labels = {}, stdin = false, detach = false, create = false, memory = '2g', cpus = 1, cmd, user = SANDBOX_USER, capAdd = [], runtime = RUNTIME, ip = null, resolv = null, cidfile = null, hosts = [], publicHosts = [] }) {
   checkPinned(image, 'helper');
   if (!capAdd.every((c) => c === 'CHOWN' || c === 'NET_BIND_SERVICE')) throw new HarnessError('a helper may be given CHOWN or NET_BIND_SERVICE only');
   if (!HELPER_RUNTIMES.includes(runtime)) throw new HarnessError(`a helper runs under ${HELPER_RUNTIMES.join(' or ')}, not the runtime ${String(runtime).slice(0, 40)}`);
   return [
-    'run', ...(detach ? ['--detach'] : ['--rm']), '--name', name, ...labelArgs(labels),
+    ...(create ? ['create'] : ['run', ...(detach ? ['--detach'] : ['--rm'])]), '--name', name, ...labelArgs(labels),
     '--runtime', runtime,
     '--user', user, '--cap-drop', 'ALL', ...capAdd.flatMap((c) => ['--cap-add', c]), '--security-opt', 'no-new-privileges', '--read-only',
     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m',
@@ -148,6 +164,7 @@ export function helperRunArgs({ name, image, network = 'none', mounts = [], env 
     '--network', network,
     ...netArgs({ network, ip, resolv, cidfile }),
     ...hostArgs(hosts, network),
+    ...publicHostArgs(publicHosts),
     ...mounts.flatMap((m) => ['--mount', volumeMount(m)]),
     ...envArgs(env),
     ...(stdin ? ['--interactive'] : []),

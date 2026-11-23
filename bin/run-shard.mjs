@@ -47,8 +47,10 @@ import { arch, platform, release } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { lookup } from 'node:dns/promises';
 import { ID, P, idNumber, launchPlan, shardTargets, timeoutOf, validateList } from '../src/targets.mjs';
 import { githubFacts, registryEntry, sourceArchive } from '../src/sources.mjs';
 import { dummyValue, isSecretName } from '../src/env-refs.mjs';
@@ -56,7 +58,7 @@ import { envNameAllowed, settingsDigest, settingsManifest } from '../src/sandbox
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { Telemetry, fromProxy } from '../src/telemetry.mjs';
-import { diskProblem, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { jsonLines, diskProblem, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { sdkFromFile } from '../src/sdk.mjs';
 import { buildRow, buildState, RECORD_FORMAT } from '../src/record.mjs';
 import { probeStdio, listed, PROTOCOL_OFFERED } from '../sandbox/probe.mjs';
@@ -178,6 +180,22 @@ async function prepareTools(ctx, dk) {
 function writeSettings(ctx, argv, meta) {
   const manifest = settingsManifest(argv, { role: meta.role });
   ctx.tel.write('settings', { digest: settingsDigest(manifest), manifest }, meta);
+}
+
+/**
+ * The registries' public IPv4 addresses, resolved on the host, as [name, ip] pairs for the egress
+ * proxy's fixed host entries (at most 8 each). A name with no public address is a harness error.
+ */
+export async function resolveRegistries(names, resolveHost) {
+  const out = [];
+  for (const n of names) {
+    let addrs = [];
+    try { addrs = (await resolveHost(n)).map((a) => (typeof a === 'string' ? a : a.address)); } catch { /* reported below */ }
+    const pub = [...new Set(addrs.filter(isPublicIp4))].slice(0, 8);
+    if (!pub.length) throw new HarnessError(`the registry ${String(n).slice(0, 60)} has no public IPv4 address`);
+    out.push(...pub.map((ip) => [n, ip]));
+  }
+  return out;
 }
 
 /** A container's id from its cidfile (docker writes it at create), or null. */
@@ -367,14 +385,25 @@ async function runTarget(t, list, ctx, dk) {
           let proxyUp = false;
           const proxy = dk.name(id, 'proxy');
           try {
-            // The proxy alone runs under runc: it looks registry names up through the daemon's DNS on
-            // its egress network, which gVisor's own network stack does not reach. It is our code, it
-            // runs no target code, and it gets the same user, capabilities and read-only root.
-            const proxyArgs = helperRunArgs({ name: proxy, image: ctx.images.node24, runtime: 'runc', network: ctx.outNet, detach: true, labels: lbl, memory: '256m', mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...plan.registries] });
+            // The proxy runs under gVisor like everything else. gVisor's own network stack does not
+            // reach the daemon's DNS, so the host resolves the allowlisted registry names and the
+            // proxy gets them as fixed host entries (public IPv4 only); it looks nothing else up. It
+            // is created, given its install-network address, then started: gVisor takes its network
+            // interfaces when the sandbox starts.
+            const publicHosts = await ctx.resolveRegistries(plan.registries);
+            const proxyArgs = helperRunArgs({ name: proxy, image: ctx.images.node24, network: ctx.outNet, create: true, labels: lbl, memory: '256m', publicHosts, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...plan.registries] });
             writeSettings(ctx, proxyArgs, { subject: id, role: 'proxy' });
             await dk.must(tdk.d(proxyArgs), 'egress proxy');
             proxyUp = true;
             await dk.must(tdk.d(['network', 'connect', '--ip', NETS.install.proxy, inNet, proxy]), 'egress proxy network');
+            await dk.must(tdk.d(['start', proxy]), 'egress proxy start');
+            // Under gVisor the proxy takes a moment to start: the install waits until it listens.
+            for (let until = Date.now() + 30_000; ;) {
+              const pl0 = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 10_000 });
+              if (jsonLines(pl0.stdout).some((o) => Number.isInteger(o.listening))) break;
+              if (Date.now() >= until) throw new HarnessError('the egress proxy did not start');
+              await sleep(250);
+            }
             okAll = true;
             for (const step of plan.install) {
               if (timedOut()) { okAll = false; break; }
@@ -548,7 +577,7 @@ async function runTarget(t, list, ctx, dk) {
  * Options are for the tests (a scripted daemon, no network): makeDocker, probe (the stdio probe),
  * runscConfig, readResolv, readLog, traceWaitMs. The defaults are what CI runs.
  */
-export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync } = {}) {
+export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync, resolveHost = (h) => lookup(h, { all: true, family: 4 }) } = {}) {
   const o = parseArgs(argv);
   const list = validateList(JSON.parse(readFileSync(o.targets, 'utf8')));
   if (o.consume) rmSync(o.targets, { force: true });
@@ -563,7 +592,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     githubToken: process.env.GH_TOKEN || null,
     runner: { os: platform(), arch: arch(), kernel: release(), node: process.version },
     baselineMs: null,
-    cfg, tel, probe, readLog, traceWaitMs, statfs, hostRun, hostLog: false, cidDir: join(out, '_shard', 'cid'),
+    cfg, tel, probe, readLog, traceWaitMs, statfs, hostRun, hostLog: false, resolveRegistries: (names) => resolveRegistries(names, resolveHost), cidDir: join(out, '_shard', 'cid'),
   };
   const dk = makeDocker({ runId, log: join(out, '_shard', 'docker.log') });
   const targets = shardTargets(list.targets, o.shard, o.shards, o.only);
