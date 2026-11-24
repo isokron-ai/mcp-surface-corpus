@@ -10,11 +10,13 @@
 #
 # Before replacing anything it refuses (exit 1, nothing uploaded):
 #   - a file that is not a well-formed status;
-#   - a status whose sandbox_sha is not main's head now: a re-run of an old night tests an old
-#     commit, and its green says nothing about main;
 #   - a status that does not supersede the one published (conformance-status.mjs supersedes: a
 #     later run, or a later attempt of the same run, with evidence no older), so a re-run of an
 #     older night never puts its green back over a newer red.
+# A green status whose sandbox_sha is not main's head now (main moved during the run, or a re-run of
+# an old night tested an old commit) is published as not ok, result `main_moved`
+# (conformance-status.mjs forMain): it says nothing about main, and publishing nothing would leave
+# an older green up. A red status is published whatever main's head.
 set -euo pipefail
 file="${1:-}"
 tag=conformance
@@ -49,11 +51,13 @@ if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets --jq '.asset
 fi
 
 node --input-type=module -e '
-  import { readFileSync, existsSync } from "node:fs";
-  const { supersedes } = await import(process.argv[1]);
+  import { readFileSync, existsSync, writeFileSync } from "node:fs";
+  const { forMain, supersedes } = await import(process.argv[1]);
   const [, , file, prevFile, head] = process.argv;
-  const next = JSON.parse(readFileSync(file, "utf8"));
-  if (next.sandbox_sha !== head) { console.error(`refused: the status is for ${next.sandbox_sha}, main is at ${head}`); process.exit(1); }
+  const m = forMain(JSON.parse(readFileSync(file, "utf8")), head);
+  const next = m.status;
+  console.log(m.why);
+  writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
   let prev = null;
   if (existsSync(prevFile)) { try { prev = JSON.parse(readFileSync(prevFile, "utf8")); } catch { prev = null; } }
   const s = supersedes(next, prev);

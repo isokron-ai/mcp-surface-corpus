@@ -176,14 +176,18 @@ downloads the telemetry the self test and each mutation uploaded and recomputes 
 its own checkout's checkers (`scripts/verify-conformance.mjs`: `check-selftest.mjs`, and
 `check-mutation.mjs` for every protection). The run, attempt and commit come from its own
 environment. `sandbox-selftest.yml` runs the same recomputation on every pull request (its
-`evidence` job). This raises the bar from one forged line to a whole forged self test of evidence; a
-target with full control of the runner that ran it could still forge its own telemetry, which no
-check on GitHub's hosted runners can rule out.
+`evidence` job). This catches wiring bugs between jobs and keeps the verdict in a job that never ran
+a target. It is not a defence against a compromised self test runner: the telemetry is written on
+that runner, so a target that took it over could write evidence that recomputes as a pass. A
+separate job that signs provenance for the evidence would be the fix if that is ever needed.
 
-`scripts/publish-conformance.sh` then refuses (uploads nothing) when the status is not for main's
-head at that moment, or does not supersede the published one: a later run (higher `run_id`), or a
-later attempt of the same run, with evidence no older. A re-run of an old night therefore never puts
-its green back over a newer red, and a re-run that tests an old commit never publishes.
+`scripts/publish-conformance.sh` then refuses (uploads nothing) when the status does not supersede
+the published one: a later run (higher `run_id`), or a later attempt of the same run, with evidence
+no older. A re-run of an old night therefore never puts its green back over a newer red. A green
+status for another commit than main's head at that moment (main moved during the run, or a re-run
+tested an old commit) is published as not ok, with `result` `main_moved`: it says nothing about
+main, and publishing nothing would leave an older green up. A red status is always published when
+it supersedes.
 
 The file holds no secret and nothing a target printed:
 
@@ -192,7 +196,7 @@ The file holds no secret and nothing a target printed:
 | `format` | `isokron-sandbox-conformance/1` |
 | `ok` | `true` only when the call succeeded, `selftest` is `pass` and `mutations` is `pass`. |
 | `selftest`, `mutations` | As the outputs above (`fail` when missing). |
-| `result` | The conformance call's result: `success`, `failure`, ... |
+| `result` | The conformance call's result: `success`, `failure`, ...; or `main_moved` (then `ok` is false) when a green was for another commit than main's head at publish. |
 | `checked_at` | When the self test's evidence ended (UTC, never later than the publish); the publish time if there is none. |
 | `run_id`, `run_attempt`, `run_url` | The nightly run. |
 | `sandbox_sha` | The commit tested: main's head when published. |

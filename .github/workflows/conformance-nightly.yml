@@ -7,14 +7,17 @@
 # or LOOP_SLOTS say, so the status it publishes is fresh when the loop is turned back on.
 #
 # The publish job decides pass or fail itself. It never runs a target, never reads the outputs of the
-# jobs that did (a target that got out could write those in one line), and recomputes both verdicts
-# from the uploaded telemetry with its own checkout's checkers (scripts/verify-conformance.mjs). The
-# run, attempt and commit come from its own environment. It writes a small public status
+# jobs that did, and recomputes both verdicts from the uploaded telemetry with its own checkout's
+# checkers (scripts/verify-conformance.mjs). That catches wiring bugs between jobs and keeps the
+# verdict in a job that never ran a target; it is not a defence against a compromised self test
+# runner, which writes the telemetry itself (a separate signed-provenance job would be the fix if
+# that is ever needed). The run, attempt and commit come from its own environment. It writes a small public status
 # (scripts/conformance-status.mjs: ok, both verdicts, the evidence's date, the run, the runner image,
 # kernel, Docker and gVisor versions the runner reported; no secret, nothing a target printed) and
 # replaces the asset conformance-status.json on the release tagged `conformance`
-# (scripts/publish-conformance.sh), only when the status is for main's head now and supersedes the
-# published one (a later run or attempt, evidence no older). A release asset, unlike an Actions artifact, can be read without
+# (scripts/publish-conformance.sh) only when it supersedes the published one (a later run or
+# attempt, evidence no older); a green for another commit than main's head now (main moved during
+# the run) is published as not ok, result main_moved. A release asset, unlike an Actions artifact, can be read without
 # a token: tool-qa's pump and watchdog read it as a circuit breaker and hold every lane that runs
 # third-party code while it is red, older than 36 hours, or unreadable. A red result is published
 # too, so the breaker trips at once; a cancelled run publishes nothing and the last status ages out.

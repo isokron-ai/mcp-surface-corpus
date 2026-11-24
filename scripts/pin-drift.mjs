@@ -8,7 +8,8 @@
 //   scripts/install-age.sh   the age release tarball (linux-amd64) and its sha256, hashed here, and
 //                            its release attestation verified (gh attestation verify --repo
 //                            FiloSottile/age): the build provenance age's own release workflow
-//                            signed. A tarball without a valid attestation is not proposed.
+//                            signed. A tarball without a valid attestation is not proposed: age
+//                            keeps its pin, the rest goes on, and the PR lists it as skipped.
 //   pins/actions.json        each action the workflows use: the release tag and the commit it is.
 //
 //   node scripts/pin-drift.mjs --check            print what is behind; exit 0 (nothing) or 3
@@ -143,8 +144,8 @@ export async function latestPins({ api, fetchFn = globalThis.fetch, current, ver
   if (!SEMVER.test(String(a))) throw new Error(`age's latest release tag is not vX.Y.Z: ${String(a).slice(0, 40)}`);
   if (a !== current.age.version) {
     const bytes = await fetchBytes(fetchFn, AGE_ASSET(a));
-    if (!verifyAge(bytes, `age-${a}-linux-amd64.tar.gz`)) throw new Error(`age ${a}: the tarball's release attestation did not verify`);
-    next.age = { version: a, url: AGE_ASSET(a), sha256: createHash('sha256').update(bytes).digest('hex') };
+    if (verifyAge(bytes, `age-${a}-linux-amd64.tar.gz`)) next.age = { version: a, url: AGE_ASSET(a), sha256: createHash('sha256').update(bytes).digest('hex') };
+    else next.skipped = [...(next.skipped ?? []), `age ${current.age.version} -> ${a}: release attestation missing or not valid; the pin stays at ${current.age.version}`];
   }
   for (const name of Object.keys(current.actions)) {
     const tag = (await api(`/repos/${name}/releases/latest`)).tag_name;
@@ -203,7 +204,7 @@ export function syncUses(text, actions) {
 }
 
 /** Opens the pull request through the API; null when a branch for these very pins already exists. */
-export async function openPr({ api, repo, changes, lines, base = 'main' }) {
+export async function openPr({ api, repo, changes, lines, skipped = [], base = 'main' }) {
   const digest = createHash('sha256').update(JSON.stringify(Object.entries(changes).sort())).digest('hex').slice(0, 12);
   const branch = `pin-drift/${digest}`;
   try {
@@ -221,6 +222,7 @@ export async function openPr({ api, repo, changes, lines, base = 'main' }) {
     '',
     ...lines.map((l) => `- ${l}`),
     '',
+    ...(skipped.length ? ['**Skipped (not proposed):**', '', ...skipped.map((l) => `- ${l}`), ''] : []),
     'How far to trust the new pins:',
     '',
     '- age: the tarball was downloaded, hashed, and verified against the release attestation age\'s own release workflow signed (`gh attestation verify --repo FiloSottile/age`).',
@@ -261,12 +263,14 @@ async function main(argv, env = process.env) {
   const api = githubApi({ token: env.GITHUB_TOKEN || env.GH_TOKEN });
   const next = await latestPins({ api, current: cur });
   const lines = describe(cur, next);
-  if (!lines.length) { process.stdout.write('every pin is the newest release\n'); return 0; }
+  const skipped = next.skipped ?? [];
+  for (const l of skipped) process.stdout.write(`skipped: ${l}\n`);
+  if (!lines.length) { process.stdout.write(skipped.length ? 'nothing else is behind\n' : 'every pin is the newest release\n'); return 0; }
   for (const l of lines) process.stdout.write(`behind: ${l}\n`);
   if (mode === '--check') return 3;
   const repo = env.GITHUB_REPOSITORY;
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(String(repo ?? ''))) { process.stderr.write('GITHUB_REPOSITORY is required\n'); return 2; }
-  const pr = await openPr({ api, repo, changes: applyPins(files, cur, next), lines });
+  const pr = await openPr({ api, repo, changes: applyPins(files, cur, next), lines, skipped });
   process.stdout.write(pr ? `opened ${pr.url} from ${pr.branch}\n` : 'a branch for these pins already exists; nothing opened\n');
   return 0;
 }

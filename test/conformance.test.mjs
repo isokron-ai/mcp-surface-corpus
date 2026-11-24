@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { STATUS_FORMAT, buildStatus, statusFrom, statusProblems, supersedes } from '../scripts/conformance-status.mjs';
+import { STATUS_FORMAT, buildStatus, forMain, statusFrom, statusProblems, supersedes } from '../scripts/conformance-status.mjs';
 import { verifyEvidence } from '../scripts/verify-conformance.mjs';
 import { evidenceDir } from './evidence-fixtures.mjs';
 import { plain, runnerFacts } from '../scripts/runner-facts.mjs';
@@ -143,10 +143,10 @@ esac
   assert.equal(r.status, 1);
   assert.match(r.stderr, /refused: run 100 attempt 2 is not later than the published run 200 attempt 1/);
   assert.equal(published().run_id, 200, 'the red stays');
+  // A green for another commit than main's head is published as not ok (R-SBX-19).
   r = publish(st({ run_id: 300, run_attempt: 1, checked_at: '2026-11-25T03:58:00Z' }), 'c'.repeat(40));
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /refused: the status is for a{40}, main is at c{40}/);
-  assert.equal(published().run_id, 200);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual([published().run_id, published().ok, published().result], [300, false, 'main_moved']);
   writeFileSync(join(d, 'junk.json'), '{}');
   assert.equal(publish({ hello: 'world' }).status, 1, 'not a status');
 });
@@ -350,7 +350,8 @@ test('R-SBX-14 publish-conformance.sh refuses anything but a well-formed status 
 test('R-SBX-18 pin drift proposes no age without a valid release attestation, and says the gVisor and action pins are trust on first use', async () => {
   const cur = currentPins(readFiles(root));
   const net = fakeNet({ ageTag: 'v1.4.0' });
-  await assert.rejects(latestPins({ api: apiOf(net.fetchFn), fetchFn: net.fetchFn, current: cur, verifyAge: () => false }), /release attestation did not verify/);
+  const held = await latestPins({ api: apiOf(net.fetchFn), fetchFn: net.fetchFn, current: cur, verifyAge: () => false });
+  assert.equal(held.age.version, cur.age.version, 'no age without a valid attestation (R-SBX-20)');
   // The default check is gh attestation verify, against age's own repository.
   const seen = [];
   assert.equal(ghAttestationVerify(Buffer.from('x'), 'age-v1.4.0-linux-amd64.tar.gz', (cmd, argv) => { seen.push([cmd, ...argv.map((a) => a.replace(/^.*\/(age-v[^/]+)$/, '<dir>/$1'))]); return { status: 0 }; }), true);
@@ -369,4 +370,64 @@ test('R-SBX-18 pin drift proposes no age without a valid release attestation, an
   assert.match(body, /gVisor: \*\*trust on first use\.\*\*/);
   assert.match(body, /Actions: \*\*trust on first use\.\*\*/);
   assert.match(body, /gh attestation verify --repo FiloSottile\/age/);
+});
+
+test('R-SBX-19 a red status is always published when it supersedes, whatever main\'s head; a green for another commit goes up as not ok', () => {
+  const st = (o) => ({ ...buildStatus(good), run_id: 10, run_attempt: 1, ...o });
+  const red = st({ ok: false, selftest: 'fail' });
+  assert.deepEqual(forMain(red, 'c'.repeat(40)).status, red, 'red stays red, published as it is');
+  const moved = forMain(st({}), 'c'.repeat(40)).status;
+  assert.equal(moved.ok, false);
+  assert.equal(moved.result, 'main_moved');
+  assert.deepEqual(statusProblems(moved), [], 'still a well-formed status a reader takes as not ok');
+  assert.equal(forMain(st({}), SHA).status.ok, true, 'green for main\'s head stays green');
+
+  // End to end: the sandbox broke, main moved during the run: the red still replaces the old green.
+  const d = mkdtempSync(join(tmpdir(), 'pub19-'));
+  const bin = join(d, 'bin');
+  spawnSync('mkdir', ['-p', bin, join(d, 'rel')]);
+  writeFileSync(join(d, 'rel/conformance-status.json'), JSON.stringify(st({ run_id: 9 })));
+  writeFileSync(join(bin, 'gh'), `#!/bin/bash
+case "$1 $2" in
+  "api repos/o/r/commits/main") echo ${'c'.repeat(40)} ;;
+  "release view") echo conformance-status.json ;;
+  "release download") shift 2; while [ $# -gt 0 ]; do [ "$1" = --dir ] && cp "${d}/rel/conformance-status.json" "$2/"; shift; done ;;
+  "release upload") cp "$4" "${d}/rel/conformance-status.json" ;;
+esac
+`, { mode: 0o755 });
+  const f = join(mkdtempSync(join(tmpdir(), 'st-')), 'conformance-status.json');
+  writeFileSync(f, JSON.stringify(red));
+  const r = spawnSync('bash', [join(root, 'scripts/publish-conformance.sh'), f], { env: { PATH: `${bin}:${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r' }, encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  const now = JSON.parse(readFileSync(join(d, 'rel/conformance-status.json'), 'utf8'));
+  assert.deepEqual([now.run_id, now.ok, now.selftest], [10, false, 'fail']);
+});
+
+test('R-SBX-20 an age release without a valid attestation is skipped, not fatal: gVisor and action pins still move, and the pull request lists the skip', async () => {
+  const files = readFiles(root);
+  const cur = currentPins(files);
+  const net = fakeNet({ gvisorTag: 'release-20261201.0', ageTag: 'v1.4.0', actionTags: { 'actions/setup-node': 'v7.2.0' } });
+  const next = await latestPins({ api: apiOf(net.fetchFn), fetchFn: net.fetchFn, current: cur, verifyAge: () => false });
+  assert.equal(next.age.version, cur.age.version);
+  assert.deepEqual(next.skipped, [`age ${cur.age.version} -> v1.4.0: release attestation missing or not valid; the pin stays at ${cur.age.version}`]);
+  assert.deepEqual(describe(cur, next).map((l) => l.split(' ')[0]), ['gVisor', 'actions/setup-node']);
+  assert.ok(!('scripts/install-age.sh' in applyPins(files, cur, next)));
+  let body = '';
+  const api = async (path, { method = 'GET', body: b } = {}) => {
+    if (method === 'GET' && path.includes('/git/ref/heads/pin-drift/')) { const e = new Error('404'); e.status = 404; throw e; }
+    if (path.endsWith('/git/ref/heads/main')) return { object: { sha: SHA } };
+    if (path.includes('/git/commits/')) return { tree: { sha: SHA } };
+    if (path.endsWith('/pulls')) { body = b.body; return { number: 1, html_url: 'u' }; }
+    return { sha: SHA };
+  };
+  await openPr({ api, repo: 'o/r', changes: { 'gvisor.json': '{}' }, lines: describe(cur, next), skipped: next.skipped });
+  assert.match(body, /\*\*Skipped \(not proposed\):\*\*\n\n- age .* -> v1\.4\.0: release attestation missing or not valid/);
+});
+
+test('R-SBX-21 the recompute says plainly what it does not defend against: a compromised self test runner', () => {
+  for (const f of ['scripts/verify-conformance.mjs', '.github/workflows/conformance-nightly.yml', 'README.md']) {
+    const t = readFileSync(join(root, f), 'utf8').replace(/\n(?:#|\/\/)? ?/g, ' ');
+    assert.match(t, /not a defen[cs]e against a compromised self test runner/i, f);
+    assert.match(t, /sign(?:s|ed)?[ -]provenance/i, `${f} names the real fix`);
+  }
 });

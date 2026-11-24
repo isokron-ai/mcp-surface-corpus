@@ -95,6 +95,17 @@ export function supersedes(next, prev) {
   return { ok: true, why: 'later run, evidence no older' };
 }
 
+/**
+ * The status as it may be published while main is at `head`. A green status for another commit
+ * (main moved during the run) is published as not ok, result `main_moved`: it says nothing about
+ * main, and publishing nothing would leave an older green up. A red status is published as it is,
+ * whatever main's head: the breaker must trip.
+ */
+export function forMain(status, head) {
+  if (status.ok === true && status.sandbox_sha !== head) return { status: { ...status, ok: false, result: 'main_moved' }, why: `main moved to ${head} during the run: published as not ok` };
+  return { status, why: status.ok ? 'for main\'s head' : 'red, published whatever main\'s head' };
+}
+
 /** The status from an evidence folder and this job's environment. */
 export function statusFrom(dir, prefix, env, now = new Date()) {
   const v = verifyEvidence(dir, prefix, { mutations: true, now });

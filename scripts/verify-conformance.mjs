@@ -2,10 +2,14 @@
 // Recomputes a sandbox conformance verdict from the evidence alone, in a job that never ran a
 // target: the telemetry artifacts the self test and each mutation uploaded, read with this
 // checkout's own checkers (scripts/check-selftest.mjs, scripts/check-mutation.mjs). The outputs of
-// the jobs that ran the hostile targets are claims, never inputs here: a target that got out of
-// its sandbox could write a job output in one line, while a passing verdict here needs a whole
-// self test of evidence that recomputes as blocked and logged, and every mutation failing for its
-// own reason.
+// the jobs that ran the hostile targets are never inputs here.
+//
+// What this does and does not guard against: it catches wiring bugs between jobs (an output that
+// says pass while the evidence does not), and it keeps the verdict in a job that never ran a target.
+// It is NOT a defence against a compromised self test runner: the telemetry files are written on
+// that runner, so a target that took it over could write evidence that recomputes as a pass. If
+// that ever needs defending, the fix is a separate job that signs provenance for the evidence
+// (attested by GitHub, not by the runner that produced it).
 //
 //   node scripts/verify-conformance.mjs --evidence DIR --prefix PREFIX [--no-mutations] [--json FILE]
 //
