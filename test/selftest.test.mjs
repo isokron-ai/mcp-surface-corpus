@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { CASES, evaluateCase } from '../src/selftest.mjs';
+import { CASES, READOUT_PATHS, VOLUME_CAP, evaluateCase } from '../src/selftest.mjs';
 import { GOOD, base, trace, ok } from './selftest-fixtures.mjs';
 
 test('every case of the hostile target has a verdict, and the two lists agree', () => {
@@ -202,4 +202,51 @@ test('R-CASE-18 install-proxy-host has a positive control: the proxy must be sho
   assert.match(g(() => {}).evidence.join('\n'), /proxy: registry\.npmjs\.org:443 ALLOWED, 517 bytes up, 4096 down \(the positive control\)/);
   const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
   assert.match(py, /def case_install_proxy_host[\s\S]*?proxy_control\("registry\.npmjs\.org:443", "registry\.npmjs\.org"\)/);
+});
+
+// Red-teaming the lab: links, sockets, archives (selftest/hostile.py symlink-escape, unix-socket, install-archive-bomb).
+caseTest('R-CASE-19 symlink-escape: links planted to outside the work folder lead nowhere, and the result readout refuses them', 'symlink-escape', (ev) => { ev.stage.readout[0] = { path: '/work/lock/freeze.txt', exit: 0, bytes: 900 }; });
+caseTest('R-CASE-20 unix-socket: no host or abstract socket answers, and nothing the case left listening outlives its stage', 'unix-socket', (ev) => { ev.stage.reach[0] = { to: 'tcp 10.213.53.3:47124', ok: true, code: 'answered', bytes: 22 }; });
+caseTest('R-CASE-21 install-archive-bomb: the work volume\'s own filesystem holds the bomb, the runner\'s disk does not move, nothing climbs out', 'install-archive-bomb', (ev) => { ev.stage.disk.host_free_drop_mb = 7200; });
+
+test('R-CASE-19 symlink-escape fails on any way out: a readout that followed, the host\'s canary, a write through a link; and proves nothing without its stage', () => {
+  const g = (f) => { const ev = GOOD['symlink-escape'](); f(ev); return evaluateCase('symlink-escape', ev); };
+  assert.match(g((ev) => { ev.stage.readout[2] = { path: '/work/pkg/package-lock.json', exit: 0, bytes: 30 }; }).detail, /^got through: the result readout followed a planted link \(\/work\/pkg\/package-lock\.json/, 'a folder above the file is a link');
+  assert.match(g((ev) => { ev.stage.host.planted = 1; }).detail, /^got through: 1 file\(s\) appeared in the host's canary folder/);
+  assert.match(g((ev) => { ev.stage.host.intact = false; }).detail, /^got through: the host's canary file changed/);
+  assert.match(g((ev) => { ev.report.result.canary_seen = 1; }).detail, /^got through: the target reports reading the host's canary/);
+  assert.match(g((ev) => { ev.report.result.attempts.push({ path: '/work/links-1/l00/isk-1', via: '/', ok: true, written: true }); }).detail, /^got through: the target reports a write through a link/);
+  assert.equal(g((ev) => { ev.report.result.attempts.push({ path: '/work/x', via: '/work/y', ok: true, written: true }); }).pass, true, 'a write through a link to inside the work folder is no way out');
+  assert.match(g((ev) => { ev.stage = null; }).detail, /^not measured: the later stage did not run/);
+  assert.match(g((ev) => { ev.stage.readout = ev.stage.readout.map((r) => ({ ...r, exit: 4 })); }).detail, /^nothing was tried/);
+  assert.equal(g((ev) => { ev.trace.links = ev.trace.links.slice(0, 3); }).logged, false, 'the links must show in the trace');
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  for (const p of READOUT_PATHS) assert.ok(py.includes(p.startsWith('/work/pkg') ? '"/work/pkg"' : `"${p}"`), `${p} is planted`);
+});
+
+test('R-CASE-20 unix-socket fails on a socket that connected, a reply, or a listener reached after the stage', () => {
+  const g = (f) => { const ev = GOOD['unix-socket'](); f(ev); return evaluateCase('unix-socket', ev); };
+  assert.match(g((ev) => { ev.trace.network.connects[0] = ok({ family: 'AF_UNIX', addr: '/var/run/docker.sock', port: null }); }).detail, /^got through: a unix socket connected/);
+  assert.match(g((ev) => { ev.stage.reach[1].ok = true; }).detail, /^got through: a later stage reached what the case left listening \(unix /);
+  assert.match(g((ev) => { ev.report = { result: { attempts: [{ path: '/run/docker.sock', ok: true, received: 120 }] } }; }).detail, /^got through: the target reports a reply/);
+  assert.equal(g((ev) => { ev.report = { result: { attempts: [], listeners: [{ ok: true, listening: true, opened: true }] } }; }).pass, true, 'its own listeners are not a way out');
+  assert.match(g((ev) => { ev.stage = {}; }).detail, /^not measured/);
+  assert.match(g((ev) => { ev.trace.network.connects = ev.trace.network.connects.slice(0, 2); }).detail, /^nothing was tried/);
+  assert.equal(g((ev) => { ev.trace.network.binds = []; }).logged, false, 'the listeners must show in the trace');
+});
+
+test('R-CASE-21 install-archive-bomb fails on a volume past its cap, the runner\'s disk falling, an entry outside, or no measurement; the bomb is bigger than the cap', () => {
+  const g = (f) => { const ev = GOOD['install-archive-bomb'](); f(ev); return evaluateCase('install-archive-bomb', ev); };
+  assert.match(g((ev) => { ev.stage.disk.work_fs_mb = 72000; }).detail, /^got through: the work volume's filesystem holds 72000 MB/);
+  assert.match(g((ev) => { ev.stage.disk.work_fs_inodes = 4_600_000; }).detail, /^got through: the work volume's filesystem holds/, 'the inode cap too');
+  assert.match(g((ev) => { ev.stage.disk.host_free_drop_mb = 600; }).detail, /^got through: the runner's disk lost 600 MB/);
+  assert.match(g((ev) => { ev.stage.disk.host_free_drop_mb = null; }).detail, /^not measured: the runner's free disk could not be read/);
+  assert.match(g((ev) => { ev.trace.opens_outside[0] = ok({ path: '/etc/isk-1-dotdot', op: 'write' }); }).detail, /^got through: an archive entry was written outside the work folder \(\/etc\/isk-1-dotdot\)/);
+  assert.match(g((ev) => { ev.report.result.fallocate = { ok: true, bytes: 7 << 30 }; }).detail, /^got through: the target reports an allocation past the cap/);
+  assert.match(g((ev) => { ev.stage = null; }).detail, /^not measured: no measurement/);
+  assert.match(g((ev) => { ev.trace.opens_outside = []; }).detail, /^nothing was tried/);
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  const gib = Number(/^BOMB_GIB = (\d+)$/m.exec(py)[1]);
+  assert.ok(gib * 1024 > VOLUME_CAP.mb, `the allocation (${gib} GiB) is past the cap (${VOLUME_CAP.mb} MB)`);
+  assert.ok(gib * 1024 < 12 * 1024, 'and small enough for a runner\'s disk when the cap is off (the volume-cap mutation)');
 });

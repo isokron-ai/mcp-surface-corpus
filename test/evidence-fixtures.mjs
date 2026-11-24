@@ -29,7 +29,7 @@ export function selftestTelemetry(file, { bad = null, end = '2026-11-20T03:58:12
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
     for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
     if (ev.trace) tel.write('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
-    tel.write('case_evidence', { case: name, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
+    tel.write('case_evidence', { case: name, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512, ...(ev.stage ? { stage: ev.stage } : {}) }, meta);
     tel.write('bypass_result', { case: name, blocked: true, logged: true, pass: true, evidence: ['trace: x'], detail: 'ok' }, meta);
   }
   tel.end(true);
@@ -57,6 +57,9 @@ export function mutationTelemetry(file, protection) {
     if (protection === 'read-only') ev.trace.opens_outside[0] = { path: '/var/tmp/isk-1', op: 'write', call: 'openat', n: 1, failed: 0, errno: null };
     if (protection === 'internal-net') for (const c of ev.trace.network.connects) c.errno = 4;
     if (protection === 'proxy-allowlist-empty') ev.egress = [...ev.egress.filter((e) => e.allowed !== true), { host: 'registry.npmjs.org', port: 443, allowed: false, error: 'host not on the allowlist' }];
+    if (protection === 'readout-follows-links') ev.stage.readout = ev.stage.readout.map((r) => ({ ...r, exit: 0, bytes: 512 }));
+    if (protection === 'no-teardown') ev.stage.reach[0] = { to: 'tcp 10.213.53.3:47124', ok: true, code: 'answered', bytes: 22 };
+    if (protection === 'volume-cap') Object.assign(ev.stage.disk, { host_free_drop_mb: 8200, work_fs_mb: 73000, work_fs_inodes: 9000000 });
     if (protection === 'proxy-allowlist') ev.egress = [...ev.egress.filter((e) => e.host !== 'example.com' || e.port !== 443), { host: 'example.com', port: 443, allowed: true, up: 0, down: 0, ms: 3, error: 'EAI_AGAIN' }];
     const meta = { subject: `case:${exp.case}`, role: 'case' };
     tel.write('container', { runtime: ev.inspect.runtime, exit: 0, signal: null, timed_out: false, oom_killed: false, ms: 1 }, meta);
@@ -66,7 +69,7 @@ export function mutationTelemetry(file, protection) {
     for (const x of ev.conns) tel.write('connection', x, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
     for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
-    tel.write('case_evidence', { case: exp.case, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
+    tel.write('case_evidence', { case: exp.case, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512, ...(ev.stage ? { stage: ev.stage } : {}) }, meta);
     tel.write('bypass_result', { case: exp.case, blocked: false, logged: false, pass: false, evidence, detail: 'x' }, meta);
   }
   tel.end(false);

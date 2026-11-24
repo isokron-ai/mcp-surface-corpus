@@ -1,5 +1,5 @@
 {
-  "about": "The pinned gVisor (runsc) release, the flags every runsc container gets, the syscall families runsc traces, and the paths the trace summary treats as expected. scripts/install-runsc.sh installs exactly this bundle (sha512 checked, nothing else accepted) and registers it as the Docker runtime 'runsc', and mounts log_dir as a filesystem of its own of trace_fs_mb (a loop-mounted ext4 file), so traces can never fill the runner's disk; the harness stops a container whose trace passes trace_max_mb; src/runsc.mjs turns this file into runsc flags and summarises the traces. Recorded 21 Nov 2026; change only by a reviewed commit.",
+  "about": "The pinned gVisor (runsc) release, the flags every runsc container gets, the syscall families runsc traces, and the paths the trace summary treats as expected. scripts/install-runsc.sh installs exactly this bundle (sha512 checked, nothing else accepted) and registers it as the Docker runtime 'runsc', and mounts log_dir as a filesystem of its own of trace_fs_mb (a loop-mounted ext4 file), so traces can never fill the runner's disk, and mounts Docker's volumes folder as another filesystem of its own of volume_fs_mb and volume_fs_inodes, so a target's work volume can never fill the runner's disk or run it out of inodes; the harness stops a container whose trace passes trace_max_mb; src/runsc.mjs turns this file into runsc flags and summarises the traces. Recorded 21 Nov 2026; change only by a reviewed commit.",
   "release": "20261116.0",
   "runtime": "runsc",
   "bundles": {
@@ -16,6 +16,8 @@
   "log_dir": "/var/log/isokron-runsc",
   "trace_fs_mb": 2048,
   "trace_max_mb": 512,
+  "volume_fs_mb": 6144,
+  "volume_fs_inodes": 1048576,
   "flags": {
     "network": "sandbox",
     "net-raw": "false",

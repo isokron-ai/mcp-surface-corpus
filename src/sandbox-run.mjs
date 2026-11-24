@@ -147,6 +147,45 @@ export function traceFsProblem(cfg, { statfs = statfsSync } = {}) {
   return null;
 }
 
+/**
+ * null when Docker's volumes folder is the filesystem install-runsc.sh made for it: its own ext4,
+ * loop-mounted from <install_dir>/volume-fs.img, of about volume_fs_mb. Every work volume a target
+ * writes lives there, so a target that writes without end meets ENOSPC there, not on the runner's
+ * disk. Read without privilege, through `run`: the daemon's root folder (`docker info`), the mount
+ * table, and the loop device's size and backing file in /sys (the folder itself is root's only).
+ */
+export function volumeFsProblem(cfg, run = spawnSync) {
+  const out = (cmd, argv) => { const r = run(cmd, argv, { encoding: 'utf8', timeout: 30_000 }); return r && r.status === 0 ? String(r.stdout) : null; };
+  const root = (out('docker', ['info', '--format', '{{.DockerRootDir}}']) ?? '').trim();
+  if (!/^\/[A-Za-z0-9/_.-]+$/.test(root) || root.includes('..')) return 'the Docker root folder could not be read';
+  const dir = `${root}/volumes`;
+  const want = `the Docker volumes folder ${dir} is not a filesystem of its own of ${cfg.volume_fs_mb} MB (run scripts/install-runsc.sh)`;
+  const mi = out('cat', ['/proc/self/mountinfo']);
+  if (mi === null) return 'the mount table could not be read';
+  // mountinfo: id parent major:minor root mountpoint options [tags] - fstype source superoptions
+  const line = mi.split('\n').map((l) => l.split(' ')).filter((f) => f[4] === dir).pop();
+  if (!line) return want;
+  const dash = line.indexOf('-');
+  const [fstype, source] = dash > 0 ? [line[dash + 1], line[dash + 2]] : [null, null];
+  const loop = /^\/dev\/(loop\d{1,4})$/.exec(String(source));
+  if (fstype !== 'ext4' || !loop) return want;
+  const sectors = Number((out('cat', [`/sys/block/${loop[1]}/size`]) ?? '').trim());
+  const backing = (out('cat', [`/sys/block/${loop[1]}/loop/backing_file`]) ?? '').trim();
+  const bytes = sectors * 512; const mb = cfg.volume_fs_mb * 1024 * 1024;
+  if (!(bytes >= mb * 0.95 && bytes <= mb * 1.05) || backing !== `${cfg.install_dir}/volume-fs.img`) return want;
+  return null;
+}
+
+/**
+ * The command a helper runs (our code, no network, the work volume mounted read-only, no target
+ * container running) to read one file a target wrote, such as a lock file: only a regular file whose
+ * path resolves to itself inside /work, so a link anywhere in the path, the last part or a folder
+ * above it, is refused (exit 3) rather than followed; exit 4 when there is no such file. Bounded by
+ * `cap` bytes. The self test plants links for it (case symlink-escape).
+ */
+export const WORK_READ_SCRIPT = 'r=$(realpath -e -- "$1" 2>/dev/null) || exit 4; [ "$r" = "$1" ] || exit 3; case "$r" in /work/*) ;; *) exit 3 ;; esac; [ -f "$r" ] || exit 4; exec head -c "$2" -- "$r"';
+export const workReadCmd = (path, cap = 16 * 1024 * 1024) => ['sh', '-c', WORK_READ_SCRIPT, 'sh', path, String(cap)];
+
 /** null when there is room to run one more target: the output folder and the trace filesystem, else why not. */
 export function diskProblem(cfg, outDir, { minOutBytes = 2 * 1024 ** 3, statfs = statfsSync } = {}) {
   const free = (p) => { try { const s = statfs(p); return Number(s.bavail) * Number(s.bsize); } catch { return null; } };
@@ -204,9 +243,10 @@ export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
   }
   // strict (the self test and the corpus's ci lane): the host as install-runsc.sh and net-guard.sh
-  // left it, checked live: the pinned runsc in its place, the trace filesystem, the firewall rules.
+  // left it, checked live: the pinned runsc in its place, the trace filesystem, the volume
+  // filesystem, the firewall rules.
   if (strict) {
-    const p = installProblem(cfg, await dk.runtimes(), run) ?? traceFsProblem(cfg, { statfs });
+    const p = installProblem(cfg, await dk.runtimes(), run) ?? traceFsProblem(cfg, { statfs }) ?? volumeFsProblem(cfg, run);
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
     const fw = firewallProblems(run);
     tel.write('firewall', { live: fw.length === 0, problems: fw.map((x) => String(x).slice(0, 200)).slice(0, 20) });

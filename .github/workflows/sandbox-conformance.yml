@@ -40,7 +40,7 @@ on:
   workflow_call:
     inputs:
       mutations:
-        description: Also run the mutation matrix (each protection off in turn; about nine more jobs).
+        description: Also run the mutation matrix (each protection off in turn; fourteen more jobs).
         type: boolean
         required: false
         default: false
@@ -92,8 +92,8 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Seventeen cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
-    timeout-minutes: 45
+    # Twenty cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
+    timeout-minutes: 55
     outputs:
       sandbox-sha: ${{ steps.which.outputs.sha }}
       artifact: ${{ steps.which.outputs.artifact }}
@@ -188,6 +188,12 @@ jobs:
             cases: install-proxy-host
           - disable: proxy-allowlist-empty
             cases: install-proxy-host
+          - disable: readout-follows-links
+            cases: symlink-escape
+          - disable: no-teardown
+            cases: unix-socket
+          - disable: volume-cap
+            cases: install-archive-bomb
     steps:
       - id: which
         name: Name the sandbox commit and the artifact

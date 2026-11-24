@@ -136,3 +136,17 @@ test('R-CI-06 runsc\'s own headerless block as the sandbox starts, before any ca
   const late = summarizeTrace(`${TRACE}\n{\n}`, cfg);
   assert.equal(late.injection_suspected, true, 'after the first call it is');
 });
+
+test('R-CASE-19 the trace summary lists the links a target made, and where they point', () => {
+  const lines = [
+    L(7, 'python3', 'X', 'symlinkat(0x7f00 /etc, AT_FDCWD /work, 0x7f01 /work/links-1/l01)', '0 (0x0) (3µs)'),
+    L(7, 'python3', 'X', 'symlinkat(0x7f00 /var/run/docker.sock, 0x3 /work/links-1, 0x7f01 l09)', '0 (0x0) (3µs)'),
+    L(7, 'python3', 'X', 'symlink(0x7f00 /work/..,0x7f01 /tmp/isk-up-1)'.replace(',0x', ', 0x'), '0 (0x0) (3µs)'),
+    L(7, 'python3', 'X', 'linkat(AT_FDCWD /work, 0x7f00 /etc/passwd, AT_FDCWD /work, 0x7f01 /work/bomb/hard, 0x0)', '-1 errno=18 (cross-device link) (2µs)'),
+  ];
+  const s = summarizeTrace(lines.join('\n'), cfg);
+  const got = s.links.map((l) => [l.kind, l.target, l.path, l.failed]).sort();
+  assert.deepEqual(got, [['hard', '/etc/passwd', '/work/bomb/hard', 1], ['symlink', '/etc', '/work/links-1/l01', 0], ['symlink', '/var/run/docker.sock', '/work/links-1/l09', 0], ['symlink', '/work/..', '/tmp/isk-up-1', 0]].sort());
+  assert.equal(s.omitted.links, 0);
+  assert.equal(s.opens_outside.length, 0, 'a link made in the work folder is not a write outside it');
+});

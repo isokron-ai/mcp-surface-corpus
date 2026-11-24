@@ -58,7 +58,7 @@ import { envNameAllowed, settingsDigest, settingsManifest } from '../src/sandbox
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { Telemetry, fromProxy } from '../src/telemetry.mjs';
-import { jsonLines, diskProblem, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { jsonLines, diskProblem, workReadCmd, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { sdkFromFile } from '../src/sdk.mjs';
 import { buildRow, buildState, RECORD_FORMAT } from '../src/record.mjs';
 import { probeStdio, listed, PROTOCOL_OFFERED } from '../sandbox/probe.mjs';
@@ -439,9 +439,10 @@ async function runTarget(t, list, ctx, dk) {
             await dk.kill(proxy);
           }
           inst.ok = okAll;
-          // Lock files, read out through a helper with no network (target-written: data only, size-capped).
+          // Lock files, read out through a helper with no network (target-written: data only, size-capped;
+          // a link anywhere in the path is refused, never followed: src/sandbox-run.mjs workReadCmd).
           for (const lk of plan.locks) {
-            const r = await helper({ mounts: [{ src: work, dst: P.work, ro: true }], cmd: ['sh', '-c', 'test -f "$1" && test ! -L "$1" && head -c 16777216 "$1"', 'sh', lk.path] }, { keepStdout: true, logStdout: false, cap: LOCK_CAP, deadline: left(STEP_MS) });
+            const r = await helper({ mounts: [{ src: work, dst: P.work, ro: true }], cmd: workReadCmd(lk.path, 16 * 1024 * 1024) }, { keepStdout: true, logStdout: false, cap: LOCK_CAP, deadline: left(STEP_MS) });
             if (r.exit === 0 && r.stdout.length) {
               keepRaw(`lock-${lk.name}`, r.stdout);
               const hits = sdkFromFile(lk.name, r.stdout.toString('utf8')).map((h) => ({ ...h, kind: 'installed', depth: -1, path: lk.name }));

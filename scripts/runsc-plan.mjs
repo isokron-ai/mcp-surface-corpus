@@ -10,6 +10,8 @@
 //   install_dir=/usr/local/lib/isokron-gvisor
 //   log_dir=/var/log/isokron-runsc
 //   trace_fs_mb=2048                 (the size of the trace folder's own filesystem)
+//   volume_fs_mb=6144                (the size of the filesystem Docker's volumes get)
+//   volume_fs_inodes=1048576         (and its inode count)
 //   flag=--network=sandbox          (one line per runsc flag, in the order src/runsc.mjs gives)
 //
 // The flags are exactly runscFlags(): the runtime the install registers and the flags the harness
@@ -37,6 +39,8 @@ export function plan(cfg, arch) {
     `install_dir=${cfg.install_dir}`,
     `log_dir=${cfg.log_dir}`,
     `trace_fs_mb=${cfg.trace_fs_mb}`,
+    `volume_fs_mb=${cfg.volume_fs_mb}`,
+    `volume_fs_inodes=${cfg.volume_fs_inodes}`,
     ...runscFlags(cfg, a).map((f) => `flag=${f}`),
   ];
 }

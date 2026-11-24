@@ -41,7 +41,7 @@ function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
     for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
     if (!omit.includes(`${name}:trace`) && ev.trace) tel.write('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
-    if (!omit.includes(`${name}:evidence`)) tel.write('case_evidence', { case: name, limits_hit: t.limits ?? [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
+    if (!omit.includes(`${name}:evidence`)) tel.write('case_evidence', { case: name, limits_hit: t.limits ?? [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512, ...(ev.stage ? { stage: ev.stage } : {}) }, meta);
     if (!omit.includes(`${name}:result`)) {
       const pass = t.harness ?? ((t.blocked ?? true) && (t.logged ?? true));
       tel.write('bypass_result', { case: name, blocked: pass, logged: pass, pass, evidence: ['trace: x'], detail: 'ok' }, meta);

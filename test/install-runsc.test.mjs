@@ -114,8 +114,8 @@ test('install-runsc: a bundle with anything else in it is refused, even when the
 test('runsc-plan: the plan is gvisor.json and runscFlags, line for line; the install checks the daemon with it', () => {
   for (const a of ['x86_64', 'aarch64']) {
     const lines = plan(cfg, a);
-    assert.deepEqual(lines.slice(0, 7), [`release=${cfg.release}`, 'runtime=runsc', `url=${cfg.bundles[a].url}`, `sha512=${cfg.bundles[a].sha512}`, `install_dir=${cfg.install_dir}`, `log_dir=${cfg.log_dir}`, `trace_fs_mb=${cfg.trace_fs_mb}`]);
-    assert.deepEqual(lines.slice(7), runscFlags(cfg, a).map((f) => `flag=${f}`));
+    assert.deepEqual(lines.slice(0, 9), [`release=${cfg.release}`, 'runtime=runsc', `url=${cfg.bundles[a].url}`, `sha512=${cfg.bundles[a].sha512}`, `install_dir=${cfg.install_dir}`, `log_dir=${cfg.log_dir}`, `trace_fs_mb=${cfg.trace_fs_mb}`, `volume_fs_mb=${cfg.volume_fs_mb}`, `volume_fs_inodes=${cfg.volume_fs_inodes}`]);
+    assert.deepEqual(lines.slice(9), runscFlags(cfg, a).map((f) => `flag=${f}`));
   }
   const run = (args, input = '') => spawnSync(process.execPath, [join(root, 'scripts/runsc-plan.mjs'), ...args], { input, encoding: 'utf8' });
   assert.equal(run(['--arch', 'x86_64']).stdout, `${plan(cfg, 'x86_64').join('\n')}\n`);
@@ -128,4 +128,17 @@ test('runsc-plan: the plan is gvisor.json and runscFlags, line for line; the ins
   assert.match(verifyRuntimes(cfg, 'aarch64', good), /flags/, 'the arm64 trace list differs');
   assert.equal(run(['--verify-runtimes', '--arch', 'x86_64'], good).status, 0);
   assert.equal(run(['--verify-runtimes', '--arch', 'x86_64'], 'not json').status, 1);
+});
+
+test('R-SBX-23 install-runsc.sh puts Docker\'s volumes on a filesystem of their own, of volume_fs_mb and volume_fs_inodes, while the daemon is stopped and before any volume exists', () => {
+  const sh = readFileSync(join(root, 'scripts/install-runsc.sh'), 'utf8');
+  const at = (x) => { const i = sh.indexOf(x, sh.indexOf('volumes_dir="$docker_root/volumes"')); assert.ok(i > 0, x); return i; };
+  assert.match(sh, /docker info --format '\{\{\.DockerRootDir\}\}'/);
+  assert.ok(at('docker volume ls -q') < at('systemctl stop docker ||'), 'no volume may exist yet');
+  assert.ok(at('systemctl stop docker ||') < at('mount -o loop,nosuid,nodev "$vimg" "$volumes_dir"'), 'mounted while the daemon is stopped');
+  assert.ok(at('mkfs.ext4 -q -F -m 0 -N "$volume_fs_inodes" "$vimg"') < at('mount -o loop'));
+  assert.ok(at('fallocate -l "${volume_fs_mb}M" "$vimg"') > 0, 'the whole size is reserved up front: the cap never draws on the runner\'s disk later');
+  assert.ok(at('mountpoint -q "$volumes_dir" || fail') < sh.indexOf('systemctl restart docker'), 'checked before the daemon comes back');
+  assert.ok(!/mount -o loop,nosuid,nodev,noexec "\$vimg"/.test(sh), 'targets run programs from their work volume: no noexec');
+  assert.ok(sh.indexOf('# 5b. Docker') > 0, 'the step is documented in the header');
 });

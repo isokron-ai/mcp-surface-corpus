@@ -82,7 +82,12 @@ export function row(i, o = {}) {
  * removes rules: { 'iptables INPUT': [rule, ...] } or a whole chain with true. `top` puts rules first:
  * { 'iptables DOCKER-USER': [rule, ...] }.
  */
-export function fakeHostRun(cfg, { drop = {}, top = {}, version = null } = {}) {
+/**
+ * The host as install-runsc.sh and net-guard.sh leave it, for preflight tests: runsc --version, the
+ * iptables chains, and the volume filesystem (`docker info` root folder, the mount table, the loop
+ * device in /sys). `volumes` changes the last: { fstype, source, sectors, backing, root, mounted }.
+ */
+export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, volumes = {} } = {}) {
   const v4 = {
     'ISK-SBX': ['-A ISK-SBX -s 10.213.53.0/24 -d 10.213.53.0/24 -j RETURN', '-A ISK-SBX -s 10.213.54.0/24 -d 10.213.54.0/24 -j RETURN', '-A ISK-SBX -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-fwd: " --log-level 4', '-A ISK-SBX -j DROP'],
     'ISK-SBX-IN': ['-A ISK-SBX-IN -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-in: "', '-A ISK-SBX-IN -j DROP'],
@@ -96,8 +101,21 @@ export function fakeHostRun(cfg, { drop = {}, top = {}, version = null } = {}) {
     INPUT: ['-A INPUT -i br-+ -j ISK-SBX6-IN', '-A INPUT -i docker0 -j ISK-SBX6-IN'],
     FORWARD: ['-A FORWARD -o br-+ -j ISK-SBX6', '-A FORWARD -i br-+ -j ISK-SBX6', '-A FORWARD -o docker0 -j ISK-SBX6', '-A FORWARD -i docker0 -j ISK-SBX6'],
   };
+  const vol = { fstype: 'ext4', source: '/dev/loop9', sectors: cfg.volume_fs_mb * 2048, backing: `${cfg.install_dir}/volume-fs.img`, root: '/var/lib/docker', mounted: true, ...volumes };
+  const mountinfo = [
+    '24 1 8:1 / / rw,relatime shared:1 - ext4 /dev/root rw,discard',
+    `130 24 7:8 / ${cfg.log_dir} rw,nosuid,nodev,noexec,relatime shared:70 - ext4 /dev/loop8 rw`,
+    ...(vol.mounted ? [`131 24 7:9 / ${vol.root}/volumes rw,nosuid,nodev,relatime shared:71 - ${vol.fstype} ${vol.source} rw`] : []),
+  ].join('\n');
   return (cmd, argv) => {
     if (String(cmd).endsWith('/runsc')) return { status: 0, stdout: `runsc version ${version ?? `release-${cfg.release}`}\nspec: 1.1.0\n` };
+    if (cmd === 'docker' && argv[0] === 'info') return { status: 0, stdout: `${vol.root}\n` };
+    if (cmd === 'cat') {
+      if (argv[0] === '/proc/self/mountinfo') return { status: 0, stdout: `${mountinfo}\n` };
+      if (argv[0] === '/sys/block/loop9/size') return { status: 0, stdout: `${vol.sectors}\n` };
+      if (argv[0] === '/sys/block/loop9/loop/backing_file') return { status: 0, stdout: `${vol.backing}\n` };
+      return { status: 1, stdout: '' };
+    }
     const [tool, a] = cmd === 'sudo' ? [argv[1], argv.slice(2)] : [cmd, argv];
     const t = tool === 'iptables' ? v4 : tool === 'ip6tables' ? v6 : null;
     if (!t || a[0] !== '-S' || !t[a[1]]) return { status: 1, stdout: '' };

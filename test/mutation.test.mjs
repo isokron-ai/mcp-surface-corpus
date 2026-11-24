@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MUTATIONS, mutateCaseArgs, mutateHost, parseArgs } from '../bin/sandbox-selftest.mjs';
+import { MUTATIONS, STAGE_MS, mutateCaseArgs, mutateHost, parseArgs } from '../bin/sandbox-selftest.mjs';
 import { EXPECT, checkMutation } from '../scripts/check-mutation.mjs';
 import { sandboxRunArgs } from '../src/docker.mjs';
 import { Telemetry } from '../src/telemetry.mjs';
@@ -37,7 +37,7 @@ test('each container mutation takes out exactly its one protection', () => {
   const e = mutateCaseArgs(a, 'env-filter', can);
   assert.ok(e.includes('GITHUB_TOKEN=isk-canary-1'));
   assert.ok(e.indexOf('GITHUB_TOKEN=isk-canary-1') < e.indexOf(IMG), 'before the image, so docker reads it as an option');
-  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net', 'proxy-allowlist', 'proxy-allowlist-empty']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
+  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net', 'proxy-allowlist', 'proxy-allowlist-empty', 'readout-follows-links', 'no-teardown', 'volume-cap']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
   assert.deepEqual(a, caseArgs(), 'the original arguments are not changed');
 });
 
@@ -68,7 +68,7 @@ function mutated(protection, { preflight = null, ev = null, ended = true, harnes
     for (const x of ev.conns) tel.write('connection', x, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
     for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
-    tel.write('case_evidence', { case: c, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
+    tel.write('case_evidence', { case: c, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512, ...(ev.stage ? { stage: ev.stage } : {}) }, meta);
     tel.write('bypass_result', { case: c, blocked: false, logged: false, pass: false, evidence: harnessEvidence, detail: harnessDetail }, meta);
   }
   if (ended) tel.end(false);
@@ -133,4 +133,37 @@ test('R-MUT-02 proxy-allowlist-empty: a proxy that refuses everything is caught 
   assert.equal(r.ok, true, r.lines.join('\n'));
   assert.equal(checkMutation(mutated('proxy-allowlist-empty', { ev: GOOD['install-proxy-host']() }), 'proxy-allowlist-empty').ok, false, 'a working proxy is not the mutation shown');
   assert.equal(MUTATIONS['proxy-allowlist-empty'].includes('allows nothing'), true);
+});
+
+test('R-MUT-03 readout-follows-links: a readout that reads a path as it is, links and all, is caught by symlink-escape', () => {
+  const ev = GOOD['symlink-escape']();
+  ev.stage.readout = ev.stage.readout.map((r) => ({ ...r, exit: 0, bytes: 900 }));
+  const r = checkMutation(mutated('readout-follows-links', { ev }), 'readout-follows-links');
+  assert.equal(r.ok, true, r.lines.join('\n'));
+  assert.equal(checkMutation(mutated('readout-follows-links', { ev: GOOD['symlink-escape']() }), 'readout-follows-links').ok, false, 'a readout that refused is not the mutation shown');
+  const host = GOOD['symlink-escape'](); host.stage.host.planted = 2;
+  assert.match(checkMutation(mutated('readout-follows-links', { ev: host }), 'readout-follows-links').lines.join('\n'), /another reason/);
+  assert.equal(mutateHost('readout-follows-links', () => { throw new Error('no host change'); }), true);
+});
+
+test('R-MUT-04 no-teardown: a server-like case left running after its stage is caught by unix-socket\'s later stage', () => {
+  const ev = GOOD['unix-socket']();
+  ev.stage.reach[0] = { to: 'tcp 10.213.53.3:47124', ok: true, code: 'answered', bytes: 22 };
+  const r = checkMutation(mutated('no-teardown', { ev }), 'no-teardown');
+  assert.equal(r.ok, true, r.lines.join('\n'));
+  assert.equal(checkMutation(mutated('no-teardown', { ev: GOOD['unix-socket']() }), 'no-teardown').ok, false);
+  const sock = GOOD['unix-socket'](); sock.stage.reach[1].ok = true;
+  assert.match(checkMutation(mutated('no-teardown', { ev: sock }), 'no-teardown').lines.join('\n'), /another reason/, 'only the TCP listener outlives a stage that was not torn down');
+  assert.equal(STAGE_MS['unix-socket'] > 0 && STAGE_MS['unix-socket'] <= 60_000, true);
+});
+
+test('R-MUT-05 volume-cap: a work volume on the runner\'s own disk is caught by install-archive-bomb', () => {
+  const ev = GOOD['install-archive-bomb']();
+  Object.assign(ev.stage.disk, { host_free_drop_mb: 8200, work_fs_mb: 73000, work_fs_inodes: 9_000_000 });
+  const r = checkMutation(mutated('volume-cap', { ev }), 'volume-cap');
+  assert.equal(r.ok, true, r.lines.join('\n'));
+  const big = GOOD['install-archive-bomb'](); big.stage.disk.work_fs_mb = 73000;
+  assert.equal(checkMutation(mutated('volume-cap', { ev: big }), 'volume-cap').ok, true, 'the volume past its cap shows it too');
+  assert.equal(checkMutation(mutated('volume-cap', { ev: GOOD['install-archive-bomb']() }), 'volume-cap').ok, false);
+  assert.match(MUTATIONS['volume-cap'], /runner's own disk/);
 });
