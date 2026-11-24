@@ -138,13 +138,28 @@ export function watchTraces(cfg, { sinceMs, onOverflow, intervalMs = 1000, statf
   return { stop: () => { clearInterval(timer); check(); }, overflow: () => hit, check };
 }
 
-/** null when the trace folder is its own filesystem of about trace_fs_mb (install-runsc.sh), else why not. */
-export function traceFsProblem(cfg, { statfs = statfsSync } = {}) {
+/**
+ * null when the trace folder is its own filesystem of about trace_fs_mb (install-runsc.sh), else why
+ * not. With `run` (the strict preflight), its image file must also be fully reserved: no holes.
+ */
+export function traceFsProblem(cfg, { statfs = statfsSync, run = null } = {}) {
   let s;
   try { s = statfs(cfg.log_dir); } catch { return `${cfg.log_dir} cannot be read`; }
   const total = Number(s.blocks) * Number(s.bsize);
   if (!(total > 0) || total > cfg.trace_fs_mb * 1024 * 1024 * 1.05) return `${cfg.log_dir} is not a filesystem of its own of ${cfg.trace_fs_mb} MB (run scripts/install-runsc.sh)`;
+  if (run) {
+    const hole = imageHoles(`${cfg.install_dir}/trace-fs.img`, run);
+    if (hole) return `${cfg.log_dir} is not a filesystem of its own of ${cfg.trace_fs_mb} MB, fully reserved (run scripts/install-runsc.sh): trace-fs.img ${hole}`;
+  }
   return null;
+}
+
+/** null when an image file is fully reserved (its allocated blocks cover its size), else what `stat` said. */
+export function imageHoles(file, run = spawnSync) {
+  const r = run('stat', ['-c', '%b %B %s', file], { encoding: 'utf8', timeout: 30_000 });
+  const raw = r && r.status === 0 ? String(r.stdout).trim() : '';
+  const st = raw.split(' ').map(Number);
+  return st.length === 3 && st[0] * st[1] >= st[2] && st[2] > 0 ? null : `has holes (stat: ${raw.slice(0, 60) || 'unreadable'})`;
 }
 
 /**
@@ -168,6 +183,10 @@ export function dockerFsProblem(cfg, run = spawnSync) {
   try { dj = JSON.parse(out('cat', ['/etc/docker/daemon.json']) ?? ''); } catch { dj = null; }
   const lo = dj && dj['log-opts'];
   if (!dj || dj['log-driver'] !== lg.driver || !lo || lo['max-size'] !== `${lg.max_size_mb}m` || String(lo['max-file']) !== String(lg.max_file)) return 'the daemon\'s default container log limits are not the pinned ones (/etc/docker/daemon.json log-driver, log-opts)';
+  // A folder in the volumes folder that is no volume of ours (mkfs's lost+found) shows up as a volume,
+  // and lanes that check every volume is gone after a run would never see the sandbox gone.
+  const vols = out('docker', ['volume', 'ls', '-q']);
+  if (vols !== null && vols.split('\n').some((v) => v.trim() === 'lost+found')) return `Docker lists a volume lost+found: the folder mkfs made in ${cfg.docker_root}/volumes is still there (run scripts/install-runsc.sh)`;
   const mi = out('cat', ['/proc/self/mountinfo']);
   if (mi === null) return 'the mount table could not be read';
   const fs = [[cfg.docker_root, 'docker-fs.img', cfg.docker_fs_mb, cfg.docker_fs_inodes, 'Docker data-root'], [`${cfg.docker_root}/volumes`, 'volume-fs.img', cfg.volume_fs_mb, cfg.volume_fs_inodes, 'Docker volumes folder']];
@@ -187,9 +206,8 @@ export function dockerFsProblem(cfg, run = spawnSync) {
     const bytes = sectors * 512; const size = mb * 1024 * 1024;
     if (!(bytes >= size * 0.95 && bytes <= size * 1.05) || backing !== `${cfg.install_dir}/${img}`) return want;
     // Fully reserved: the image's allocated blocks cover its size.
-    const raw = (out('stat', ['-c', '%b %B %s', backing]) ?? '').trim();
-    const st = raw.split(' ').map(Number);
-    if (!(st.length === 3 && st[0] * st[1] >= st[2] && st[2] > 0)) return `${want}: ${img} has holes (stat: ${raw.slice(0, 60) || 'unreadable'})`;
+    const hole = imageHoles(backing, run);
+    if (hole) return `${want}: ${img} ${hole}`;
     // The inode count, as statfs gives it (ext4 rounds -N up to whole groups).
     const n = Number((out('sudo', ['-n', 'stat', '-f', '-c', '%c', dir]) ?? '').trim());
     if (!(n >= inodes && n <= inodes * 1.05)) return `${want}: it has ${Number.isFinite(n) ? n : 'an unknown number of'} inodes`;
@@ -207,11 +225,16 @@ export function dockerFsProblem(cfg, run = spawnSync) {
 export const WORK_READ_SCRIPT = 'r=$(realpath -e -- "$1" 2>/dev/null) || exit 4; [ "$r" = "$1" ] || exit 3; case "$r" in /work/*) ;; *) exit 3 ;; esac; [ -f "$r" ] || exit 4; exec head -c "$2" -- "$r"';
 export const workReadCmd = (path, cap = 16 * 1024 * 1024) => ['sh', '-c', WORK_READ_SCRIPT, 'sh', path, String(cap)];
 
-/** null when there is room to run one more target: the output folder and the trace filesystem, else why not. */
-export function diskProblem(cfg, outDir, { minOutBytes = 2 * 1024 ** 3, statfs = statfsSync } = {}) {
+/**
+ * null when there is room to run one more target: the output folder, the trace filesystem, and
+ * Docker's data filesystem (a target's own image and its work volume land there), else why not.
+ */
+export function diskProblem(cfg, outDir, { minOutBytes = 2 * 1024 ** 3, minDockerBytes = 3 * 1024 ** 3, statfs = statfsSync } = {}) {
   const free = (p) => { try { const s = statfs(p); return Number(s.bavail) * Number(s.bsize); } catch { return null; } };
   const out = free(outDir);
   if (out === null || out < minOutBytes) return `less than ${Math.round(minOutBytes / 1024 ** 3)} GB free for the results`;
+  const dk = free(cfg.docker_root);
+  if (dk === null || dk < minDockerBytes) return `less than ${Math.round(minDockerBytes / 1024 ** 3)} GB free on Docker's data filesystem (${cfg.docker_root}) for a target's image and work`;
   const tr = free(cfg.log_dir);
   if (tr === null || tr < cfg.trace_max_mb * 1024 * 1024) return 'the trace filesystem has less room than one trace may take';
   return null;
@@ -267,7 +290,7 @@ export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels
   // left it, checked live: the pinned runsc in its place, the trace filesystem, Docker's data and
   // volume filesystems and its log limits, the firewall rules.
   if (strict) {
-    const p = installProblem(cfg, await dk.runtimes(), run) ?? traceFsProblem(cfg, { statfs }) ?? dockerFsProblem(cfg, run);
+    const p = installProblem(cfg, await dk.runtimes(), run) ?? traceFsProblem(cfg, { statfs, run }) ?? dockerFsProblem(cfg, run);
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
     const fw = firewallProblems(run);
     tel.write('firewall', { live: fw.length === 0, problems: fw.map((x) => String(x).slice(0, 200)).slice(0, 20) });
@@ -357,7 +380,13 @@ export function writeDrops(tel, groups, { subject = null, roles = {} } = {}) {
  * than it logged (its LOG rules are rate limited), the network logger stopped printing, the trace
  * summary was cut to fit. `fw0` and `fw1` are firewallCounts() before and after.
  */
-export function limitsHit({ fw0, fw1, netlogLines = [], trace = null }) {
+/**
+ * How much of the egress proxy's log the harness reads: one container log file's worth (16 MiB),
+ * room for its MAX_LINES lines of the longest host names (about 7 MB) and its closing `stopped` line.
+ */
+export const PROXY_LOG_CAP = 16 * 1024 * 1024;
+
+export function limitsHit({ fw0, fw1, netlogLines = [], proxyLines = [], proxyTruncated = false, trace = null }) {
   const out = [];
   if (!fw0 || !fw1) out.push('the firewall counters could not be read');
   else {
@@ -368,6 +397,8 @@ export function limitsHit({ fw0, fw1, netlogLines = [], trace = null }) {
     }
   }
   for (const l of netlogLines) if (l && l.kind === 'stopped' && Number(l.dropped) > 0) out.push(`network logger: ${Number(l.dropped)} line(s) not printed (line limit)`);
+  for (const l of proxyLines) if (l && l.kind === 'stopped' && Number(l.dropped) > 0) out.push(`egress proxy: ${Number(l.dropped)} line(s) not printed (line limit)`);
+  if (proxyTruncated) out.push(`egress proxy: its log was cut at ${PROXY_LOG_CAP} bytes when read`);
   if (trace && trace.shrunk) out.push('trace summary: lists cut to fit a record');
   return out;
 }

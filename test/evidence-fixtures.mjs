@@ -60,6 +60,11 @@ export function mutationTelemetry(file, protection) {
     if (protection === 'readout-follows-links') ev.stage.readout = ev.stage.readout.map((r) => ({ ...r, exit: 0, bytes: 512 }));
     if (protection === 'no-teardown') ev.stage.reach[0] = { to: 'tcp 10.213.53.3:47124', ok: true, code: 'answered', bytes: 22 };
     if (protection === 'log-cap') { ev.output.bytes = 2 * 1024 ** 3; ev.inspect.mismatches = ['no log limit declared']; }
+    if (protection === 'git-env') { ev.stage.git.ext_ran = true; ev.inspect.mismatches = ['environment has GIT_CONFIG_COUNT']; }
+    if (protection === 'soft-teardown') ev.stage.grow[0].after = 80;
+    if (protection === 'runc-proc') { ev.inspect.runtime = 'runc'; ev.stage.host_facts.seen = ['kernel', 'boot_id']; }
+    if (protection === 'nofile') { ev.trace.network.sockets[0] = { ...ev.trace.network.sockets[0], n: 20000, failed: 0, errno: null }; }
+    if (protection === 'target-time') ev.stage.clock.forged_in_telemetry = true;
     if (protection === 'volume-cap') Object.assign(ev.stage.disk, { host_free_drop_mb: 8200, work_fs_mb: 73000, work_fs_inodes: 9000000 });
     if (protection === 'proxy-allowlist') ev.egress = [...ev.egress.filter((e) => e.host !== 'example.com' || e.port !== 443), { host: 'example.com', port: 443, allowed: true, up: 0, down: 0, ms: 3, error: 'EAI_AGAIN' }];
     const meta = { subject: `case:${exp.case}`, role: 'case' };

@@ -9,13 +9,24 @@
  *   node egress-proxy.mjs <port> <host> [<host>...]
  *
  * One JSON line per request on stdout ({ t, host, port, allowed, up, down, ms, error }): the hosts an
- * install tried to reach are part of the record. TLS is end to end between the client and the
+ * install tried to reach are part of the record. At most MAX_LINES are printed (a flood of CONNECTs
+ * is counted, not logged line by line, so Docker's log rotation never drops the first lines), and
+ * on SIGTERM it prints { kind: 'stopped', lines, dropped }. TLS is end to end between the client and the
  * registry; the proxy sees host names and byte counts only.
  */
 import { createServer } from 'node:http';
 import { connect, isIP } from 'node:net';
 
 const MAX_OPEN = 64;
+/** Lines printed at most (as the network logger's): about 3 MB, well inside one container log file. */
+export const MAX_LINES = 20_000;
+
+/** A log function that prints at most `max` lines and counts the rest. */
+export function cappedLog(write, max = MAX_LINES) {
+  let lines = 0; let dropped = 0;
+  const log = (o) => { if (lines >= max) { dropped++; return; } lines++; write(o); };
+  return { log, stats: () => ({ lines, dropped }) };
+}
 
 export function decide(target, allowed) {
   const m = /^([A-Za-z0-9.-]{1,253}):([0-9]{1,5})$/.exec(String(target));
@@ -74,7 +85,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const [port, ...hosts] = process.argv.slice(2);
   if (!(Number(port) > 0) || !hosts.length) { process.stderr.write('usage: egress-proxy.mjs <port> <host>...\n'); process.exit(2); }
   const allow = new Set(hosts.map((h) => h.toLowerCase()));
-  const log = (o) => process.stdout.write(`${JSON.stringify({ t: new Date().toISOString(), ...o })}\n`);
-  makeProxy(allow, log).listen(Number(port), '0.0.0.0', () => log({ listening: Number(port), hosts: [...allow] }));
-  for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => process.exit(0));
+  const out = (o) => process.stdout.write(`${JSON.stringify({ t: new Date().toISOString(), ...o })}\n`);
+  const capped = cappedLog(out);
+  makeProxy(allow, capped.log).listen(Number(port), '0.0.0.0', () => out({ listening: Number(port), hosts: [...allow] }));
+  for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { out({ kind: 'stopped', ...capped.stats() }); process.exit(0); });
 }

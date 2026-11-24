@@ -24,7 +24,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { arch, platform } from 'node:os';
+import { arch, hostname, networkInterfaces, platform, release } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -36,7 +36,7 @@ import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, fromProxy, newRunId, readTelemetry } from '../src/telemetry.mjs';
 import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, caseNet, evaluateCase } from '../src/selftest.mjs';
-import { firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { PROXY_LOG_CAP, imageHoles, firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { lookup } from 'node:dns/promises';
 import { PROXY_PORT, PROXY_URL, loadImages, resolveRegistries } from './run-shard.mjs';
@@ -69,13 +69,18 @@ export const MUTATIONS = {
   'no-teardown': 'a server-like case is not torn down when its stage ends: its container keeps running',
   'volume-cap': 'the case\'s work volume is a folder on the runner\'s own disk (a bind volume under --out), not on the volume filesystem install-runsc.sh makes',
   'log-cap': 'the case container keeps its output in Docker\'s json-file driver with no size limit (no --log-opt), as Docker does by default',
+  'git-env': 'the case gets GIT_CONFIG_* settings allowing every git transport (ext::, file://), as a target list\'s env would if GIT_ names were not refused',
+  'soft-teardown': 'a server-like case is torn down with TERM only (docker kill --signal TERM), not killed',
+  'runc-proc': 'proc-sys runs under runc (as runtime-runc), where /proc and /sys are the host kernel\'s',
+  nofile: 'the case container has no --ulimit nofile: Docker\'s default descriptor limit',
+  'target-time': 'the harness writes the case\'s output records at the time the target claims (its measured_at), not its own clock',
 };
 
 /**
  * Cases that run like a server and do not end by themselves: the harness ends their stage after
  * this long and tears the container down (docker kill), as the corpus does when a probe is done.
  */
-export const STAGE_MS = { 'unix-socket': 20_000 };
+export const STAGE_MS = { 'unix-socket': 20_000, background: 15_000 };
 
 export function parseArgs(argv) {
   const o = { out: null, cases: [...CASES], images: join(root, 'images.json'), lane: 'local', disable: null };
@@ -116,7 +121,9 @@ export function mutateCaseArgs(argv, disable, canaries) {
   const a = [...argv];
   const drop = (flag, val) => { for (let i = 0; i < a.length; i++) if (a[i] === flag && (val === undefined || a[i + 1] === val)) { a.splice(i, val === undefined ? 1 : 2); return; } throw new HarnessError(`mutation: ${flag} not found`); };
   const image = a.findIndex((x) => /@sha256:[0-9a-f]{64}$/.test(x));
-  if (disable === 'runtime-runc') a[a.indexOf('--runtime') + 1] = 'runc';
+  if (disable === 'runtime-runc' || disable === 'runc-proc') a[a.indexOf('--runtime') + 1] = 'runc';
+  else if (disable === 'nofile') drop('--ulimit', `nofile=${LIMITS.nofile}:${LIMITS.nofile}`);
+  else if (disable === 'git-env') a.splice(image, 0, '--env', 'GIT_CONFIG_COUNT=3', '--env', 'GIT_CONFIG_KEY_0=protocol.allow', '--env', 'GIT_CONFIG_VALUE_0=always', '--env', 'GIT_CONFIG_KEY_1=protocol.ext.allow', '--env', 'GIT_CONFIG_VALUE_1=always', '--env', 'GIT_CONFIG_KEY_2=protocol.file.allow', '--env', 'GIT_CONFIG_VALUE_2=always');
   else if (disable === 'cap-drop') drop('--cap-drop', 'ALL');
   else if (disable === 'read-only') drop('--read-only');
   else if (disable === 'env-filter') a.splice(image, 0, ...Object.entries(canaries).flatMap(([k, v]) => ['--env', `${k}=${v}`]));
@@ -239,6 +246,33 @@ async function uncappedVolume(dk, name, target, out) {
 
 const lastLine = (buf) => lastJson(String(buf));
 
+/**
+ * The host's own facts (its kernel release, boot id, machine id, host name, outside IPv4 addresses
+ * and MACs, Docker's data-root), and which of them show up in `text`. Facts shorter than 6
+ * characters are not looked for.
+ */
+export function hostFactsIn(text, cfg, { read = (f) => readFileSync(f, 'utf8'), osInfo = { release, hostname, networkInterfaces } } = {}) {
+  const facts = {};
+  const add = (k, v) => { const x = String(v ?? '').trim(); if (x.length >= 6) facts[k] = x; };
+  add('kernel', osInfo.release());
+  add('hostname', osInfo.hostname());
+  try { add('boot_id', read('/proc/sys/kernel/random/boot_id')); } catch { /* not there */ }
+  try { add('machine_id', read('/etc/machine-id')); } catch { /* not there */ }
+  add('docker_root', cfg.docker_root);
+  const ifs = osInfo.networkInterfaces();
+  for (const [name, addrs] of Object.entries(ifs || {})) {
+    if (/^(?:lo|docker|br-|veth)/.test(name)) continue;
+    for (const a of addrs || []) {
+      if (a.internal) continue;
+      if (a.family === 'IPv4' || a.family === 4) add(`ipv4 ${name}`, a.address);
+      if (a.mac && a.mac !== '00:00:00:00:00:00') add(`mac ${name}`, a.mac);
+    }
+  }
+  const t = String(text).toLowerCase();
+  const seen = Object.entries(facts).filter(([, v]) => t.includes(v.toLowerCase())).map(([k]) => k);
+  return { checked: Object.keys(facts), seen };
+}
+
 /** Waits until a case has printed its report (its last line, with its nonce), at most `ms`. */
 async function waitForReport(dk, id, { name, nonce, ms }) {
   for (const until = Date.now() + ms; Date.now() < until;) {
@@ -275,6 +309,36 @@ const STAGES = {
     const reach = o && Array.isArray(o.reach) ? o.reach.slice(0, 8).map((x) => ({ to: clip(x && x.to), ok: !!(x && x.ok === true), code: clip(x && x.code, 40), bytes: Number.isInteger(x && x.bytes) ? x.bytes : 0 })) : [];
     return { reach, exit: r.exit };
   },
+  // The heartbeats of what the case started: grown while it runs (the control), then still after teardown?
+  background: async (ctx, { work, lbl, name, nonce }) => {
+    const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'grow'), image: ctx.images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, 'grow', '3000', `${P.work}/hb-${nonce}-daemon`, `${P.work}/hb-${nonce}-nohup`] }), { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 60_000 });
+    const o = lastLine(r.stdout);
+    const grow = o && Array.isArray(o.grow) ? o.grow.slice(0, 4).map((g) => ({ path: clip(g && g.path), before: Number.isInteger(g && g.before) ? g.before : -1, after: Number.isInteger(g && g.after) ? g.after : -1 })) : [];
+    // And on the host: no process of the case (runc would show one; under gVisor they live in the sandbox).
+    const ps = spawnSync('ps', ['-eo', 'args'], { encoding: 'utf8', timeout: 30_000 });
+    const procs = ps.status === 0 ? String(ps.stdout).split('\n').filter((l) => l.includes(nonce)).length : null;
+    return { grow, host_procs: procs };
+  },
+  // What the clone left in the work volume: the superproject (the control), the file:// submodule's file, ext::'s mark.
+  'install-git-submodule': async (ctx, { work, lbl, name, nonce }) => {
+    const p = { cloned: `${P.work}/clone-${nonce}/.git`, file_followed: `${P.work}/clone-${nonce}/file/isk-file-${nonce}`, ext_ran: `${P.work}/isk-ext-ran-${nonce}` };
+    const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'exists'), image: ctx.images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, 'exists', ...Object.values(p)] }), { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 60_000 });
+    const o = lastLine(r.stdout);
+    const ex = o && o.exists && typeof o.exists === 'object' ? o.exists : null;
+    return ex ? { git: Object.fromEntries(Object.entries(p).map(([k, path]) => [k, ex[path] === true])) } : {};
+  },
+  // The host's clock against its monotonic clock over the case, and any time in the telemetry that is
+  // not the harness's own: the target's claimed measured_at, a forged record's t.
+  'clock-tamper': async (ctx, { t0, mono0 }) => {
+    const drift = Math.round((Date.now() - t0) - (performance.now() - mono0));
+    const { records } = readTelemetry(ctx.tel.file);
+    const text = readFileSync(ctx.tel.file, 'utf8');
+    const lo = ctx.startedMs - 60_000; const hi = Date.now() + 60_000;
+    const forged = text.includes('1999-12-31T23:59:59') || records.some((r) => { const t = Date.parse(r.t); return !(t >= lo && t <= hi); });
+    return { clock: { drift_ms: drift, forged_in_telemetry: forged } };
+  },
+  // The host's own facts, looked for in what the target printed (the harness reads them on the host).
+  'proc-sys': async (ctx, { stdout }) => ({ host_facts: hostFactsIn(stdout, ctx.cfg) }),
   // What Docker kept of the flood is the case's target_output record; the harness adds how far the runner's disk fell.
   'output-flood': async () => ({ disk: {} }),
   // The filesystem the work volume lives on, as a helper sees it, and how far the runner's disk fell.
@@ -283,7 +347,9 @@ const STAGES = {
     const o = lastLine(r.stdout);
     const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
     const d = o && o.disk && typeof o.disk === 'object' ? o.disk : null;
-    return { disk: d ? { work_fs_mb: n(d.work_fs_mb), work_fs_inodes: n(d.work_fs_inodes), work_used_mb: n(d.work_used_mb), work_files: n(d.work_files) } : null, exit: r.exit };
+    // And whether the volume filesystem's image is still fully reserved after all that (R-SBX-30).
+    const holes = imageHoles(`${ctx.cfg.install_dir}/volume-fs.img`);
+    return { disk: d ? { work_fs_mb: n(d.work_fs_mb), work_fs_inodes: n(d.work_fs_inodes), work_used_mb: n(d.work_used_mb), work_files: n(d.work_files), reservation_intact: holes === null } : null, exit: r.exit };
   },
 };
 
@@ -346,6 +412,7 @@ async function runCase(name, ctx) {
     const manifest = settingsManifest(argv, { role: 'case' });
     tel.write('settings', { digest: settingsDigest(manifest), manifest }, meta);
     const t0 = Date.now();
+    const mono0 = performance.now();
     watch = watchTraces(cfg, { sinceMs: t0, onOverflow: () => dk.kill(cname) });
     // The docker client's environment is built from process.env the way every run builds it, and is
     // then given the canaries outright too, as a runner's own docker client would hold its tokens.
@@ -361,7 +428,8 @@ async function runCase(name, ctx) {
     if (linger !== null) {
       await waitForReport(dk, id, { name, nonce, ms: linger });
       before = await STAGES[name](ctx, { work, lbl, name, network, nonce, id });
-      if (ctx.disable !== 'no-teardown') await dk.d(['kill', id], { deadline: Date.now() + 30_000 });
+      if (ctx.disable === 'soft-teardown') await dk.d(['kill', '--signal', 'TERM', id], { deadline: Date.now() + 30_000 });
+      else if (ctx.disable !== 'no-teardown') await dk.d(['kill', id], { deadline: Date.now() + 30_000 });
     }
     const w = await dk.d(['wait', id], { keepStdout: true, logStdout: false, cap: 64, deadline: Date.now() + (linger !== null ? 15_000 : CASE_MS), onTimeout: () => (linger !== null ? null : dk.d(['kill', id], { deadline: Date.now() + 30_000 })) });
     const ins = await inspectOne(dk, id);
@@ -380,19 +448,25 @@ async function runCase(name, ctx) {
     const errFile = join(out, 'untrusted', `${name}.stderr`);
     const logs = await dk.d(['logs', id], { keepStdout: true, logStdout: false, cap: OUT_CAP, log: errFile, logCap: OUT_CAP, deadline: Date.now() + 60_000 });
     writeFileSync(join(out, 'untrusted', `${name}.stdout`), logs.stdout);
+    const rep = lastJson(logs.stdout.toString('utf8'));
+    // mutation target-time: the output records are written at the time the target claims.
+    const claimed = ctx.disable === 'target-time' && rep && typeof rep.result === 'object' && rep.result && Date.parse(rep.result.measured_at);
+    const ownClock = tel.clock;
+    if (Number.isFinite(claimed)) tel.clock = () => new Date(claimed);
     tel.write('target_output', { stream: 'stdout', bytes: logs.stdout_bytes, sha256: sha256(logs.stdout), untrusted: true, truncated: logs.stdout_truncated }, meta);
     let errBuf = Buffer.alloc(0);
     try { errBuf = readFileSync(errFile); } catch { writeFileSync(errFile, ''); }
     tel.write('target_output', { stream: 'stderr', bytes: errBuf.length, sha256: sha256(errBuf), untrusted: true }, meta);
+    tel.clock = ownClock;
     ev.output = { bytes: logs.stdout_bytes };
     ev.outputRecorded = true;
-    const rep = lastJson(logs.stdout.toString('utf8'));
     ev.report = rep && rep.case === name && rep.nonce === nonce ? rep : null;
 
     // The later stage, if the case has one: what a stage after it would meet of what it left behind.
     if (STAGES[name]) {
-      ev.stage = await STAGES[name](ctx, { work, lbl, name, network, nonce, id });
-      if (before) ev.stage.reach_before = before.reach;
+      ev.stage = await STAGES[name](ctx, { work, lbl, name, network, nonce, id, stdout: logs.stdout.toString('utf8'), t0, mono0 });
+      if (before && before.reach) ev.stage.reach_before = before.reach;
+      if (before && before.grow) ev.stage.grow_before = before.grow;
       if (hostCanary) { ev.stage.host = checkHostCanary(hostCanary, out, nonce); hostCanary = null; }
       if (disk) { const drop = disk.stop(); disk = null; if (ev.stage.disk) ev.stage.disk.host_free_drop_mb = drop; }
     }
@@ -404,10 +478,14 @@ async function runCase(name, ctx) {
     const mine = lines.filter((o) => o.from === NET.target).map(fromNetlog).filter(Boolean);
     // What the case asked the proxy for, as `egress` records: the proxy's own log, our code.
     if (proxy) {
-      const pl = await dk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024, deadline: Date.now() + 60_000 });
-      for (const l of String(pl.stdout).split('\n').filter(Boolean).slice(0, 5000)) {
+      // Stopped first, so it prints how many lines its cap left out.
+      await dk.d(['stop', '-t', '3', proxy], { deadline: Date.now() + 30_000 });
+      const pl = await dk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: PROXY_LOG_CAP, deadline: Date.now() + 60_000 });
+      ev.proxyTruncated = !!pl.stdout_truncated;
+      for (const l of String(pl.stdout).split('\n').filter(Boolean).slice(0, 25_000)) {
         let o = null;
         try { o = JSON.parse(l); } catch { continue; }
+        if (o && o.kind === 'stopped') { ev.proxyLines = [o]; continue; }
         const x = fromProxy(o);
         if (x && tel.tryWrite(x[0], x[1], { source: 'proxy', subject, role: 'proxy' })) ev.egress.push(x[1]);
       }
@@ -436,7 +514,7 @@ async function runCase(name, ctx) {
     ev.telemetryHasNonce = readFileSync(tel.file, 'utf8').includes(nonce) || back.bad.length > 0 || back.records.some((r) => r.run !== tel.run);
 
     // The evidence that is not in other records, so scripts/check-selftest.mjs can recompute the verdict.
-    const limits = limitsHit({ fw0, fw1: firewallCounts(), netlogLines: ev.netlogLines || [], trace: ev.trace }).map((x) => x.slice(0, 200)).slice(0, 20);
+    const limits = limitsHit({ fw0, fw1: firewallCounts(), netlogLines: ev.netlogLines || [], proxyLines: ev.proxyLines || [], proxyTruncated: !!ev.proxyTruncated, trace: ev.trace }).map((x) => x.slice(0, 200)).slice(0, 20);
     tel.write('case_evidence', { case: name, limits_hit: limits, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches.map((m) => String(m).slice(0, 200)).slice(0, 20), canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: ev.pidsLimit, ...(ev.stage ? { stage: ev.stage } : {}) }, meta);
     const v = evaluateCase(name, ev);
     tel.write('bypass_result', { case: name, ...v }, meta);
@@ -502,7 +580,7 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
       results.skipped = { reason: pf.reason, detail: pf.detail };
       say(`selftest: skipped (${pf.reason}): ${pf.detail}`);
     } else {
-      const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images), cleanup: [] };
+      const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images), cleanup: [], startedMs: started.getTime() };
       if (install) {
         // The proxy's network with egress, and the registry's addresses resolved on the host, as for a shard.
         ctx.outNet = await dk.network(`surface-${runId}-out`, false);

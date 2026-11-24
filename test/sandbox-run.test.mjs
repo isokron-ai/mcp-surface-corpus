@@ -9,7 +9,7 @@ import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
 import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
 import { fakeHostRun } from './helpers.mjs';
-import { preflight, installProblem, dockerFsProblem, workReadCmd, WORK_READ_SCRIPT, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
+import { preflight, installProblem, dockerFsProblem, workReadCmd, WORK_READ_SCRIPT, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem, imageHoles, PROXY_LOG_CAP } from '../src/sandbox-run.mjs';
 
 const IMG = `docker.io/library/python:3.13-slim-bookworm@sha256:${'a'.repeat(64)}`;
 const ID = 'c'.repeat(64);
@@ -232,9 +232,10 @@ test('R-SBX-02 the trace folder must be its own filesystem of the pinned size, a
   assert.equal(traceFsProblem(cfg, { statfs: own }), null);
   assert.match(traceFsProblem(cfg, { statfs: rootFs }), /not a filesystem of its own/);
   assert.match(traceFsProblem(cfg, { statfs: () => { throw new Error('no'); } }), /cannot be read/);
-  assert.equal(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 1e7 } : own()) }), null);
-  assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 10 } : own()) }), /GB free for the results/);
-  assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 1e7 } : { bsize: 4096, bavail: 1 }) }), /trace filesystem has less room/);
+  const roomy = (p) => (p === '/out' || p === cfg.docker_root ? { bsize: 4096, bavail: 1e7 } : own());
+  assert.equal(diskProblem(cfg, '/out', { statfs: roomy }), null);
+  assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === '/out' ? { bsize: 4096, bavail: 10 } : roomy(p)) }), /GB free for the results/);
+  assert.match(diskProblem(cfg, '/out', { statfs: (p) => (p === cfg.log_dir ? { bsize: 4096, bavail: 1 } : roomy(p)) }), /trace filesystem has less room/);
 });
 
 test('R-SBX-05 the strict preflight checks the host live: the pinned runsc in its place, the trace filesystem, the firewall', async () => {
@@ -321,4 +322,65 @@ test('R-SBX-24 the corpus reads lock files with the same readout, and only throu
   const shard = readFileSync(new URL('../bin/run-shard.mjs', import.meta.url), 'utf8');
   assert.match(shard, /mounts: \[\{ src: work, dst: P\.work, ro: true \}\], cmd: workReadCmd\(lk\.path, 16 \* 1024 \* 1024\) \}/);
   assert.ok(!/test ! -L/.test(shard), 'the old check (the last part only) is gone');
+});
+
+test('R-SBX-28 a proxy that left lines out is a limit hit, like the network logger', () => {
+  const fw = { 'ISK-SBX': { logged: 1, dropped: 1 } };
+  assert.deepEqual(limitsHit({ fw0: fw, fw1: fw, proxyLines: [{ kind: 'stopped', lines: 20000, dropped: 512 }] }), ['egress proxy: 512 line(s) not printed (line limit)']);
+  assert.deepEqual(limitsHit({ fw0: fw, fw1: fw, proxyLines: [{ kind: 'stopped', lines: 3, dropped: 0 }] }), []);
+});
+
+test('R-SBX-29 a target needs room on Docker\'s data filesystem too', () => {
+  const cfg = loadRunscConfig();
+  const st = (dockerFree) => (p) => (p === cfg.docker_root ? { bsize: 4096, bavail: dockerFree } : { bsize: 4096, bavail: 1e7 });
+  assert.equal(diskProblem(cfg, '/out', { statfs: st(1e7) }), null);
+  assert.match(diskProblem(cfg, '/out', { statfs: st(1000) }), /less than 3 GB free on Docker's data filesystem \(\/var\/lib\/isokron-docker\)/);
+  assert.match(diskProblem(cfg, '/out', { statfs: (p) => { if (p === cfg.docker_root) throw new Error('no'); return { bsize: 4096, bavail: 1e7 }; } }), /Docker's data filesystem/);
+});
+
+test('R-SBX-32 the strict preflight refuses a trace filesystem whose image has holes', async () => {
+  const cfg = loadRunscConfig();
+  const own = () => ({ bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 });
+  assert.equal(traceFsProblem(cfg, { statfs: own, run: fakeHostRun(cfg) }), null);
+  assert.match(traceFsProblem(cfg, { statfs: own, run: fakeHostRun(cfg, { fs: { trace: { blocks: 100 } } }) }), /trace-fs\.img has holes \(stat: 100 512 2147483648\)/);
+  assert.equal(traceFsProblem(cfg, { statfs: own }), null, 'without run (not strict), the size only');
+  assert.match(String(imageHoles('/x.img', () => ({ status: 1, stdout: '' }))), /has holes \(stat: unreadable\)/);
+  const t = setup();
+  const x = await preflight(t.dk, { ...t.opts, strict: true, statfs: own, run: fakeHostRun(t.cfg, { fs: { trace: { blocks: 100 } } }) });
+  assert.deepEqual([x.ok, x.reason], [false, 'sandbox_setup_missing']);
+  assert.match(x.detail, /trace-fs\.img has holes/);
+});
+
+test('R-SBX-33 Docker lists no volume lost+found: the folder mkfs makes in the volumes filesystem is removed, and the preflight checks it', () => {
+  const cfg = loadRunscConfig();
+  assert.match(String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs: { volumeList: 'lost+found\n' } }))), /Docker lists a volume lost\+found/, 'seen on GitHub: mcp-check\'s sweep found 1 volume left after every run');
+  assert.equal(dockerFsProblem(cfg, fakeHostRun(cfg, { fs: { volumeList: 'surface-x-work\n' } })), null);
+  const sh = readFileSync(new URL('../scripts/install-runsc.sh', import.meta.url), 'utf8');
+  assert.ok(sh.indexOf('rmdir "$volumes_dir/lost+found"') > sh.indexOf('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'removed once mounted');
+  assert.match(sh, /rmdir "\$docker_root\/lost\+found"/);
+});
+
+test('R-SBX-34 the harness reads all of a full proxy log: MAX_LINES refusals of the longest host names and the stopped line fit its read cap, and a cut read is a limit hit', async () => {
+  const { makeProxy, cappedLog, MAX_LINES } = await import('../sandbox/egress-proxy.mjs');
+  // Exactly what the proxy prints: its own timestamp, then the refusal makeProxy logs for a CONNECT.
+  const lines = [];
+  const capped = cappedLog((o) => lines.push(`${JSON.stringify({ t: new Date().toISOString(), ...o })}\n`));
+  const host = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`; // 253 characters, the longest a DNS name may be
+  assert.equal(host.length, 253);
+  for (let i = 0; i < MAX_LINES + 100; i++) capped.log({ host, port: 443, allowed: false, error: 'host not on the allowlist' });
+  lines.push(`${JSON.stringify({ t: new Date().toISOString(), kind: 'stopped', ...capped.stats() })}\n`);
+  const bytes = Buffer.byteLength(lines.join(''));
+  assert.ok(bytes > 4 * 1024 * 1024, `${bytes} bytes: the old 4 MiB cap cut the stopped line off`);
+  assert.ok(bytes < PROXY_LOG_CAP, `${bytes} bytes fit the read cap (${PROXY_LOG_CAP})`);
+  assert.equal(PROXY_LOG_CAP, 16 * 1024 * 1024, 'one container log file');
+  assert.match(lines[lines.length - 1], /"kind":"stopped","lines":20000,"dropped":100/);
+  assert.ok(typeof makeProxy === 'function');
+  const fw = { 'ISK-SBX': { logged: 1, dropped: 1 } };
+  assert.deepEqual(limitsHit({ fw0: fw, fw1: fw, proxyTruncated: true }), [`egress proxy: its log was cut at ${PROXY_LOG_CAP} bytes when read`]);
+  for (const f of ['../bin/run-shard.mjs', '../bin/sandbox-selftest.mjs']) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8');
+    assert.match(src, /\['logs', proxy\], \{ keepStdout: true, logStdout: false, cap: PROXY_LOG_CAP/, `${f}: the proxy's log read with PROXY_LOG_CAP`);
+    assert.ok(!/\['logs', proxy\][^\n]*cap: 4 \* 1024 \* 1024/.test(src), `${f}: not 4 MiB`);
+    assert.match(src, /stdout_truncated/, `${f}: a cut read is noted`);
+  }
 });

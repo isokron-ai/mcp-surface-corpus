@@ -87,9 +87,32 @@ export const GOOD = {
     container: { exit: 137, timed_out: true, oom_killed: false },
   }),
   'output-flood': () => base({ trace: trace(), output: { bytes: 30 * 1024 * 1024 }, stage: { disk: { host_free_drop_mb: 4 } } }),
+  background: () => base({
+    trace: trace({ process: { clones: 4, clone_failed: 0 } }),
+    stage: { grow_before: [{ path: '/work/hb-1-daemon', before: 10, after: 22 }, { path: '/work/hb-1-nohup', before: 11, after: 23 }], grow: [{ path: '/work/hb-1-daemon', before: 40, after: 40 }, { path: '/work/hb-1-nohup', before: 41, after: 41 }], host_procs: 0 },
+    container: { exit: 137, timed_out: true, oom_killed: false },
+  }),
+  'proc-sys': () => base({
+    trace: trace({ opens_outside: ['/proc/version', '/proc/1/cgroup', '/proc/net/route', '/proc/kallsyms', '/sys/class/dmi/id/product_name', '/proc/1/mountinfo'].map((path) => ok({ path, op: 'read', call: 'openat' })) }),
+    output: { bytes: 90_000 },
+    stage: { host_facts: { checked: ['kernel', 'hostname', 'boot_id', 'machine_id', 'docker_root', 'ipv4 eth0'], seen: [] } },
+  }),
+  'fd-exhaustion': () => base({
+    trace: trace({ network: { sockets: [{ family: 'AF_UNIX', type: 'SOCK_DGRAM', protocol: '0', raw: false, n: 4093, failed: 1, errno: 24 }] } }),
+    report: { case: 'fd-exhaustion', result: { opened: 4092, error: 'EMFILE' } },
+  }),
+  'clock-tamper': () => base({
+    trace: trace({ privileged: [fail({ name: 'clock_settime', n: 3, failed: 3, errno: 1 })] }),
+    stage: { clock: { drift_ms: 3, forged_in_telemetry: false } },
+  }),
+  'install-git-submodule': () => base({
+    trace: trace({ exec: [ok({ path: '/usr/bin/git', n: 9 }), ok({ path: '/usr/lib/git-core/git-remote-https' })] }),
+    egress: [{ host: 'sub.evil.example', port: 443, allowed: false, error: 'host not on the allowlist' }, { host: 'npm.evil.example', port: 443, allowed: false, error: 'host not on the allowlist' }],
+    stage: { git: { cloned: true, file_followed: false, ext_ran: false } },
+  }),
   'install-archive-bomb': () => base({
     trace: trace({ opens_outside: ['/etc/isk-1-dotdot', '/etc/isk-1-abs', '/opt/surface/isk-1-abs', '/isk-1-root'].map((path) => fail({ path, op: 'write', call: 'openat', errno: 30 })) }),
-    stage: { disk: { work_fs_mb: VOLUME_CAP.mb - 150, work_fs_inodes: VOLUME_CAP.inodes, work_used_mb: VOLUME_CAP.mb - 150, work_files: 40050, host_free_drop_mb: 3 } },
+    stage: { disk: { work_fs_mb: VOLUME_CAP.mb - 150, work_fs_inodes: VOLUME_CAP.inodes, work_used_mb: VOLUME_CAP.mb - 150, work_files: 40050, host_free_drop_mb: 3, reservation_intact: true } },
     report: { case: 'install-archive-bomb', result: { fallocate: { ok: false, errno: 28, error: 'ENOSPC' } } },
   }),
   'output-forgery': () => base({ trace: trace({ opens_outside: [fail({ path: '/opt/surface/telemetry.jsonl', op: 'write', errno: 30 })] }), output: { bytes: 700 } }),

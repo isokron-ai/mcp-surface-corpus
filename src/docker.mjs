@@ -26,7 +26,7 @@ export const DOCKER_MIN = [26, 0, 0];
  * what `nproc` lets a target make (about two host tasks each), so a fork bomb meets EAGAIN inside
  * the sandbox instead of crashing it at the host limit.
  */
-export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', cpus: 2, tmp: '512m' };
+export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', nofile: '4096', cpus: 2, tmp: '512m' };
 
 /**
  * What Docker keeps of a container's output (gvisor.json container_logs): the local driver, at most
@@ -116,7 +116,7 @@ export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, la
     '--pids-limit', LIMITS.pids,
     '--memory', LIMITS.memory, '--memory-swap', LIMITS.memory,
     '--cpus', String(cpus),
-    '--ulimit', 'nofile=4096:4096',
+    '--ulimit', `nofile=${LIMITS.nofile}:${LIMITS.nofile}`,
     '--ulimit', `nproc=${LIMITS.nproc}:${LIMITS.nproc}`,
     '--init',
     ...logArgs(),

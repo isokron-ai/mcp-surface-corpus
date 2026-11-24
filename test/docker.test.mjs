@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run, tailLine, STDERR_TAIL, isPublicIp4, LIMITS } from '../src/docker.mjs';
 import { WORK_VOLUME_CMD } from '../bin/sandbox-selftest.mjs';
-import { decide, makeProxy } from '../sandbox/egress-proxy.mjs';
+import { decide, makeProxy, cappedLog, MAX_LINES } from '../sandbox/egress-proxy.mjs';
 import { connect } from 'node:net';
 import { readFileSync } from 'node:fs';
 
@@ -206,4 +206,27 @@ test('R-SBX-27 anyRunning names the containers still running; an unreadable answ
   assert.ok(shard.indexOf('await tdk.anyRunning(instIds)') < shard.indexOf('cmd: workReadCmd(lk.path'), 'the corpus reads lock files only once no install container runs');
   const st = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
   assert.match(st, /'symlink-escape': async \(ctx, \{ work, lbl, name, id \}\) => \{\n\s+if \(\(await ctx\.dk\.anyRunning\(\[id\]\)\)\.length\) throw/);
+});
+
+test('R-SBX-28 the egress proxy prints at most MAX_LINES lines, counts the rest, and says so when stopped; the harness stops it before reading', () => {
+  const out = [];
+  const c = cappedLog((o) => out.push(o), 3);
+  for (let i = 0; i < 10; i++) c.log({ host: `h${i}.example`, allowed: false });
+  assert.deepEqual(out.map((o) => o.host), ['h0.example', 'h1.example', 'h2.example'], 'the first lines are kept, not the last');
+  assert.deepEqual(c.stats(), { lines: 3, dropped: 7 });
+  assert.equal(MAX_LINES, 20_000);
+  const px = readFileSync(new URL('../sandbox/egress-proxy.mjs', import.meta.url), 'utf8');
+  assert.match(px, /process\.on\(s, \(\) => \{ out\(\{ kind: 'stopped', \.\.\.capped\.stats\(\) \}\); process\.exit\(0\); \}\)/);
+  assert.match(px, /makeProxy\(allow, capped\.log\)/);
+  for (const f of ['../bin/run-shard.mjs', '../bin/sandbox-selftest.mjs']) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8');
+    assert.ok(src.indexOf("'stop', '-t', '3', proxy]") > 0 && src.indexOf("'stop', '-t', '3', proxy]") < src.indexOf("'logs', proxy], { keepStdout: true, logStdout: false, cap: PROXY_LOG_CAP"), `${f}: stopped, then read`);
+  }
+});
+
+test('R-SBX-29 a target\'s own image is removed once it is done, ours are kept', () => {
+  const shard = readFileSync(new URL('../bin/run-shard.mjs', import.meta.url), 'utf8');
+  assert.match(shard, /pulled = image;\n\s+const pull = await tdk\.d\(\['pull', '-q', image\]/);
+  assert.match(shard, /if \(pulled && !Object\.values\(ctx\.images\)\.includes\(pulled\)\) \{ try \{ await dk\.d\(\['image', 'rm', '-f', pulled\]/);
+  assert.ok(shard.indexOf("['image', 'rm', '-f', pulled]") > shard.indexOf('try { await dk.sweep(id); }'), 'after its containers are gone');
 });

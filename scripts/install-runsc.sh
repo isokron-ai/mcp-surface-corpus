@@ -137,17 +137,45 @@ ln -sfn "$release" "$dest_root/current"
 ln -sfn "$install_dir/$release/runsc" "$bin_dir/runsc"
 ln -sfn "$install_dir/$release/containerd-shim-runsc-v1" "$bin_dir/containerd-shim-runsc-v1"
 
-# 5. The trace folder, on a filesystem of its own of a fixed size.
-mkdir -p "$prefix$log_dir"
+# make_fs, and the room it needs, for the three filesystems of their own (traces, Docker's data,
+# its volumes): each an ext4 file reserved up front.
+# make_fs IMAGE MB INODES: fallocate reserves every block; nodiscard keeps mkfs from punching holes
+# through that reservation (a discard on a loop file frees its blocks), and each is mounted
+# nodiscard too. On GitHub 512 MB of the data-root's reservation was still gone after the image
+# pulls, so the runner's disk would pay as it filled. That 512 MB
+# was the inode tables (2,097,152 of 256 bytes): left to the kernel's lazy init, they are zeroed
+# later with write-zeroes requests, which a loop device turns into holes in its file; so they, and
+# the journal, are written out by mkfs instead.
+make_fs() {
+  rm -f "$1"
+  fallocate -l "${2}M" "$1" || fail "a filesystem image could not be made"
+  chmod 0600 "$1"
+  mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -N "$3" "$1" >/dev/null || fail "a filesystem image could not be formatted"
+}
+TRACE_FS_INODES=65536
+MARGIN_MB=4096
+# The room the filesystems still to be made need, with a margin for the images and results the run
+# writes on the runner's own disk: checked before any is made, with `df` before and after.
+headroom() {
+  local need=0 avail
+  mountpoint -q "$log_dir" || need=$((need + trace_fs_mb))
+  mountpoint -q "$docker_root" || need=$((need + docker_fs_mb))
+  mountpoint -q "$docker_root/volumes" || need=$((need + volume_fs_mb))
+  [ "$need" -gt 0 ] || return 0
+  avail="$(df -B1M --output=avail "$install_dir" | tail -n 1 | tr -d ' ')"
+  [[ "$avail" =~ ^[0-9]+$ ]] || fail "the free space of the runner's disk could not be read"
+  echo "runner disk before the reservations: $(df -B1M --output=size,used,avail "$install_dir" | tail -n 1) (MB: size, used, free); the filesystems still to make need ${need} MB, plus ${MARGIN_MB} MB of margin"
+  [ "$avail" -ge $((need + MARGIN_MB)) ] || fail "the runner's disk has ${avail} MB free; the trace, Docker data and volume filesystems need ${need} MB reserved up front, plus ${MARGIN_MB} MB of margin for the run (gvisor.json trace_fs_mb, docker_fs_mb, volume_fs_mb)"
+}
+
+# 5. The trace folder, on a filesystem of its own of a fixed size, reserved up front.
+mkdir -p "$prefix$log_dir" "$prefix$install_dir"
 if [ -z "$prefix" ]; then
-  for c in fallocate mkfs.ext4 mount mountpoint; do command -v "$c" >/dev/null || fail "$c not found"; done
-  img="$install_dir/trace-fs.img"
+  for c in fallocate mkfs.ext4 mount mountpoint df; do command -v "$c" >/dev/null || fail "$c not found"; done
+  [ -n "${RUNSC_SKIP_DAEMON:-}" ] || headroom
   if ! mountpoint -q "$log_dir"; then
-    rm -f "$img"
-    fallocate -l "${trace_fs_mb}M" "$img" || fail "the trace filesystem could not be made"
-    chmod 0600 "$img"
-    mkfs.ext4 -q -F -m 0 "$img" >/dev/null || fail "the trace filesystem could not be formatted"
-    mount -o loop,nosuid,nodev,noexec "$img" "$log_dir" || fail "the trace filesystem could not be mounted"
+    make_fs "$install_dir/trace-fs.img" "$trace_fs_mb" "$TRACE_FS_INODES"
+    mount -o loop,nosuid,nodev,noexec,nodiscard "$install_dir/trace-fs.img" "$log_dir" || fail "the trace filesystem could not be mounted"
   fi
   mountpoint -q "$log_dir" || fail "the trace folder is not its own filesystem"
 fi
@@ -172,19 +200,6 @@ command -v docker >/dev/null || fail "docker not found"
 # database in the volumes folder), and only before any volume exists: the step 6 restart brings
 # the daemon back on them.
 stop_docker() { systemctl stop docker.socket 2>/dev/null || true; systemctl stop docker || fail "the Docker daemon did not stop"; }
-# make_fs IMAGE MB INODES: fallocate reserves every block; nodiscard keeps mkfs from punching holes
-# through that reservation (a discard on a loop file frees its blocks), and each is mounted
-# nodiscard too. On GitHub 512 MB of the data-root's reservation was still gone after the image
-# pulls, so the runner's disk would pay as it filled. That 512 MB
-# was the inode tables (2,097,152 of 256 bytes): left to the kernel's lazy init, they are zeroed
-# later with write-zeroes requests, which a loop device turns into holes in its file; so they, and
-# the journal, are written out by mkfs instead.
-make_fs() {
-  rm -f "$1"
-  fallocate -l "${2}M" "$1" || fail "a filesystem image could not be made"
-  chmod 0600 "$1"
-  mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -N "$3" "$1" >/dev/null || fail "a filesystem image could not be formatted"
-}
 [ -z "$(docker volume ls -q 2>/dev/null)" ] || mountpoint -q "$docker_root/volumes" || fail "Docker already has volumes: the volume filesystem goes in before any volume exists"
 if ! mountpoint -q "$docker_root"; then
   stop_docker
@@ -192,6 +207,7 @@ if ! mountpoint -q "$docker_root"; then
   mkdir -p "$docker_root"
   mount -o loop,nodiscard "$install_dir/docker-fs.img" "$docker_root" || fail "the Docker data filesystem could not be mounted"
   chmod 0710 "$docker_root"
+  rmdir "$docker_root/lost+found" 2>/dev/null || true
 fi
 mountpoint -q "$docker_root" || fail "Docker's data-root is not its own filesystem"
 volumes_dir="$docker_root/volumes"
@@ -201,11 +217,14 @@ if ! mountpoint -q "$volumes_dir"; then
   mkdir -p "$volumes_dir"
   mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir" || fail "the volume filesystem could not be mounted"
   chmod 0701 "$volumes_dir"
+  # Docker's local driver takes every folder here for a volume: mkfs's lost+found would be one.
+  rmdir "$volumes_dir/lost+found" 2>/dev/null || true
 fi
 mountpoint -q "$volumes_dir" || fail "Docker's volumes folder is not its own filesystem"
 # fstrim would punch the same holes later: its timer trims every mounted filesystem that takes it.
 systemctl disable --now fstrim.timer >/dev/null 2>&1 || true
-for img in docker-fs volume-fs; do echo "$img.img: $(stat -c '%b blocks of %B bytes allocated, %s bytes' "$install_dir/$img.img")"; done
+for img in trace-fs docker-fs volume-fs; do echo "$img.img: $(stat -c '%b blocks of %B bytes allocated, %s bytes' "$install_dir/$img.img")"; done
+echo "runner disk after the reservations: $(df -B1M --output=size,used,avail "$install_dir" | tail -n 1) (MB: size, used, free)"
 echo "Docker data in $docker_root (${docker_fs_mb} MB, ${docker_fs_inodes} inodes), volumes in $volumes_dir (${volume_fs_mb} MB, ${volume_fs_inodes} inodes), each its own"
 daemon_json=/etc/docker/daemon.json
 mkdir -p /etc/docker
