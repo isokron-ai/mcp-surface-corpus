@@ -112,14 +112,22 @@ function ruleLines(tool, chain, run) {
 }
 
 /**
+ * Whether a rule could let a packet past the rules below it: one that ends in ACCEPT, RETURN or a
+ * jump to another chain (`-j`), or that goes to another chain (`-g`, goto: the packet never comes
+ * back, and that chain's end returns it past every rule below). Rules that drop, reject or log do
+ * not. (`iptables -S` prints the short forms; the long ones are matched too.)
+ */
+export const letsPast = (l) => /\s(?:-j|--jump) (?!DROP$|REJECT\b|LOG\b)\S+/.test(l) || /\s(?:-g|--goto) \S+/.test(l);
+
+/**
  * Problems with where our rules sit in a chain we share (DOCKER-USER, INPUT, the IPv6 FORWARD): each
- * must come before any other rule that could let a packet past it, that is any rule of someone else
- * that ends in ACCEPT, RETURN or a jump to another chain. A last rule `-A CHAIN -j RETURN` (Docker's
- * own end of DOCKER-USER) is fine, and so are other rules that drop, reject or log.
+ * must come before any other rule that could let a packet past it (letsPast). A last rule
+ * `-A CHAIN -j RETURN` (Docker's own end of DOCKER-USER) is fine, and so are other rules that drop,
+ * reject or log.
  */
 export function jumpOrderProblems(tool, chain, got, want) {
   const mine = new Set(want);
-  const lets = (l, i) => !mine.has(l) && /-j (?!DROP$|REJECT\b|LOG\b)\S+/.test(l) && !(i === got.length - 1 && l === `-A ${chain} -j RETURN`);
+  const lets = (l, i) => !mine.has(l) && letsPast(l) && !(i === got.length - 1 && l === `-A ${chain} -j RETURN`);
   const first = got.findIndex(lets);
   if (first < 0) return [];
   return want.filter((w) => got.indexOf(w) > first).map((w) => `${tool} ${chain}: ${w} comes after ${String(got[first]).slice(0, 120)}`);
@@ -151,8 +159,10 @@ export function firewallProblems(run = spawnSync) {
   if (fwd) {
     const j = fwd.indexOf('-A FORWARD -j DOCKER-USER');
     const a = fwd.findIndex((l) => / -j ACCEPT$/.test(l));
+    const g = fwd.findIndex((l) => /\s(?:-g|--goto) \S+/.test(l));
     if (j < 0) out.push('iptables FORWARD does not jump to DOCKER-USER');
     else if (a >= 0 && a < j) out.push('iptables FORWARD accepts traffic before DOCKER-USER');
+    else if (g >= 0 && g < j) out.push(`iptables FORWARD goes to another chain before DOCKER-USER: ${String(fwd[g]).slice(0, 120)}`);
   } else out.push('iptables FORWARD cannot be read');
   return out;
 }
