@@ -1,6 +1,6 @@
 {
   "format": "isokron-surface-targets/1",
-  "about": "Public example: three reference servers from modelcontextprotocol/servers. The real list has this format and lives encrypted in targets/targets.json.age.",
+  "about": "Public example: three reference servers from modelcontextprotocol/servers, and IsoKron's own kronicle-lite, whose better-sqlite3 dependency is a native module built from source at install (install_scripts). The real list has this format and lives encrypted in targets/targets.json.age.",
   "defaults": { "timeout_s": 600 },
   "targets": [
     {
@@ -23,6 +23,12 @@
       "commit": "c799c8552b0f27b7a33a7b9233773da144dddcf5",
       "subdir": "src/time",
       "launch": { "kind": "pypi", "package": "mcp-server-time", "version": "2026.11.18" }
+    },
+    {
+      "id": "s004",
+      "repo": "isokron-ai/kronicle-lite",
+      "commit": "6d4b9646f8c517871a8f4f1275ee08ce25cd2a04",
+      "launch": { "kind": "npm", "package": "kronicle-lite", "version": "0.12.1", "install_scripts": true, "args": ["serve"] }
     }
   ]
 }

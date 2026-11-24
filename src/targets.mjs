@@ -140,6 +140,9 @@ export const timeoutOf = (t, list) => t.timeout_s ?? list?.defaults?.timeout_s ?
 /** In-container paths. /work is the target's own volume (read-write at install, read-only at run). */
 export const P = { work: '/work', tools: '/opt/surface', home: '/tmp/home', ca: '/opt/surface-ca/ca.pem' };
 
+/** The install env of an npm target built from source: the image's own Node headers, no prebuilt downloads. */
+export const NATIVE_BUILD_ENV = Object.freeze({ npm_config_nodedir: '/usr/local', npm_config_build_from_source: 'true' });
+
 /**
  * What to run for one launch block: the image key (images.json), the install steps (with egress,
  * through the allowlist proxy), the lock files to bring back, and the server command (no network).
@@ -150,11 +153,18 @@ export function launchPlan(l) {
   if (l.kind === 'npm') {
     const spec = `${l.package}@${l.version}`;
     const bin = l.bin ?? null;
+    const node = l.node === '22' ? 'node22' : 'node24';
+    // With install scripts on, a native module may compile: the install runs in the full image of
+    // the same Node release (compilers, make, python3, the Node headers in /usr/local), built from
+    // source against those headers. Prebuilt binaries are not fetched (their hosts are not on the
+    // allowlist, and npm's registry is the only door). The server runs in the slim image as always.
+    const build = l.install_scripts === true;
     return {
-      image: l.node === '22' ? 'node22' : 'node24',
+      image: build ? `${node}-build` : node,
+      ...(build ? { runImage: node } : {}),
       registries: ['registry.npmjs.org'],
       install: [
-        { name: 'install', cmd: ['npm', 'install', '--prefix', `${P.work}/pkg`, '--no-audit', '--no-fund', '--loglevel=error', '--omit=dev', ...(l.install_scripts ? [] : ['--ignore-scripts']), spec] },
+        { name: 'install', cmd: ['npm', 'install', '--prefix', `${P.work}/pkg`, '--no-audit', '--no-fund', '--loglevel=error', '--omit=dev', ...(l.install_scripts ? [] : ['--ignore-scripts']), spec], ...(build ? { env: NATIVE_BUILD_ENV } : {}) },
         // The bin the package declares (or the one the list names), resolved by our helper, never by a shell.
         { name: 'entry', cmd: ['node', `${P.tools}/sandbox/npm-entry.mjs`, `${P.work}/pkg`, l.package, bin ?? ''], out: 'entry.json' },
       ],

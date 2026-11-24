@@ -99,10 +99,13 @@ export function parseArgs(argv) {
 }
 
 /** Images from images.json, every one pinned by digest. SURFACE_IMAGE_MIRROR (never set on CI) swaps docker.io for a mirror of the same digests. */
+/** The images.json keys the driver uses (each pinned by digest). */
+export const IMAGE_KEYS = ['node24', 'node24-build', 'node22', 'node22-build', 'python', 'go'];
+
 export function loadImages(file, mirror = process.env.SURFACE_IMAGE_MIRROR || '') {
   const j = JSON.parse(readFileSync(file, 'utf8'));
   const out = {};
-  for (const k of ['node24', 'node22', 'python', 'go']) {
+  for (const k of IMAGE_KEYS) {
     let ref = checkPinned(j[k], k);
     if (mirror) { if (!/^[a-z0-9.-]+(?::[0-9]+)?$/.test(mirror)) throw new HarnessError('SURFACE_IMAGE_MIRROR is not a host name'); ref = ref.replace(/^docker\.io\//, `${mirror}/`); }
     out[k] = ref;

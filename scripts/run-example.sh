@@ -2,13 +2,14 @@
 # The whole pipeline on the public example list (targets/example.targets.json), with no secret:
 # the driver in real containers, the encryption step, and the aggregate. Where the corpus workflow
 # uses CORPUS_TARGETS_KEY, this uses an age identity made on the spot and thrown away, so the same
-# scripts run and the encrypt-then-decrypt round trip is exercised. The example's three targets are
-# named in the repository, so its aggregate is public as it is (--example: cells are not withheld).
+# scripts run and the encrypt-then-decrypt round trip is exercised. The example's targets are named
+# in the repository, so its aggregate is public as it is (--example: cells are not withheld).
 #
 #   RUNNER_TEMP=/some/empty/dir scripts/run-example.sh
 #
 # Leaves $RUNNER_TEMP/example/public/{aggregate.json,calibration.md} and, encrypted,
-# $RUNNER_TEMP/corpus-upload/. Fails if a reference server did not give a live tool list.
+# $RUNNER_TEMP/corpus-upload/. Fails if a server did not give a live tool list (s004's needs its
+# native module built in the sandbox).
 set -euo pipefail
 umask 077
 : "${RUNNER_TEMP:?set RUNNER_TEMP to an empty working folder}"
