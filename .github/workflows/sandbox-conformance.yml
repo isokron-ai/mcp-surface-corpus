@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Eleven cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
+    # Seventeen cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
     timeout-minutes: 45
     outputs:
       sandbox-sha: ${{ steps.which.outputs.sha }}
@@ -184,6 +184,8 @@ jobs:
             cases: write-outside
           - disable: internal-net
             cases: direct-ip
+          - disable: proxy-allowlist
+            cases: install-proxy-host
     steps:
       - id: which
         name: Name the sandbox commit and the artifact

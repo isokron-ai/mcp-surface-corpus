@@ -37,7 +37,7 @@ test('each container mutation takes out exactly its one protection', () => {
   const e = mutateCaseArgs(a, 'env-filter', can);
   assert.ok(e.includes('GITHUB_TOKEN=isk-canary-1'));
   assert.ok(e.indexOf('GITHUB_TOKEN=isk-canary-1') < e.indexOf(IMG), 'before the image, so docker reads it as an option');
-  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
+  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net', 'proxy-allowlist']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
   assert.deepEqual(a, caseArgs(), 'the original arguments are not changed');
 });
 
@@ -67,6 +67,7 @@ function mutated(protection, { preflight = null, ev = null, ended = true, harnes
     for (const d of ev.dns) tel.write('dns_query', d, { ...meta, source: 'netlog' });
     for (const x of ev.conns) tel.write('connection', x, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
+    for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
     tel.write('case_evidence', { case: c, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
     tel.write('bypass_result', { case: c, blocked: false, logged: false, pass: false, evidence: harnessEvidence, detail: harnessDetail }, meta);
   }
@@ -115,4 +116,12 @@ test('R-SBX-12 the firewall-order-goto mutation puts a goto above our jumps, and
   assert.equal(checkMutation(mutated('firewall-order-goto', { preflight: why }), 'firewall-order-goto').ok, true);
   const accept = 'the firewall is not the one net-guard.sh makes: iptables DOCKER-USER: -A DOCKER-USER -s 10.213.52.0/22 -j ISK-SBX comes after -A DOCKER-USER -s 10.213.52.0/22 -j ACCEPT';
   assert.equal(checkMutation(mutated('firewall-order-goto', { preflight: accept }), 'firewall-order-goto').ok, false, 'the ACCEPT reason is not the goto reason');
+});
+
+test('R-MUT-01 proxy-allowlist: a proxy that lets the denied hosts through is caught by install-proxy-host from its own log', () => {
+  const ev = GOOD['install-proxy-host']();
+  ev.egress = [...ev.egress.filter((e) => e.host !== 'example.com' || e.port !== 443), { host: 'example.com', port: 443, allowed: true, up: 0, down: 0, ms: 3, error: 'EAI_AGAIN' }];
+  assert.equal(checkMutation(mutated('proxy-allowlist', { ev }), 'proxy-allowlist').ok, true);
+  assert.equal(checkMutation(mutated('proxy-allowlist', { ev: GOOD['install-proxy-host']() }), 'proxy-allowlist').ok, false, 'a proxy that refused is not the mutation shown');
+  assert.equal(mutateHost('proxy-allowlist', () => { throw new Error('no host change'); }), true, 'a change to the proxy, not the host');
 });

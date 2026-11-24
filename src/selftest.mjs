@@ -17,7 +17,19 @@
 import { NETS } from './sandbox-net.mjs';
 import { LIMITS } from './docker.mjs';
 
-export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery'];
+/**
+ * The install network's cases: the same hostile target, run the way an npm install with scripts
+ * runs (the node24-build image, on the install network, HTTPS_PROXY pointing at the egress proxy,
+ * which allows registry.npmjs.org on 443 and nothing else). That network is the most permissive
+ * one: the proxy is its only door, and these cases try every other way through it and around it.
+ */
+export const INSTALL_CASES = ['install-proxy-host', 'install-proxy-ip', 'install-proxy-port', 'install-direct', 'install-metadata', 'install-host'];
+export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', ...INSTALL_CASES];
+/** The sandbox network a case runs on: 'install' for the install cases, else 'run'. */
+export const caseNet = (name) => (INSTALL_CASES.includes(name) ? 'install' : 'run');
+/** What the install cases ask the proxy for, which it must refuse (the proxy-allowlist mutation lets these through). */
+export const PROXY_DENIED_HOSTS = ['example.com', 'evil.example'];
+export const PROXY_ALLOWED = ['registry.npmjs.org'];
 /** The port the harness listens on, on the host side of the run network, for the docker-host case. */
 export const CANARY_PORT = 47123;
 const EINPROGRESS = new Set([114, 115]);
@@ -68,6 +80,47 @@ function outsideWhy(att, min, { reported = false, other = null } = {}) {
   const soft = att.filter((e) => !refusedAll(e));
   if (soft.length) return `no definite refusal: every call failed, but ${soft.length} not with a refusal (${fmt(soft[0])}), so it was cut short or timed out, not refused`;
   return null;
+}
+
+function hostRule(ev, NETX) {
+    const n = net(ev.trace);
+    const q = list(ev.dns).find((d) => d.qname === 'host.docker.internal');
+    const sink = list(ev.conns).find((c) => c.port === 2375);
+    const gwTried = to(n.connects, [NETX.gateway]);
+    const gwDrops = list(ev.drops).filter((d) => d.chain === 'input' && d.dst === NETX.gateway && [2375, 2376, CANARY_PORT].includes(d.dpt));
+    const sockets = n.connects.filter((c) => c.family === 'AF_UNIX' && /(?:docker|containerd)\.sock$/.test(String(c.addr)));
+    const blocked = ev.canaryHits === 0 && gwTried.length >= 2 && gwTried.every(failedAll) && sockets.length >= 1 && sockets.every(failedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report);
+    const logged = !!q && !!sink && gwDrops.length >= 1 && sockets.length >= 1;
+    return verdict(blocked, logged, [`canary: ${ev.canaryHits} connection(s) reached the host listener`, ...gwTried.map((e) => `trace: ${fmt(e)}`), ...sockets.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no query for the host name', sink ? `sinkhole: ${sink.http ? `${sink.http.method} ${sink.http.path}` : 'connection'} on 2375, closed unanswered` : 'sinkhole: nothing on 2375', ...gwDrops.map((d) => `host: ${d.proto} to ${d.dst}:${d.dpt} dropped x${d.n}`)], blocked ? 'neither the host, its Docker API nor a socket of it was reachable' : ev.canaryHits !== 0 ? `got through: ${ev.canaryHits ?? 'an unknown number of'} connection(s) reached the host listener` : gwTried.some((e) => e.failed < e.n) || sockets.some((e) => e.failed < e.n) ? 'got through: a connection to the host or one of its sockets worked' : q && q.answer !== 'sinkhole' ? `got through: host.docker.internal got a real answer (${q.answer})` : reportGotThrough(ev.report) ? 'got through: the target reports a reply from the host' : gwTried.length < 2 || sockets.length < 1 ? `nothing was tried: ${gwTried.length} host connection(s) and ${sockets.length} socket(s) traced, at least 2 and 1 expected` : 'no clear block: a call to the host ended "in progress", which says nothing');
+  }
+
+/** Egress proxy lines of a case (sandbox/egress-proxy.mjs, as `egress` telemetry). */
+const egressOf = (ev) => list(ev.egress).filter((e) => e && typeof e === 'object');
+/** What the proxy let through: any CONNECT it allowed to a host not on the allowlist. */
+const letThrough = (ev) => egressOf(ev).filter((e) => e.allowed === true && !PROXY_ALLOWED.includes(e.host));
+
+/**
+ * A case that asks the egress proxy for something it must refuse: blocked when the proxy logged at
+ * least `min` refusals for the reason `why` (and `plain` refusals of plain HTTP), let nothing through,
+ * and the target reached the proxy (traced) without getting a tunnel (its report can only fail it).
+ */
+function proxyRule(ev, { why, min, plain = 0, what }) {
+  const n = net(ev.trace);
+  const proxy = NETS.install.proxy;
+  const reached = to(n.connects, [proxy]).filter((e) => e.failed < e.n);
+  const refused = egressOf(ev).filter((e) => e.allowed === false && e.error === why);
+  const plainRefused = egressOf(ev).filter((e) => e.allowed === false && e.error === 'plain HTTP refused');
+  const through = letThrough(ev);
+  const tunnel = reportGotThrough(ev.report, (a) => a.tunnel === true);
+  const blocked = !through.length && refused.length >= min && plainRefused.length >= plain && reached.length >= 1 && !tunnel;
+  const logged = refused.length >= min && plainRefused.length >= plain && reached.length >= 1;
+  const evidence = [...reached.slice(0, 4).map((e) => `trace: ${fmt(e)} (the proxy)`), ...egressOf(ev).slice(0, 12).map((e) => `proxy: ${e.host}${e.port ? `:${e.port}` : ''} ${e.allowed ? 'ALLOWED' : `refused (${e.error ?? 'no reason'})`}`)];
+  const detail = blocked ? `the proxy refused every ${what} and let nothing through`
+    : through.length ? `got through: the proxy let ${through[0].host}:${through[0].port ?? '?'} through`
+      : tunnel ? 'got through: the target reports a tunnel through the proxy'
+        : !reached.length ? 'nothing was tried: no traced connection reached the proxy'
+          : `not logged: the proxy logged ${refused.length} refusal(s) for "${why}" (at least ${min} expected)${plain ? ` and ${plainRefused.length} of plain HTTP (at least ${plain})` : ''}`;
+  return verdict(blocked, logged, evidence, detail);
 }
 
 function verdict(blocked, logged, evidence, detail) {
@@ -123,17 +176,7 @@ const RULES = {
     const logged = tried && (!gwSent || dropped);
     return verdict(blocked, logged, [...socks.map((s) => `trace: socket ${s.type} ${s.protocol} failed ${s.failed}/${s.n}`), ...[...outside, ...gw].map((e) => `trace: sendto ${fmt(e)}`), dropped ? `host: ICMP to ${NET.gateway} dropped and logged` : 'host: no ICMP drop logged'], blocked ? 'no echo left the sandbox network or reached the host' : !tried ? 'nothing was tried: no ICMP socket traced' : (gwSent && !dropped) ? 'got through: an echo to the host was sent and the firewall logged no drop' : (outsideWhy(outside, 0, { reported: reportGotThrough(ev.report) }) ?? 'got through: an echo may have left'));
   },
-  'docker-host': (ev) => {
-    const n = net(ev.trace);
-    const q = list(ev.dns).find((d) => d.qname === 'host.docker.internal');
-    const sink = list(ev.conns).find((c) => c.port === 2375);
-    const gwTried = to(n.connects, [NET.gateway]);
-    const gwDrops = list(ev.drops).filter((d) => d.chain === 'input' && d.dst === NET.gateway && [2375, 2376, CANARY_PORT].includes(d.dpt));
-    const sockets = n.connects.filter((c) => c.family === 'AF_UNIX' && /(?:docker|containerd)\.sock$/.test(String(c.addr)));
-    const blocked = ev.canaryHits === 0 && gwTried.length >= 2 && gwTried.every(failedAll) && sockets.length >= 1 && sockets.every(failedAll) && (!q || q.answer === 'sinkhole') && !reportGotThrough(ev.report);
-    const logged = !!q && !!sink && gwDrops.length >= 1 && sockets.length >= 1;
-    return verdict(blocked, logged, [`canary: ${ev.canaryHits} connection(s) reached the host listener`, ...gwTried.map((e) => `trace: ${fmt(e)}`), ...sockets.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no query for the host name', sink ? `sinkhole: ${sink.http ? `${sink.http.method} ${sink.http.path}` : 'connection'} on 2375, closed unanswered` : 'sinkhole: nothing on 2375', ...gwDrops.map((d) => `host: ${d.proto} to ${d.dst}:${d.dpt} dropped x${d.n}`)], blocked ? 'neither the host, its Docker API nor a socket of it was reachable' : ev.canaryHits !== 0 ? `got through: ${ev.canaryHits ?? 'an unknown number of'} connection(s) reached the host listener` : gwTried.some((e) => e.failed < e.n) || sockets.some((e) => e.failed < e.n) ? 'got through: a connection to the host or one of its sockets worked' : q && q.answer !== 'sinkhole' ? `got through: host.docker.internal got a real answer (${q.answer})` : reportGotThrough(ev.report) ? 'got through: the target reports a reply from the host' : gwTried.length < 2 || sockets.length < 1 ? `nothing was tried: ${gwTried.length} host connection(s) and ${sockets.length} socket(s) traced, at least 2 and 1 expected` : 'no clear block: a call to the host ended "in progress", which says nothing');
-  },
+  'docker-host': (ev) => hostRule(ev, NETS.run),
   metadata: (ev) => {
     const n = net(ev.trace);
     const att = to(n.connects, ['169.254.169.254', '168.63.129.16']);
@@ -143,6 +186,31 @@ const RULES = {
     const logged = att.length >= 2 && !!q && !!c;
     return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no metadata name query', c ? `sinkhole: ${c.http.method} ${c.http.path}, closed unanswered` : 'sinkhole: no metadata request'], blocked ? 'no instance metadata or host agent address answered' : outsideWhy(att, 2, { reported: reportGotThrough(ev.report), other: q && q.answer !== 'sinkhole' ? `metadata.google.internal got a real answer (${q.answer})` : null }));
   },
+  // The install network: through the proxy, and around it.
+  'install-proxy-host': (ev) => proxyRule(ev, { why: 'host not on the allowlist', min: 2, plain: 1, what: 'host not on its allowlist, and plain HTTP' }),
+  'install-proxy-ip': (ev) => proxyRule(ev, { why: 'IP literal', min: 2, what: 'IP literal' }),
+  'install-proxy-port': (ev) => proxyRule(ev, { why: 'port', min: 3, what: 'port but 443' }),
+  'install-direct': (ev) => {
+    const n = net(ev.trace);
+    const att = [...to(n.connects, ['1.1.1.1', '140.82.112.3', '104.16.1.34']), ...sent(to(n.sends, ['8.8.8.8']))];
+    const q = list(ev.dns).find((d) => d.qname === 'registry.npmjs.org');
+    const through = letThrough(ev);
+    const blocked = att.length >= 3 && att.every(refusedAll) && (!q || q.answer === 'sinkhole') && !through.length && !reportGotThrough(ev.report);
+    const logged = att.length >= 3 && !!q;
+    return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no query for registry.npmjs.org'], blocked ? 'nothing on the install network got out around the proxy' : through.length ? `got through: the proxy let ${through[0].host} through` : outsideWhy(att, 3, { reported: reportGotThrough(ev.report), other: q && q.answer !== 'sinkhole' ? `registry.npmjs.org got a real answer (${q.answer})` : null }) ?? 'not logged: no DNS query for registry.npmjs.org reached the logger');
+  },
+  'install-metadata': (ev) => {
+    const n = net(ev.trace);
+    const att = to(n.connects, ['169.254.169.254', '168.63.129.16']);
+    const q = list(ev.dns).find((d) => d.qname === 'metadata.google.internal');
+    const c = list(ev.conns).find((x) => x.http && x.http.host === 'metadata.google.internal');
+    const viaProxy = egressOf(ev).filter((e) => e.allowed === false && ['169.254.169.254', '168.63.129.16'].includes(e.host));
+    const through = letThrough(ev);
+    const blocked = att.length >= 2 && att.every(refusedAll) && (!q || q.answer === 'sinkhole') && !through.length && !reportGotThrough(ev.report);
+    const logged = att.length >= 2 && !!q && !!c && viaProxy.length >= 1;
+    return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no metadata name query', c ? `sinkhole: ${c.http.method} ${c.http.path}, closed unanswered` : 'sinkhole: no metadata request', ...viaProxy.map((e) => `proxy: ${e.host}:${e.port ?? '?'} refused (${e.error ?? 'no reason'})`)], blocked ? (logged ? 'no instance metadata or host agent address answered, directly or through the proxy' : 'blocked, but the metadata request through the proxy was not logged') : through.length ? `got through: the proxy let ${through[0].host} through` : outsideWhy(att, 2, { reported: reportGotThrough(ev.report), other: q && q.answer !== 'sinkhole' ? `metadata.google.internal got a real answer (${q.answer})` : null }));
+  },
+  'install-host': (ev) => hostRule(ev, NETS.install),
   'env-token': (ev) => {
     const r = ev.report && ev.report.result && typeof ev.report.result === 'object' ? ev.report.result : null;
     const said = r ? (Number(r.canary_in_env) || 0) + list(r.files).reduce((s, f) => s + (Number(f && f.canary) || 0), 0) + list(r.token_names).length : 0;

@@ -34,6 +34,8 @@ export const EXPECT = {
   // On a network with a route out, the firewall's silent drop leaves the calls to time out: shown as
   // the absence of a definite refusal, not as a reply.
   'internal-net': { case: 'direct-ip', why: /^no definite refusal: /, blocked: false, logged: true },
+  // The install network's proxy with the denied hosts on its allowlist: its own log shows it let one through.
+  'proxy-allowlist': { case: 'install-proxy-host', why: /^got through: the proxy let (?:example\.com|evil\.example):443 through/, blocked: false },
 };
 
 export function checkMutation(file, protection) {

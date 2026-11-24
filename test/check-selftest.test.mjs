@@ -39,6 +39,7 @@ function telemetry({ cases = CASES, tweak = {}, skip = false, endOk = true, omit
     for (const d of ev.dns) tel.write('dns_query', { from: d.from ?? null, proto: d.proto, qname: d.qname, qtype: d.qtype, answer: d.answer }, { ...meta, source: 'netlog' });
     for (const c of ev.conns) tel.write('connection', { ...c, from: c.from ?? null }, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
+    for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
     if (!omit.includes(`${name}:trace`) && ev.trace) tel.write('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
     if (!omit.includes(`${name}:evidence`)) tel.write('case_evidence', { case: name, limits_hit: t.limits ?? [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
     if (!omit.includes(`${name}:result`)) {

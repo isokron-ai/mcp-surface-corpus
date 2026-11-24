@@ -137,9 +137,13 @@ only our own hostile target's activity and is uploaded in the clear.
 
 Self test: `sandbox-selftest.yml` runs `selftest/hostile.py` in this sandbox once per escape attempt
 (direct IP, DNS over HTTPS by IP, raw socket, IPv6, ICMP, the Docker host, cloud metadata, a token in
-the environment, a write outside the work volume, a fork bomb, forged output). A case passes only
-when the harness's own evidence (trace, logger, firewall log, `docker inspect`, a listener on the
-host) shows it was blocked and logged, never on what the target printed; `scripts/check-selftest.mjs`
+the environment, a write outside the work volume, a fork bomb, forged output), and on the install
+network, the most permissive one, the way an install with scripts runs (the `node24-build` image,
+`HTTPS_PROXY` to the egress proxy): a CONNECT to a host not on the allowlist and plain HTTP, to IP
+literals, to ports other than 443, direct egress around the proxy, cloud metadata (directly and
+through the proxy), and the host. A case passes only when the harness's own evidence (trace,
+logger, the proxy's own log, firewall log, `docker inspect`, a listener on the host) shows it was
+blocked and logged, never on what the target printed; `scripts/check-selftest.mjs`
 then checks the same from the telemetry alone.
 
 What the sandbox does not do:

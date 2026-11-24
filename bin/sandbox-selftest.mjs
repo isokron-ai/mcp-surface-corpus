@@ -34,11 +34,12 @@ import { Docker, HarnessError, checkDockerVersion, dockerEnvFrom, helperRunArgs,
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
-import { Telemetry, fromNetlog, newRunId, readTelemetry } from '../src/telemetry.mjs';
-import { CASES, CANARY_PORT, evaluateCase } from '../src/selftest.mjs';
+import { Telemetry, fromNetlog, fromProxy, newRunId, readTelemetry } from '../src/telemetry.mjs';
+import { CASES, CANARY_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, caseNet, evaluateCase } from '../src/selftest.mjs';
 import { firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
-import { loadImages } from './run-shard.mjs';
+import { lookup } from 'node:dns/promises';
+import { PROXY_PORT, PROXY_URL, loadImages, resolveRegistries } from './run-shard.mjs';
 
 export const RESULTS_FORMAT = 'isokron-sandbox-selftest/1';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -62,6 +63,7 @@ export const MUTATIONS = {
   'env-filter': "the runner's tokens (the canaries) reach the case container's environment",
   'read-only': 'the case container has a writable root filesystem',
   'internal-net': 'the run network is made without --internal',
+  'proxy-allowlist': 'the install network\'s egress proxy also allows the hosts the install cases must be refused',
 };
 
 export function parseArgs(argv) {
@@ -128,6 +130,29 @@ export const WORK_VOLUME_CMD = 'chmod 0750 /work && chown 65534:65534 /work';
 
 /** The env the hostile target gets: what any target gets, nothing of the runner's. */
 const CASE_ENV = { HOME: P.home, TMPDIR: '/tmp', NO_COLOR: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUNBUFFERED: '1', SURFACE_SANDBOX: '1' };
+/** An install case's env adds what an install gets: the proxy, and nothing else of the runner's. */
+const INSTALL_CASE_ENV = { ...CASE_ENV, HTTPS_PROXY: PROXY_URL, https_proxy: PROXY_URL, HTTP_PROXY: PROXY_URL, http_proxy: PROXY_URL, NO_PROXY: '', no_proxy: '' };
+
+/**
+ * The install network's egress proxy, as bin/run-shard.mjs starts it for an install: our code under
+ * gVisor, on the network with egress and at .3 of the case's install network, allowing the registry
+ * (as fixed host entries the host resolved) on 443 and nothing else. Returns its name.
+ */
+async function startProxy(dk, ctx, { inNet, name, lbl }) {
+  const allow = ctx.disable === 'proxy-allowlist' ? [...PROXY_ALLOWED, ...PROXY_DENIED_HOSTS] : [...PROXY_ALLOWED];
+  const proxy = dk.name(name, 'proxy');
+  const args = helperRunArgs({ name: proxy, image: ctx.images.node24, network: ctx.outNet, create: true, labels: lbl, memory: '256m', publicHosts: ctx.publicHosts, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...allow] });
+  ctx.tel.write('settings', { digest: settingsDigest(settingsManifest(args, { role: 'proxy' })), manifest: settingsManifest(args, { role: 'proxy' }) }, { subject: `case:${name}`, role: 'proxy' });
+  await dk.must(dk.d(args, { deadline: Date.now() + 120_000 }), 'egress proxy');
+  await dk.must(dk.d(['network', 'connect', '--ip', NETS.install.proxy, inNet, proxy], { deadline: Date.now() + 60_000 }), 'egress proxy network');
+  await dk.must(dk.d(['start', proxy], { deadline: Date.now() + 60_000 }), 'egress proxy start');
+  for (const until = Date.now() + 30_000; ;) {
+    const r = await dk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 10_000 });
+    if (String(r.stdout).split('\n').some((l) => { try { return Number.isInteger(JSON.parse(l).listening); } catch { return false; } })) return proxy;
+    if (Date.now() >= until) throw new HarnessError('the egress proxy did not start');
+    await sleep(250);
+  }
+}
 
 /** A listener on the host side of the run network: any connection that reaches it is a hit. */
 function listenCanary(host, port) {
@@ -159,10 +184,13 @@ async function runCase(name, ctx) {
   const subject = `case:${name}`;
   const meta = { subject, role: 'case' };
   const lbl = dk.labels(name);
-  const roles = rolesOn('run', { target: 'case' });
+  const netName = caseNet(name);
+  const NET = NETS[netName];
+  const roles = rolesOn(netName, { target: 'case' });
   const since = Date.now() / 1000;
   const fw0 = firewallCounts();
-  const ev = { trace: null, dns: [], conns: [], drops: [], canaryHits: null, inspect: null, container: null, telemetryHasNonce: null, output: null, outputRecorded: false, report: null, pidsLimit: Number(LIMITS.nproc) };
+  let proxy = null;
+  const ev = { trace: null, dns: [], conns: [], drops: [], egress: [], canaryHits: null, inspect: null, container: null, telemetryHasNonce: null, output: null, outputRecorded: false, report: null, pidsLimit: Number(LIMITS.nproc) };
   let canary = null;
   let netlog = null;
   let watch = null;
@@ -173,20 +201,25 @@ async function runCase(name, ctx) {
   const savedEnv = Object.fromEntries(Object.keys(canaries).map((k) => [k, process.env[k]]));
   Object.assign(process.env, canaries);
   try {
-    const network = ctx.disable === 'internal-net'
-      ? await externalRunNetwork(dk, `surface-${dk.runId}-${name}-run`, name)
-      : await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
+    const network = netName === 'install'
+      ? await dk.network(`surface-${dk.runId}-${name}-in`, true, name, { sandbox: 'install' })
+      : ctx.disable === 'internal-net'
+        ? await externalRunNetwork(dk, `surface-${dk.runId}-${name}-run`, name)
+        : await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
     const work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
     await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', WORK_VOLUME_CMD] }), { deadline: Date.now() + 120_000 }), 'work volume');
-    netlog = await startNetlogOn(dk, { net: 'run', network, image: images.node22, toolsVol: ctx.toolsVol, labels: lbl, target: name });
-    canary = await listenCanary(NETS.run.gateway, CANARY_PORT);
+    netlog = await startNetlogOn(dk, { net: netName, network, image: images.node22, toolsVol: ctx.toolsVol, labels: lbl, target: name });
+    if (netName === 'install') proxy = await startProxy(dk, ctx, { inNet: network, name, lbl });
+    canary = await listenCanary(NET.gateway, CANARY_PORT);
     extra.canary_bound = canary.bound;
 
     const cname = dk.name(name, 'case');
+    // An install case runs as an npm install with scripts runs: in the node24-build image, at .4 of
+    // the install network, with the proxy in its environment.
     let argv = sandboxRunArgs({
-      name: cname, image: images.python, network, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, workdir: P.work,
-      mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: CASE_ENV,
-      cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NETS.run.gateway, String(CANARY_PORT)],
+      name: cname, image: netName === 'install' ? images['node24-build'] : images.python, network, ip: NET.target, resolv: netName, detach: true, labels: lbl, workdir: P.work,
+      mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: netName === 'install' ? INSTALL_CASE_ENV : CASE_ENV,
+      cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NET.gateway, String(CANARY_PORT)],
       hostEnv: process.env,
     });
     if (ctx.disable) argv = mutateCaseArgs(argv, ctx.disable, canaries);
@@ -229,7 +262,19 @@ async function runCase(name, ctx) {
     ev.netlogLines = lines.filter((o) => o.kind === 'stopped');
     netlog = null;
     writeNetlog(tel, lines, { subject, roles });
-    const mine = lines.filter((o) => o.from === NETS.run.target).map(fromNetlog).filter(Boolean);
+    const mine = lines.filter((o) => o.from === NET.target).map(fromNetlog).filter(Boolean);
+    // What the case asked the proxy for, as `egress` records: the proxy's own log, our code.
+    if (proxy) {
+      const pl = await dk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024, deadline: Date.now() + 60_000 });
+      for (const l of String(pl.stdout).split('\n').filter(Boolean).slice(0, 5000)) {
+        let o = null;
+        try { o = JSON.parse(l); } catch { continue; }
+        const x = fromProxy(o);
+        if (x && tel.tryWrite(x[0], x[1], { source: 'proxy', subject, role: 'proxy' })) ev.egress.push(x[1]);
+      }
+      await dk.kill(proxy);
+      proxy = null;
+    }
     ev.dns = mine.filter(([t]) => t === 'dns_query').map(([, f]) => f);
     ev.conns = mine.filter(([t]) => t === 'connection').map(([, f]) => f);
 
@@ -266,6 +311,7 @@ async function runCase(name, ctx) {
     for (const [k, val] of Object.entries(savedEnv)) { if (val === undefined) delete process.env[k]; else process.env[k] = val; }
     if (canary) canary.close();
     if (netlog) await dk.kill(netlog);
+    if (proxy) await dk.kill(proxy);
     await dk.sweep(name);
   }
 }
@@ -305,6 +351,8 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
     checkDockerVersion(v.stdout.toString().trim().split(' ')[0]);
     await dk.image(images.python, 'python');
     await dk.image(images.node22, 'node22');
+    const install = o.cases.some((c) => INSTALL_CASES.includes(c));
+    if (install) { await dk.image(images['node24-build'], 'node24-build'); await dk.image(images.node24, 'node24'); }
     if (o.disable && !mutateHost(o.disable)) throw new HarnessError(`the mutation ${o.disable} could not be applied to the host`);
     const pf = await preflight(dk, { cfg, arch: arch(), image: images.python, cmd: ['python3', '-c', 'import os; print(os.getuid(), os.getgid())'], expect: '65534 65534', tel, labels: dk.labels(), readLog, needHostLog: true, strict: true });
     if (!pf.ok) {
@@ -312,6 +360,11 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
       say(`selftest: skipped (${pf.reason}): ${pf.detail}`);
     } else {
       const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images) };
+      if (install) {
+        // The proxy's network with egress, and the registry's addresses resolved on the host, as for a shard.
+        ctx.outNet = await dk.network(`surface-${runId}-out`, false);
+        ctx.publicHosts = await resolveRegistries(PROXY_ALLOWED, (h) => lookup(h, { all: true, family: 4 }));
+      }
       for (const name of o.cases) {
         const r = await runCase(name, ctx);
         results.cases.push(r);
