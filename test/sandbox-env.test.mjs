@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { ENV_DENY, envNameAllowed, hostSecretValues, targetEnvProblems, settingsManifest, settingsDigest, canonical, inspectMismatches, parseMemory } from '../src/sandbox-env.mjs';
-import { sandboxRunArgs, helperRunArgs } from '../src/docker.mjs';
+import { sandboxRunArgs, helperRunArgs, LOGS } from '../src/docker.mjs';
 import { envPlan } from '../bin/run-shard.mjs';
 
 const IMG = `docker.io/library/python:3.13-slim-bookworm@sha256:${'e'.repeat(64)}`;
@@ -72,7 +72,7 @@ test('a helper manifest shows its runtime and its one capability', () => {
 });
 
 const inspectOf = (m, over = {}) => ({
-  HostConfig: { Runtime: 'runsc', CapDrop: ['ALL'], CapAdd: null, Privileged: false, SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true, PidsLimit: 2048, Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }, { Name: 'nproc', Soft: 512, Hard: 512 }], Memory: 2 * 1024 ** 3, NanoCpus: 2e9, NetworkMode: m.network, PidMode: '', IpcMode: 'private', Devices: [], Binds: null, ...(over.HostConfig || {}) },
+  HostConfig: { Runtime: 'runsc', CapDrop: ['ALL'], CapAdd: null, Privileged: false, SecurityOpt: ['no-new-privileges'], ReadonlyRootfs: true, PidsLimit: 2048, Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }, { Name: 'nproc', Soft: 512, Hard: 512 }], Memory: 2 * 1024 ** 3, NanoCpus: 2e9, NetworkMode: m.network, PidMode: '', IpcMode: 'private', Devices: [], Binds: null, LogConfig: { Type: 'local', Config: { 'max-size': '16m', 'max-file': '2' } }, ...(over.HostConfig || {}) },
   Config: { User: '65534:65534', Env: ['PATH=/usr/local/bin:/usr/bin', 'HOME=/tmp/home', 'A=1', 'B=2', 'PYTHON_VERSION=3.13.1'], ...(over.Config || {}) },
   Mounts: over.Mounts ?? [
     { Type: 'bind', Source: '/etc/isokron-sandbox/resolv-run.conf', Destination: '/etc/resolv.conf', RW: false },
@@ -99,6 +99,23 @@ test('inspect: a container that matches its manifest has no mismatch; each drift
   assert.match(drift({ Config: { Env: ['HOME=/tmp/home', 'A=1', 'B=2', 'GITHUB_TOKEN=x'] } }).join(), /environment has GITHUB_TOKEN/);
   assert.match(drift({ Config: { Env: ['HOME=/tmp/home', 'A=1'] } }).join(), /environment lacks B/);
   assert.match(inspectMismatches(inspectOf(m, { Config: { Env: ['HOME=/tmp/home', 'A=1', 'B=canary-123456'] } }), m, { canaries: ['canary-123456'] }).join(), /canary/);
+});
+
+test('R-SBX-26 every container we start keeps its output under the pinned log limits, and inspect sees a container that does not', () => {
+  for (const a of [argv(), helperRunArgs({ name: 'h', image: IMG, cmd: ['x'] })]) {
+    const m = settingsManifest(a);
+    assert.equal(m.log_driver, LOGS.driver);
+    assert.deepEqual(m.log_opts, [`max-size=${LOGS.maxSize}`, `max-file=${LOGS.maxFile}`]);
+    assert.ok(a.indexOf('--log-driver') < a.indexOf(IMG), 'an option, before the image');
+  }
+  const m = settingsManifest(argv());
+  const drift = (lc) => inspectMismatches(inspectOf(m, { HostConfig: { LogConfig: lc } }), m).join();
+  assert.match(drift({ Type: 'json-file', Config: {} }), /log driver is json-file/);
+  assert.match(drift({ Type: 'local', Config: { 'max-size': '100g', 'max-file': '2' } }), /log option max-size is 100g/);
+  assert.match(drift(undefined), /log driver is undefined/);
+  const bare = settingsManifest(argv().filter((x, i, a) => !['--log-driver', '--log-opt'].includes(x) && !['--log-driver', '--log-opt'].includes(a[i - 1])));
+  assert.match(inspectMismatches(inspectOf(bare, { HostConfig: { LogConfig: { Type: 'json-file', Config: {} } } }), bare).join(), /no log limit declared/);
+  assert.equal(LOGS.maxBytes, 32 * 1024 * 1024);
 });
 
 test('memory sizes', () => {

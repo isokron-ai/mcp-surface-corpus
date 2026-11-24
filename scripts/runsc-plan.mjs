@@ -10,6 +10,11 @@
 //   install_dir=/usr/local/lib/isokron-gvisor
 //   log_dir=/var/log/isokron-runsc
 //   trace_fs_mb=2048                 (the size of the trace folder's own filesystem)
+//   docker_root=/var/lib/isokron-docker  (Docker's data-root, a filesystem of its own)
+//   docker_fs_mb=20480 docker_fs_inodes=2097152  (one line each: its size and inode count)
+//   volume_fs_mb=6144                (the size of the filesystem Docker's volumes get)
+//   volume_fs_inodes=1048576         (and its inode count)
+//   log_driver=local log_max_size=16m log_max_file=2  (one line each: every container's log limits)
 //   flag=--network=sandbox          (one line per runsc flag, in the order src/runsc.mjs gives)
 //
 // The flags are exactly runscFlags(): the runtime the install registers and the flags the harness
@@ -37,6 +42,14 @@ export function plan(cfg, arch) {
     `install_dir=${cfg.install_dir}`,
     `log_dir=${cfg.log_dir}`,
     `trace_fs_mb=${cfg.trace_fs_mb}`,
+    `docker_root=${cfg.docker_root}`,
+    `docker_fs_mb=${cfg.docker_fs_mb}`,
+    `docker_fs_inodes=${cfg.docker_fs_inodes}`,
+    `volume_fs_mb=${cfg.volume_fs_mb}`,
+    `volume_fs_inodes=${cfg.volume_fs_inodes}`,
+    `log_driver=${cfg.container_logs.driver}`,
+    `log_max_size=${cfg.container_logs.max_size_mb}m`,
+    `log_max_file=${cfg.container_logs.max_file}`,
     ...runscFlags(cfg, a).map((f) => `flag=${f}`),
   ];
 }

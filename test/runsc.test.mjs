@@ -69,6 +69,8 @@ test('a config that would weaken the sandbox or blur the install is refused', ()
   assert.throws(broken((c) => { c.summary.credential.push('('); }), /credential/);
   assert.throws(broken((c) => { delete c.trace_fs_mb; }), /trace_fs_mb/);
   assert.throws(broken((c) => { c.trace_max_mb = c.trace_fs_mb; }), /trace_max_mb/);
+  assert.throws(broken((c) => { delete c.volume_fs_mb; }), /volume_fs_mb/);
+  assert.throws(broken((c) => { c.volume_fs_inodes = 10; }), /volume_fs_inodes/);
   assert.throws(() => validateRunscConfig(null), /not an object/);
 });
 

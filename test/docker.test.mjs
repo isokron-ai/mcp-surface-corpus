@@ -4,6 +4,7 @@ import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, chec
 import { WORK_VOLUME_CMD } from '../bin/sandbox-selftest.mjs';
 import { decide, makeProxy } from '../sandbox/egress-proxy.mjs';
 import { connect } from 'node:net';
+import { readFileSync } from 'node:fs';
 
 const IMG = `docker.io/library/node:24-bookworm-slim@sha256:${'d'.repeat(64)}`;
 const sb = (o = {}) => sandboxRunArgs({ name: 'surface-x-s001-s1', image: IMG, network: 'none', cmd: ['node', 'x.js'], ...o });
@@ -176,6 +177,13 @@ test('R-CI-01 the work volume is chmod-ed before it is chown-ed: root without CA
   assert.ok(WORK_VOLUME_CMD.indexOf('chmod 0750 /work') >= 0 && WORK_VOLUME_CMD.indexOf('chmod') < WORK_VOLUME_CMD.indexOf('chown 65534:65534 /work'), WORK_VOLUME_CMD);
 });
 
+test('R-CI-08 the self test hands the case a work volume that is not empty, so Docker\'s copy-up cannot give /work back to root', () => {
+  assert.match(WORK_VOLUME_CMD, /mkdir \/work\/home && chown 65534:65534 \/work\/home \/work$/, 'the child first: once /work is 65534\'s, root cannot reach inside it');
+  assert.ok(WORK_VOLUME_CMD.indexOf('mkdir /work/home') < WORK_VOLUME_CMD.indexOf('chown'), 'made as root while root still owns /work');
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.match(py, /def case_write_outside[\s\S]*?"inside": \[write\(f"\/work\/inside-\{nonce\}"\)/, 'write-outside also writes inside the work folder');
+});
+
 test('R-CI-03 the process limit a target meets inside gVisor is RLIMIT_NPROC, set on every target container', () => {
   const a = sb();
   assert.equal(a.filter((x, i) => a[i - 1] === '--ulimit' && x.startsWith('nproc=')).join(), `nproc=${LIMITS.nproc}:${LIMITS.nproc}`);
@@ -185,4 +193,17 @@ test('R-CI-03 the process limit a target meets inside gVisor is RLIMIT_NPROC, se
 test('R-CI-04 the host pids limit stays above what nproc lets a target make (gVisor spends about two host tasks a process)', () => {
   assert.ok(Number(LIMITS.pids) >= 2 * Number(LIMITS.nproc) + 512, `${LIMITS.pids} vs ${LIMITS.nproc}`);
   assert.equal(pair(sb(), '--pids-limit'), LIMITS.pids);
+});
+
+test('R-SBX-27 anyRunning names the containers still running; an unreadable answer counts them all as running', async () => {
+  const id = (c) => c.repeat(64);
+  const fake = (exit, stdout) => Object.assign(new Docker({ runId: 'r' }), { d: async () => ({ exit, stdout: Buffer.from(stdout) }) });
+  assert.deepEqual(await fake(0, `${id('a')}\n${id('b')}\n`).anyRunning([id('a'), id('c')]), [id('a')]);
+  assert.deepEqual(await fake(0, '').anyRunning([id('a')]), []);
+  assert.deepEqual(await fake(1, '').anyRunning([id('a'), 'not-an-id']), [id('a')]);
+  assert.deepEqual(await fake(0, id('a')).anyRunning([]), []);
+  const shard = readFileSync(new URL('../bin/run-shard.mjs', import.meta.url), 'utf8');
+  assert.ok(shard.indexOf('await tdk.anyRunning(instIds)') < shard.indexOf('cmd: workReadCmd(lk.path'), 'the corpus reads lock files only once no install container runs');
+  const st = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
+  assert.match(st, /'symlink-escape': async \(ctx, \{ work, lbl, name, id \}\) => \{\n\s+if \(\(await ctx\.dk\.anyRunning\(\[id\]\)\)\.length\) throw/);
 });

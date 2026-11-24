@@ -207,7 +207,7 @@ after it is summarised.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `summary` | object | `format` (`isokron-trace-summary/1`), `lines`, `syscalls`, `counts` (by family: `file`, `process`, `network`, `privileged`), `failed`, `opens_outside` (opens and writes outside the expected paths in `gvisor.json`), `credential_paths` (reads of token, key and host paths), `exec`, `process` (`clones`, `clone_failed`), `network` (`sockets`, `raw_sockets`, `connects`, `sends`, `binds`, `dns_names`), `privileged`, `omitted` (how many entries each capped list left out), `bytes`, `truncated`. Each list entry has `n`, `failed` and the last `errno`. |
+| `summary` | object | `format` (`isokron-trace-summary/1`), `lines`, `syscalls`, `counts` (by family: `file`, `process`, `network`, `privileged`), `failed`, `opens_outside` (opens and writes outside the expected paths in `gvisor.json`), `credential_paths` (reads of token, key and host paths), `exec`, `process` (`clones`, `clone_failed`), `network` (`sockets`, `raw_sockets`, `connects`, `sends`, `binds`, `dns_names`), `privileged`, `links` (links the target made: `kind` `symlink` or `hard`, `target` as written, `path`), `omitted` (how many entries each capped list left out), `bytes`, `truncated`. Each list entry has `n`, `failed` and the last `errno`. |
 
 ### `target_output`
 
@@ -236,6 +236,7 @@ network logger, firewall, container and output records of the same `subject`).
 | `inspect` | object | From `docker inspect`: `runtime`, `mismatches` (against the settings manifest), `canary_in_env` (a host token value in the container's environment). |
 | `telemetry_has_nonce` | boolean or null | Whether the case's nonce, or another run's record, reached the telemetry. |
 | `pids_limit` | integer | The process limit the case was held to (`--ulimit nproc`). |
+| `stage` | object, optional | What a later stage (our code, after the case's container ended or was torn down) saw of what the case left behind: `readout` (symlink-escape: per read-out path, `path`, `exit` 0 read, 3 a link in the path refused, 4 no such file, and `bytes`), `host` (`intact`, the host canary file unchanged, and `planted`, files that appeared beside it), `reach` and `reach_before` (unix-socket: `to`, `ok`, `code`, `bytes` per connection tried once the case was torn down, and while it still ran), `disk` (install-archive-bomb: `work_fs_mb`, `work_fs_inodes`, `work_used_mb`, `work_files` as statfs gives them from a helper; install-archive-bomb and output-flood: `host_free_drop_mb`, how far the runner's free disk fell while the case ran). |
 
 ### `bypass_result`
 
@@ -244,7 +245,7 @@ The target's report can make a case fail, never pass.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `case` | string | The case: `direct-ip`, `doh-ip`, `raw-socket`, `ipv6`, `icmp`, `docker-host`, `metadata`, `env-token`, `write-outside`, `fork-bomb`, `output-forgery`. |
+| `case` | string | The case: `direct-ip`, `doh-ip`, `raw-socket`, `ipv6`, `icmp`, `docker-host`, `metadata`, `env-token`, `write-outside`, `fork-bomb`, `output-forgery`, `symlink-escape`, `unix-socket`, `output-flood`, and on the install network `install-proxy-host`, `install-proxy-ip`, `install-proxy-port`, `install-direct`, `install-metadata`, `install-host`, `install-archive-bomb`. |
 | `blocked` | boolean | The attempt did not get through, and the container ran under runsc with the declared settings. |
 | `logged` | boolean | The attempt shows in the harness's evidence (trace, network logger, firewall log). |
 | `pass` | boolean | `blocked` and `logged`. |

@@ -38,12 +38,19 @@ runs in the slim image, where the module loads with the same ABI and glibc. Befo
 the daemon's runsc has exactly the pinned flags and runs a smoke container under it; if anything is
 missing it records a `skip` and stops: nothing falls back to runc. Each run writes telemetry
 (settings, containers, syscall trace summaries, DNS queries, connections, egress, firewall drops;
-[docs/TELEMETRY.md](docs/TELEMETRY.md)). `sandbox-selftest.yml` runs a hostile target through seventeen
-escape attempts and passes only when every one was blocked and logged: eleven on the run network,
-and six on the install network, run the way an npm install with scripts runs (the `node24-build`
+[docs/TELEMETRY.md](docs/TELEMETRY.md)). `sandbox-selftest.yml` runs a hostile target through twenty-one
+escape attempts and passes only when every one was blocked and logged: fourteen on the run network
+(among them links planted to outside the work folder, host, abstract and left-behind sockets, and
+a stdout flood),
+and seven on the install network, run the way an npm install with scripts runs (the `node24-build`
 image, `HTTPS_PROXY` set), which ask the egress proxy for other hosts, IP literals, other ports and
-plain HTTP, and go around it to outside addresses, metadata and the host. [SECURITY.md](SECURITY.md)
-has the details.
+plain HTTP, go around it to outside addresses, metadata and the host, and unpack an archive bomb.
+Docker's data-root (images, containers, their logs) and its volumes each live on a filesystem of
+their own, reserved up front (`docker_fs_mb`, `volume_fs_mb` and their inode counts in
+`gvisor.json`), and every container keeps at most `container_logs` of its output (the `local` log
+driver, per container and as the daemon's default). So a target that writes, prints or unpacks
+without end, or a huge image layer, fills those, not the runner's disk.
+[SECURITY.md](SECURITY.md) has the details.
 
 ## What is captured per target (encrypted)
 
@@ -127,7 +134,7 @@ the telemetry alone. The call fails when the self test (or, with `mutations`, an
 
 | Input | Type, default | Meaning |
 |---|---|---|
-| `mutations` | boolean, `false` | Also run the mutation matrix: each protection off in turn, and the self test must fail for the reason that protection explains (`scripts/check-mutation.mjs`). About nine more jobs. |
+| `mutations` | boolean, `false` | Also run the mutation matrix: each protection off in turn, and the self test must fail for the reason that protection explains (`scripts/check-mutation.mjs`). Fifteen more jobs. |
 | `artifact-prefix` | string, `sandbox-conformance` | Prefix of the artifact names: lowercase letters, digits and dashes, at most 40. |
 
 | Output | Value |

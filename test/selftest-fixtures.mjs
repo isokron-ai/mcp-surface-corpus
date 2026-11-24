@@ -1,6 +1,6 @@
 // Evidence of a working sandbox for every self test case, shared by the verdict tests
 // (test/selftest.test.mjs) and the telemetry check tests (test/check-selftest.test.mjs).
-import { CANARY_PORT } from '../src/selftest.mjs';
+import { CANARY_PORT, CASE_LISTEN_PORT, READOUT_PATHS, VOLUME_CAP } from '../src/selftest.mjs';
 import { NETS } from '../src/sandbox-net.mjs';
 
 export const GW = NETS.run.gateway;
@@ -73,6 +73,25 @@ export const GOOD = {
   'env-token': () => base({ trace: trace({ credential_paths: [ok({ path: '/proc/self/environ', op: 'read' }), ok({ path: '/proc/1/environ', op: 'read' })] }), report: { case: 'env-token', result: { canary_in_env: 0, token_names: [], files: [{ ok: true, canary: 0 }] } } }),
   'write-outside': () => base({ trace: trace({ opens_outside: ['/etc/isk-1', '/usr/local/isk-1', '/opt/surface/forged-1.json', '/isk-1', '/proc/sys/kernel/hostname'].map((path) => fail({ path, op: 'write', call: 'openat', errno: 30 })), privileged: [fail({ name: 'mount', errno: 1 })] }) }),
   'fork-bomb': () => base({ trace: trace({ process: { clones: 512, clone_failed: 3 } }), report: { result: { bomb: { forked: 509, error: 'EAGAIN' } } } }),
+  'symlink-escape': () => base({
+    trace: trace({ links: ['/', '/etc', '/etc/shadow', '/proc/1/root', '/var/run/docker.sock', '/var/lib/docker', '/home/runner/work/_temp', '/opt/surface'].map((t, i) => ok({ kind: 'symlink', target: t, path: `/work/links-1/l0${i}` })).concat([ok({ kind: 'symlink', target: '/etc/passwd', path: '/work/lock/freeze.txt' }), ok({ kind: 'symlink', target: '/work/.isk-1-pkg', path: '/work/pkg' })]) }),
+    stage: { readout: READOUT_PATHS.map((path) => ({ path, exit: 3, bytes: 0 })), host: { intact: true, planted: 0 } },
+    report: { case: 'symlink-escape', result: { canary_seen: 0, attempts: [{ path: '/work/links-1/l01/isk-1', via: '/etc', ok: false, errno: 30 }] } },
+  }),
+  'unix-socket': () => base({
+    trace: trace({ network: {
+      connects: ['/var/run/docker.sock', '/run/containerd/containerd.sock', '/run/runsc/runsc.sock', '/run/dbus/system_bus_socket', '/dev/log', '\u0000/containerd-shim/moby/isk/shim.sock', '\u0000isk-absent'].map((addr) => fail({ family: 'AF_UNIX', addr, port: null, errno: 2 })),
+      binds: [ok({ family: 'AF_UNIX', addr: '/work/isk-1.sock', port: null }), ok({ family: 'AF_UNIX', addr: '\u0000isk-listen-1', port: null }), ok({ family: 'AF_INET', addr: '0.0.0.0', port: CASE_LISTEN_PORT })],
+    } }),
+    stage: { reach_before: [{ to: `tcp ${NETS.run.target}:${CASE_LISTEN_PORT}`, ok: true, code: 'answered', bytes: 27 }, { to: 'unix /work/isk-1.sock', ok: false, code: 'ENOENT', bytes: 0 }, { to: 'abstract @isk-listen-1', ok: false, code: 'ECONNREFUSED', bytes: 0 }], reach: [{ to: `tcp ${NETS.run.target}:${CASE_LISTEN_PORT}`, ok: false, code: 'EHOSTUNREACH', bytes: 0 }, { to: 'unix /work/isk-1.sock', ok: false, code: 'ECONNREFUSED', bytes: 0 }, { to: 'abstract @isk-listen-1', ok: false, code: 'ECONNREFUSED', bytes: 0 }] },
+    container: { exit: 137, timed_out: true, oom_killed: false },
+  }),
+  'output-flood': () => base({ trace: trace(), output: { bytes: 30 * 1024 * 1024 }, stage: { disk: { host_free_drop_mb: 4 } } }),
+  'install-archive-bomb': () => base({
+    trace: trace({ opens_outside: ['/etc/isk-1-dotdot', '/etc/isk-1-abs', '/opt/surface/isk-1-abs', '/isk-1-root'].map((path) => fail({ path, op: 'write', call: 'openat', errno: 30 })) }),
+    stage: { disk: { work_fs_mb: VOLUME_CAP.mb - 150, work_fs_inodes: VOLUME_CAP.inodes, work_used_mb: VOLUME_CAP.mb - 150, work_files: 40050, host_free_drop_mb: 3 } },
+    report: { case: 'install-archive-bomb', result: { fallocate: { ok: false, errno: 28, error: 'ENOSPC' } } },
+  }),
   'output-forgery': () => base({ trace: trace({ opens_outside: [fail({ path: '/opt/surface/telemetry.jsonl', op: 'write', errno: 30 })] }), output: { bytes: 700 } }),
 };
 

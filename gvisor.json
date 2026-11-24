@@ -1,5 +1,5 @@
 {
-  "about": "The pinned gVisor (runsc) release, the flags every runsc container gets, the syscall families runsc traces, and the paths the trace summary treats as expected. scripts/install-runsc.sh installs exactly this bundle (sha512 checked, nothing else accepted) and registers it as the Docker runtime 'runsc', and mounts log_dir as a filesystem of its own of trace_fs_mb (a loop-mounted ext4 file), so traces can never fill the runner's disk; the harness stops a container whose trace passes trace_max_mb; src/runsc.mjs turns this file into runsc flags and summarises the traces. Recorded 21 Nov 2026; change only by a reviewed commit.",
+  "about": "The pinned gVisor (runsc) release, the flags every runsc container gets, the syscall families runsc traces, and the paths the trace summary treats as expected. scripts/install-runsc.sh installs exactly this bundle (sha512 checked, nothing else accepted) and registers it as the Docker runtime 'runsc', and mounts log_dir as a filesystem of its own of trace_fs_mb (a loop-mounted ext4 file), so traces can never fill the runner's disk, puts Docker's data-root (docker_root: images, containers and their logs) on another filesystem of its own of docker_fs_mb and docker_fs_inodes with its volumes folder on a third of volume_fs_mb and volume_fs_inodes, all reserved up front, so neither a pulled image, a container's output (container_logs, per container and as the daemon default) nor a target's work volume can fill the runner's disk or run it out of inodes; the harness stops a container whose trace passes trace_max_mb; src/runsc.mjs turns this file into runsc flags and summarises the traces. Recorded 21 Nov 2026; change only by a reviewed commit.",
   "release": "20261116.0",
   "runtime": "runsc",
   "bundles": {
@@ -16,6 +16,12 @@
   "log_dir": "/var/log/isokron-runsc",
   "trace_fs_mb": 2048,
   "trace_max_mb": 512,
+  "docker_root": "/var/lib/isokron-docker",
+  "docker_fs_mb": 20480,
+  "docker_fs_inodes": 2097152,
+  "volume_fs_mb": 6144,
+  "volume_fs_inodes": 1048576,
+  "container_logs": { "driver": "local", "max_size_mb": 16, "max_file": 2 },
   "flags": {
     "network": "sandbox",
     "net-raw": "false",

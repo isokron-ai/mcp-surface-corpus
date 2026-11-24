@@ -114,8 +114,8 @@ test('install-runsc: a bundle with anything else in it is refused, even when the
 test('runsc-plan: the plan is gvisor.json and runscFlags, line for line; the install checks the daemon with it', () => {
   for (const a of ['x86_64', 'aarch64']) {
     const lines = plan(cfg, a);
-    assert.deepEqual(lines.slice(0, 7), [`release=${cfg.release}`, 'runtime=runsc', `url=${cfg.bundles[a].url}`, `sha512=${cfg.bundles[a].sha512}`, `install_dir=${cfg.install_dir}`, `log_dir=${cfg.log_dir}`, `trace_fs_mb=${cfg.trace_fs_mb}`]);
-    assert.deepEqual(lines.slice(7), runscFlags(cfg, a).map((f) => `flag=${f}`));
+    assert.deepEqual(lines.slice(0, 15), [`release=${cfg.release}`, 'runtime=runsc', `url=${cfg.bundles[a].url}`, `sha512=${cfg.bundles[a].sha512}`, `install_dir=${cfg.install_dir}`, `log_dir=${cfg.log_dir}`, `trace_fs_mb=${cfg.trace_fs_mb}`, `docker_root=${cfg.docker_root}`, `docker_fs_mb=${cfg.docker_fs_mb}`, `docker_fs_inodes=${cfg.docker_fs_inodes}`, `volume_fs_mb=${cfg.volume_fs_mb}`, `volume_fs_inodes=${cfg.volume_fs_inodes}`, 'log_driver=local', `log_max_size=${cfg.container_logs.max_size_mb}m`, `log_max_file=${cfg.container_logs.max_file}`]);
+    assert.deepEqual(lines.slice(15), runscFlags(cfg, a).map((f) => `flag=${f}`));
   }
   const run = (args, input = '') => spawnSync(process.execPath, [join(root, 'scripts/runsc-plan.mjs'), ...args], { input, encoding: 'utf8' });
   assert.equal(run(['--arch', 'x86_64']).stdout, `${plan(cfg, 'x86_64').join('\n')}\n`);
@@ -128,4 +128,36 @@ test('runsc-plan: the plan is gvisor.json and runscFlags, line for line; the ins
   assert.match(verifyRuntimes(cfg, 'aarch64', good), /flags/, 'the arm64 trace list differs');
   assert.equal(run(['--verify-runtimes', '--arch', 'x86_64'], good).status, 0);
   assert.equal(run(['--verify-runtimes', '--arch', 'x86_64'], 'not json').status, 1);
+});
+
+test('R-SBX-23 install-runsc.sh puts Docker\'s volumes on a filesystem of their own, of volume_fs_mb and volume_fs_inodes, while the daemon is stopped and before any volume exists', () => {
+  const sh = readFileSync(join(root, 'scripts/install-runsc.sh'), 'utf8');
+  const body = sh.slice(sh.indexOf('# 5b. Docker\'s data-root, and its volumes'));
+  const at = (x) => { const i = body.indexOf(x); assert.ok(i >= 0, x); return i; };
+  assert.ok(at('docker volume ls -q') < at('if ! mountpoint -q "$volumes_dir"'), 'no volume may exist yet');
+  assert.ok(at('stop_docker\n  make_fs "$install_dir/volume-fs.img" "$volume_fs_mb" "$volume_fs_inodes"') < at('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'mounted while the daemon is stopped, and nodiscard: seen on GitHub, the inner ext4 discarded what it freed');
+  assert.ok(at('fallocate -l "${2}M" "$1"') < at('mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -N "$3" "$1"'), 'reserved up front, and nodiscard: a discard would punch holes through the reservation (seen on GitHub: the runner lost 2 GB as the bomb filled the volume)');
+  assert.ok(at('mountpoint -q "$volumes_dir" || fail') < at('systemctl restart docker'), 'checked before the daemon comes back');
+  assert.ok(at('systemctl disable --now fstrim.timer') < at('systemctl restart docker'), 'fstrim would punch the same holes later');
+  assert.match(body, /lazy_itable_init=0,lazy_journal_init=0/, 'seen on GitHub: the lazy init zeroed 512 MB of inode tables later, which the loop device turned into holes');
+  assert.ok(!/mount -o loop[^"]*(?:noexec|discard)[^"]*" "\$install_dir\/(?:volume|docker)-fs\.img"/.test(sh), 'targets run programs from their work volume and images, and no online discard');
+  assert.ok(!/discard/.test(sh.replace(/nodiscard/g, '').replace(/^\s*#.*$/gm, '')), 'no discard anywhere but nodiscard');
+});
+
+test('R-SBX-25 install-runsc.sh puts Docker\'s whole data-root on a filesystem of its own, with overlay2 and not containerd\'s image store, and checks it after the restart', () => {
+  const sh = readFileSync(join(root, 'scripts/install-runsc.sh'), 'utf8');
+  const body = sh.slice(sh.indexOf('# 5b. Docker\'s data-root, and its volumes'));
+  const at = (x) => { const i = body.indexOf(x); assert.ok(i >= 0, x); return i; };
+  assert.ok(at('make_fs "$install_dir/docker-fs.img" "$docker_fs_mb" "$docker_fs_inodes"') < at('mount -o loop,nodiscard "$install_dir/docker-fs.img" "$docker_root"'), 'nodiscard: seen on GitHub, 512 MB of the reservation gone after the image pulls');
+  assert.ok(at('mount -o loop,nodiscard "$install_dir/docker-fs.img" "$docker_root"') < at('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'the volumes inside the data-root');
+  assert.ok(at('c["data-root"] = process.env.DOCKER_ROOT;') < at('systemctl restart docker'));
+  assert.ok(at('"containerd-snapshotter": false') < at('systemctl restart docker'), 'images stay on the data-root');
+  assert.ok(at('systemctl restart docker') < at("docker info --format '{{.DockerRootDir}} {{.Driver}} {{.LoggingDriver}}'"), 'and checked once the daemon is back');
+});
+
+test('R-SBX-26 install-runsc.sh makes the pinned log limits the daemon\'s default for every container', () => {
+  const sh = readFileSync(join(root, 'scripts/install-runsc.sh'), 'utf8');
+  assert.match(sh, /c\["log-driver"\] = process\.env\.LOG_DRIVER;\n\s+c\["log-opts"\] = \{ "max-size": process\.env\.LOG_MAX_SIZE, "max-file": process\.env\.LOG_MAX_FILE \};/);
+  assert.match(sh, /LOG_DRIVER="\$log_driver" LOG_MAX_SIZE="\$log_max_size" LOG_MAX_FILE="\$log_max_file"/);
+  assert.match(sh, /\[\[ "\$log_driver" = local && "\$log_max_size" =~/);
 });

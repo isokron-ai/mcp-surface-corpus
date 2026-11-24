@@ -6,7 +6,7 @@
 // file mounted from the host is our read-only resolv.conf on a sandbox network (src/sandbox-net.mjs).
 import { spawn } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
-import { RUNTIME } from './runsc.mjs';
+import { RUNTIME, loadRunscConfig } from './runsc.mjs';
 import { NETS, SANDBOX_RANGE } from './sandbox-net.mjs';
 import { targetEnvProblems } from './sandbox-env.mjs';
 
@@ -27,6 +27,16 @@ export const DOCKER_MIN = [26, 0, 0];
  * the sandbox instead of crashing it at the host limit.
  */
 export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', cpus: 2, tmp: '512m' };
+
+/**
+ * What Docker keeps of a container's output (gvisor.json container_logs): the local driver, at most
+ * max_file files of max_size each, set on every container we start and as the daemon's default
+ * (install-runsc.sh). Docker's default (json-file, no limit) would let a target that prints without
+ * end, or a flood of DNS queries or CONNECTs at the logger or proxy, fill the disk.
+ */
+const LOG_CFG = loadRunscConfig().container_logs;
+export const LOGS = Object.freeze({ driver: LOG_CFG.driver, maxSize: `${LOG_CFG.max_size_mb}m`, maxFile: String(LOG_CFG.max_file), maxBytes: LOG_CFG.max_size_mb * LOG_CFG.max_file * 1024 * 1024 });
+const logArgs = () => ['--log-driver', LOGS.driver, '--log-opt', `max-size=${LOGS.maxSize}`, '--log-opt', `max-file=${LOGS.maxFile}`];
 
 const PINNED = /^[a-z0-9][a-z0-9./_-]{0,200}(?::[A-Za-z0-9._-]{1,120})?@sha256:[0-9a-f]{64}$/;
 export function checkPinned(ref, what = 'image') {
@@ -109,6 +119,7 @@ export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, la
     '--ulimit', 'nofile=4096:4096',
     '--ulimit', `nproc=${LIMITS.nproc}:${LIMITS.nproc}`,
     '--init',
+    ...logArgs(),
     '--hostname', 'surface',
     '--network', network, ...aliases.flatMap((a) => ['--network-alias', a]),
     ...netArgs({ network, ip, resolv, cidfile }),
@@ -161,6 +172,7 @@ export function helperRunArgs({ name, image, network = 'none', mounts = [], env 
     '--user', user, '--cap-drop', 'ALL', ...capAdd.flatMap((c) => ['--cap-add', c]), '--security-opt', 'no-new-privileges', '--read-only',
     '--tmpfs', '/tmp:rw,nosuid,nodev,noexec,size=64m',
     '--pids-limit', '256', '--memory', memory, '--memory-swap', memory, '--cpus', String(cpus), '--init',
+    ...logArgs(),
     '--network', network,
     ...netArgs({ network, ip, resolv, cidfile }),
     ...hostArgs(hosts, network),
@@ -286,6 +298,16 @@ export class Docker {
   async runtimes() {
     const r = await this.d(['info', '--format', '{{json .Runtimes}}'], { keepStdout: true, logStdout: false, deadline: Date.now() + 30_000 });
     return r.exit === 0 ? r.stdout.toString().trim() : '';
+  }
+
+  /** Which of these container ids are still running (docker ps); an unreadable answer counts them all as running. */
+  async anyRunning(ids) {
+    const want = ids.filter((x) => /^[0-9a-f]{64}$/.test(String(x)));
+    if (!want.length) return [];
+    const r = await this.d(['ps', '-q', '--no-trunc'], { keepStdout: true, logStdout: false, deadline: Date.now() + 30_000 });
+    if (r.exit !== 0) return want;
+    const up = new Set(String(r.stdout).split('\n').map((x) => x.trim()).filter(Boolean));
+    return want.filter((x) => up.has(x));
   }
 
   /** Kills a container and with it every process in it (its pid namespace ends). */

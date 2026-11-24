@@ -38,6 +38,14 @@ export const EXPECT = {
   'proxy-allowlist': { case: 'install-proxy-host', why: /^got through: the proxy let (?:example\.com|evil\.example):443 through/, blocked: false },
   // A proxy that refuses everything: the refusals are all there, the positive control is not.
   'proxy-allowlist-empty': { case: 'install-proxy-host', why: /^not shown to work: the proxy's log has no allowed tunnel/, blocked: false, logged: false },
+  // A readout that reads a path as it is: the planted links lead it out of the work folder.
+  'readout-follows-links': { case: 'symlink-escape', why: /^got through: the result readout followed a planted link/, blocked: false, logged: true },
+  // A server-like case left running after its stage: the later stage reaches its listener.
+  'no-teardown': { case: 'unix-socket', why: /^got through: a later stage reached what the case left listening \(tcp /, blocked: false, logged: true },
+  // A work volume on the runner's own disk: the bomb's allocation costs the runner its disk.
+  // Docker's default for a container's output (json-file, no limit): the flood is kept whole.
+  'log-cap': { case: 'output-flood', why: /got through: Docker kept \d+ MB of the case's output, past its cap/, blocked: false },
+  'volume-cap': { case: 'install-archive-bomb', why: /^got through: (?:the runner's disk lost \d+ MB|the work volume's filesystem holds)/, blocked: false },
 };
 
 export function checkMutation(file, protection) {

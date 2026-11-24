@@ -70,7 +70,7 @@ function daemon({ logDir, flags, noTrace = null, runscPath = '/usr/local/lib/iso
       if (val(argv, '--cidfile')) writeFileSync(val(argv, '--cidfile'), `${id}`);
       if (argv.includes('--detach') || c0 === 'create') return { stdout: `${id}\n` };
       if (/npm-entry\.mjs/.test(cmd)) return { stdout: JSON.stringify({ script: '/work/pkg/node_modules/n/index.js', version: '1.2.3' }) };
-      if (/test -f/.test(cmd)) return { stdout: '{"lockfileVersion":3,"packages":{}}' };
+      if (/realpath -e/.test(cmd)) return { stdout: '{"lockfileVersion":3,"packages":{}}' };
       if (/probe\.mjs/.test(cmd)) return { stdout: JSON.stringify({ format: 'isokron-surface-probe/1', mode: 'http', error: 'no answer', lists: {}, transcript: [], transport: {} }) };
       return {};
     }

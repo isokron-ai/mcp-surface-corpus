@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, utimesSync, writeFileSync, readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Docker } from '../src/docker.mjs';
@@ -8,7 +9,7 @@ import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
 import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
 import { fakeHostRun } from './helpers.mjs';
-import { preflight, installProblem, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
+import { preflight, installProblem, dockerFsProblem, workReadCmd, WORK_READ_SCRIPT, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
 
 const IMG = `docker.io/library/python:3.13-slim-bookworm@sha256:${'a'.repeat(64)}`;
 const ID = 'c'.repeat(64);
@@ -257,4 +258,67 @@ test('R-SBX-04 limits that cut evidence short are reported: firewall rate limit,
   assert.deepEqual(limitsHit({ fw0, fw1: { 'ISK-SBX': { logged: 210, dropped: 900 }, 'ISK-SBX-IN': { logged: 5, dropped: 5 } } }), ['firewall ISK-SBX: 690 drop(s) not logged (rate limit)']);
   assert.deepEqual(limitsHit({ fw0: null, fw1: null }), ['the firewall counters could not be read']);
   assert.deepEqual(limitsHit({ fw0, fw1: fw0, netlogLines: [{ kind: 'stopped', lines: 20000, dropped: 7 }], trace: { shrunk: true } }), ['network logger: 7 line(s) not printed (line limit)', 'trace summary: lists cut to fit a record']);
+});
+
+test('R-SBX-23 the strict preflight refuses a Docker volumes folder that is not its own ext4 of the pinned size, from install-runsc.sh\'s image', async () => {
+  const cfg = loadRunscConfig();
+  assert.equal(dockerFsProblem(cfg, fakeHostRun(cfg)), null);
+  for (const [v, why] of [[{ mounted: false }, /volumes folder \/var\/lib\/isokron-docker\/volumes is not a filesystem of its own of 6144 MB/], [{ fstype: 'tmpfs' }, /not a filesystem of its own/], [{ sectors: 70 * 1024 * 1024 * 2 }, /not a filesystem of its own/], [{ backing: '/tmp/other.img' }, /not a filesystem of its own/]]) {
+    assert.match(String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs: { volumes: v } }))), why, JSON.stringify(v));
+  }
+  const own = (c) => () => ({ bsize: 4096, blocks: c.trace_fs_mb * 256, bavail: c.trace_fs_mb * 256 });
+  const t = setup();
+  const x = await preflight(t.dk, { ...t.opts, strict: true, statfs: own(t.cfg), run: fakeHostRun(t.cfg, { fs: { volumes: { mounted: false } } }) });
+  assert.deepEqual([x.ok, x.reason], [false, 'sandbox_setup_missing']);
+  assert.match(x.detail, /Docker volumes folder \/var\/lib\/isokron-docker\/volumes is not a filesystem of its own/);
+});
+
+test('R-SBX-25 the strict preflight refuses Docker data off its own capped filesystem: data-root, overlay2, a reservation with holes, the inode count', () => {
+  const cfg = loadRunscConfig();
+  const why = (fs) => String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs })));
+  assert.match(why({ info: '/var/lib/docker overlay2 local' }), /does not keep its data on \/var\/lib\/isokron-docker/, 'the default data-root');
+  assert.match(why({ info: `${cfg.docker_root} overlayfs local` }), /with overlay2/, 'containerd\'s image store keeps images off the data-root');
+  assert.match(why({ data: { mounted: false } }), /Docker data-root \/var\/lib\/isokron-docker is not a filesystem of its own of 20480 MB/);
+  assert.match(why({ data: { blocks: 1024 } }), /docker-fs\.img has holes/, 'a discard or a trim gave its blocks back');
+  assert.match(why({ volumes: { blocks: 2048 } }), /volume-fs\.img has holes/);
+  assert.match(why({ data: { sopts: 'rw,discard' } }), /mounted with discard/, 'seen on GitHub: online discard handed 512 MB of the reservation back');
+  assert.equal(why({ data: { sopts: 'rw,nodiscard' } }), 'null', 'nodiscard is fine');
+  assert.match(why({ volumes: { inodes: 19529728 } }), /it has 19529728 inodes/);
+  assert.match(why({ data: { inodes: 1000 } }), /it has 1000 inodes/);
+});
+
+test('R-SBX-26 the strict preflight refuses a daemon whose containers keep their output without the pinned limits', () => {
+  const cfg = loadRunscConfig();
+  const why = (fs) => String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs })));
+  assert.match(why({ info: `${cfg.docker_root} overlay2 json-file` }), /the local log driver/);
+  assert.match(why({ daemonJson: JSON.stringify({ 'log-driver': 'local' }) }), /log limits are not the pinned ones/);
+  assert.match(why({ daemonJson: JSON.stringify({ 'log-driver': 'local', 'log-opts': { 'max-size': '1g', 'max-file': '2' } }) }), /log limits are not the pinned ones/);
+  assert.match(why({ daemonJson: 'not json' }), /log limits are not the pinned ones/);
+});
+
+test('R-SBX-24 the work readout refuses a link anywhere in the path, the last part or a folder above it, and reads a plain file', { skip: process.platform !== 'linux' && 'needs GNU realpath -e (runs on the Linux CI)' }, () => {
+  const d = realpathSync(dir());
+  const script = WORK_READ_SCRIPT.replace('/work/*', `${d}/*`);
+  const read = (p) => spawnSync('sh', ['-c', script, 'sh', p, '100'], { encoding: 'utf8' });
+  mkdirSync(join(d, 'lock')); mkdirSync(join(d, 'real'));
+  writeFileSync(join(d, 'lock', 'plain.txt'), 'plain\n');
+  writeFileSync(join(d, 'real', 'package-lock.json'), '{}\n');
+  symlinkSync('/etc/passwd', join(d, 'lock', 'freeze.txt'));
+  symlinkSync(join(d, 'real'), join(d, 'pkg'));
+  assert.deepEqual([read(join(d, 'lock', 'plain.txt')).status, read(join(d, 'lock', 'plain.txt')).stdout], [0, 'plain\n']);
+  assert.equal(read(join(d, 'lock', 'freeze.txt')).status, 3, 'the last part is a link');
+  assert.equal(read(join(d, 'pkg', 'package-lock.json')).status, 3, 'a folder above it is a link');
+  assert.equal(read(join(d, 'lock', 'none.txt')).status, 4);
+  assert.equal(read(join(d, 'lock')).status, 4, 'not a regular file');
+  assert.equal(read('/etc/hostname').status, 3, 'never outside the work folder');
+});
+
+test('R-SBX-24 the corpus reads lock files with the same readout, and only through a helper with the work volume read-only', () => {
+  const cmd = workReadCmd('/work/lock/freeze.txt', 16);
+  assert.deepEqual(cmd, ['sh', '-c', WORK_READ_SCRIPT, 'sh', '/work/lock/freeze.txt', '16']);
+  assert.match(WORK_READ_SCRIPT, /realpath -e -- "\$1"/);
+  assert.match(WORK_READ_SCRIPT, /\[ "\$r" = "\$1" \] \|\| exit 3/);
+  const shard = readFileSync(new URL('../bin/run-shard.mjs', import.meta.url), 'utf8');
+  assert.match(shard, /mounts: \[\{ src: work, dst: P\.work, ro: true \}\], cmd: workReadCmd\(lk\.path, 16 \* 1024 \* 1024\) \}/);
+  assert.ok(!/test ! -L/.test(shard), 'the old check (the last part only) is gone');
 });

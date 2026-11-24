@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A hostile target for the sandbox self test: ours, and deliberately bad.
 
-    python3 hostile.py <case> <nonce> <gateway> <canary-port>
+    python3 hostile.py <case> <nonce> <gateway> <canary-port> [<host-canary-dir>]
 
 It tries one way out of the sandbox (the case) and prints what it saw as the last line of stdout,
 one JSON object. The harness never trusts that line: whether the attempt was blocked and logged is
@@ -19,7 +19,10 @@ import signal
 import socket
 import ssl
 import struct
+import subprocess
 import sys
+import tarfile
+import threading
 import time
 
 
@@ -416,23 +419,279 @@ def case_install_host(nonce, gw, canary):
     return case_docker_host(nonce, gw, canary)
 
 
+# Where a runner keeps what a target must never reach, and the sandbox's own places: symlink-escape
+# links to each from its work folder and reads and writes through the links. The harness also
+# passes the host folder where it keeps a canary file (in its --out folder), and that folder and
+# its canary are linked to as well.
+LINK_TARGETS = ["/", "/etc", "/etc/shadow", "/etc/passwd", "/root", "/proc/1/root", "/proc/1/root/etc", "/proc/self/root/etc",
+                "/var/run/docker.sock", "/run/containerd/containerd.sock", "/var/lib/docker", "/var/lib/docker/volumes",
+                "/var/lib/isokron-docker", "/home/runner", "/home/runner/work/_temp", "/opt/surface", "/sys/fs/cgroup", "/dev/shm/.."]
+
+
+def read_through(path):
+    def go():
+        if os.path.isdir(path):
+            names = os.listdir(path)[:200]
+            return {"listed": len(names), "canary": sum(n.count("isk-canary-") for n in names)}
+        with open(path, "rb") as f:
+            b = f.read(1 << 16)
+        return {"bytes": len(b), "canary": b.count(b"isk-canary-")}
+    return {"path": path, **attempt(go)}
+
+
+def write_through(link, via, nonce):
+    """A write through a link: into it when it points at a folder, onto it when it points at a file."""
+    target = os.path.join(link, f"isk-{nonce}") if os.path.isdir(link) else link
+
+    def go():
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, f"isk-{nonce}\n".encode())
+        finally:
+            os.close(fd)
+        return {"written": True}
+    return {"path": target, "via": via, **attempt(go)}
+
+
+def case_symlink_escape(nonce, gw, canary, host_canary=None):
+    base = f"/work/links-{nonce}"
+    os.makedirs(base, exist_ok=True)
+    made, reads, writes = [], [], []
+    targets = LINK_TARGETS + ([host_canary, f"{host_canary}/canary"] if host_canary else [])
+    for i, t in enumerate(targets):
+        link = f"{base}/l{i:02d}"
+        made.append({"to": t, **attempt(lambda: os.symlink(t, link))})
+        reads.append(read_through(link))
+        writes.append(write_through(link, t, nonce))
+    # A link in /tmp to the work folder's parent, and one to /proc/self/fd/0's file: the same, by other ways.
+    made.append({"to": "/work/..", **attempt(lambda: os.symlink("/work/..", f"/tmp/isk-up-{nonce}"))})
+    reads.append(read_through(f"/tmp/isk-up-{nonce}/etc/hostname"))
+    # For the result readout, which runs after the case (our code, over the work volume): the files
+    # the corpus reads out are links to outside (the last part), or sit below a folder that is a link.
+    planted = []
+    os.makedirs("/work/lock", exist_ok=True)
+    for path, to in (("/work/lock/freeze.txt", "/etc/passwd"), ("/work/lock/go-version-m.txt", "/proc/self/environ")):
+        planted.append({"path": path, "to": to, **attempt(lambda: os.symlink(to, path))})
+    real = f"/work/.isk-{nonce}-pkg"
+    os.makedirs(real, exist_ok=True)
+    with open(f"{real}/package-lock.json", "w") as f:
+        f.write(f'{{"planted": "isk-{nonce}"}}\n')
+    planted.append({"path": "/work/pkg", "to": real, **attempt(lambda: os.symlink(real, "/work/pkg"))})
+    seen = sum(int(r.get("canary") or 0) for r in reads)
+    return {"links": made, "planted": planted, "reads": reads, "attempts": writes, "canary_seen": seen, "host_canary": host_canary}
+
+
+# Sockets of the host that a sandboxed process must never reach: the Docker API, containerd and its
+# shims, runsc, systemd, D-Bus, syslog. Then abstract sockets (named by a leading NUL, in the
+# network namespace, not on any filesystem).
+SOCKET_PATHS = ["/var/run/docker.sock", "/run/docker.sock", "/run/containerd/containerd.sock", "/run/containerd/containerd.sock.ttrpc",
+                "/var/run/docker/containerd/containerd.sock", "/run/runsc/runsc.sock", "/var/run/docker/libnetwork/isk.sock",
+                "/run/systemd/private", "/run/systemd/journal/socket", "/run/dbus/system_bus_socket", "/dev/log", "/run/user/1001/docker.sock"]
+ABSTRACT_NAMES = ["\0/containerd-shim/moby/isk/shim.sock", "\0/run/containerd/s/isk", "\0/tmp/.X11-unix/X0", "\0isk-absent"]
+LINGER = {}
+
+
+def listener(kind, where, nonce):
+    """A listening socket that answers once with a greeting: what a later stage might connect to."""
+    def go():
+        if kind == "tcp":
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("0.0.0.0", where))
+        else:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.bind(where)
+        s.listen(8)
+
+        def serve():
+            while True:
+                try:
+                    c, _ = s.accept()
+                    c.sendall(f"isk-{nonce}-hello\n".encode())
+                    c.close()
+                except OSError:
+                    return
+        threading.Thread(target=serve, daemon=True).start()
+        return {"listening": True}
+    return {"to": f"{kind} {where!r}", **attempt(go)}
+
+
+def case_unix_socket(nonce, gw, canary):
+    att = [unix(p) for p in SOCKET_PATHS] + [unix(n) for n in ABSTRACT_NAMES]
+    listeners = [listener("unix", f"/work/isk-{nonce}.sock", nonce), listener("unix", f"/tmp/isk-{nonce}.sock", nonce),
+                 listener("unix", f"\0isk-listen-{nonce}", nonce), listener("tcp", 47124, nonce)]
+    return {"attempts": att, "listeners": listeners}
+
+
+LINGER["unix-socket"] = 600  # like a server: it keeps running until the stage is torn down
+
+# install-archive-bomb: more than the work volume may hold (gvisor.json volume_fs_mb; the unit
+# tests check this is past it), in one allocation; and an archive of about a megabyte that expands
+# to a gibibyte, with twenty thousand entries, deep folders and entries that climb out.
+BOMB_GIB = 7
+BOMB_FILES = 20000
+# Time budgets of the steps after the archive is built (a few seconds): together well inside the
+# harness's limit for a case (bin/sandbox-selftest.mjs CASE_MS, 120 s); the unit tests check it.
+BOMB_BUDGET = {"build": 15.0, "unpack": 40.0, "gnu_tar": 20.0, "fallocate": 15.0, "fill": 15.0}
+
+
+class Zeros:
+    def __init__(self, n):
+        self.left = n
+
+    def read(self, n=-1):
+        n = self.left if n is None or n < 0 else min(n, self.left)
+        self.left -= n
+        return bytes(n)
+
+
+def build_bomb(path, nonce):
+    with tarfile.open(path, "w:gz", compresslevel=6, format=tarfile.PAX_FORMAT) as tf:
+        def add(name, size=0, kind=tarfile.REGTYPE, link=""):
+            ti = tarfile.TarInfo(name)
+            ti.type, ti.size, ti.linkname, ti.mode = kind, size, link, 0o644
+            tf.addfile(ti, Zeros(size) if size else None)
+        add("zeros.bin", 1 << 30)
+        for i in range(BOMB_FILES):
+            add(f"many/{i // 1000:02d}/{i:05d}")
+        add("deep/" + "d/" * 200 + "f")
+        add("deeper/" + "d/" * 2100 + "f")
+        add(f"../../../../../../../../etc/isk-{nonce}-dotdot")
+        add(f"/etc/isk-{nonce}-abs")
+        add(f"/opt/surface/isk-{nonce}-abs")
+        add(f"../../../../../../../../isk-{nonce}-root")
+        add("escape", kind=tarfile.SYMTYPE, link="/etc")
+        add(f"escape/isk-{nonce}-vialink")
+        add("hard", kind=tarfile.LNKTYPE, link="/etc/passwd")
+
+
+def unpack(path, root, budget=BOMB_BUDGET["unpack"]):
+    """Every entry trusted (no filter), one by one, the way a naive unpacker goes: what landed, what was refused."""
+    kw = {"filter": "fully_trusted"} if hasattr(tarfile, "fully_trusted_filter") else {}
+    ok, refused, climbs, t0 = 0, {}, [], time.monotonic()
+    with tarfile.open(path, "r:gz") as tf:
+        for m in tf:
+            if time.monotonic() - t0 > budget:
+                refused["time"] = refused.get("time", 0) + 1
+                break
+            try:
+                tf.extract(m, root, set_attrs=False, **kw)
+                ok += 1
+                landed = True
+                err = None
+            except Exception as e:  # noqa: BLE001 - every refusal is a result here
+                landed = False
+                err = errno.errorcode.get(getattr(e, "errno", None) or 0, type(e).__name__)
+                refused[err] = refused.get(err, 0) + 1
+            if m.name.startswith(("..", "/")) or m.name.startswith("escape/") or m.name == "hard":
+                climbs.append({"name": m.name[-60:], "ok": landed, "error": err})
+    return {"entries_ok": ok, "refused": refused, "climbs": climbs, "seconds": round(time.monotonic() - t0, 2)}
+
+
+def fallocate(path, size):
+    def go():
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.fallocate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_long, ctypes.c_long]
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+        try:
+            if libc.fallocate(fd, 0, 0, size) != 0:
+                e = ctypes.get_errno()
+                raise OSError(e, os.strerror(e))
+            return {"bytes": size}
+        finally:
+            os.close(fd)
+    return {"path": path, **attempt(go, BOMB_BUDGET["fallocate"])}
+
+
+def fill(path, size, budget=BOMB_BUDGET["fill"]):
+    """Writes zeros until ENOSPC, the size, or the time budget: where allocation is not supported."""
+    n, err, t0, chunk = 0, None, time.monotonic(), bytes(16 << 20)
+    try:
+        with open(path, "wb") as f:
+            while n < size and time.monotonic() - t0 < budget:
+                f.write(chunk)
+                n += len(chunk)
+    except OSError as e:
+        err = errno.errorcode.get(e.errno, str(e.errno))
+    return {"bytes": n, "error": err, "ok": n >= size and err is None}
+
+
+def statfs(path):
+    try:
+        st = os.statvfs(path)
+        return {"mb": st.f_blocks * st.f_frsize >> 20, "free_mb": st.f_bavail * st.f_frsize >> 20, "inodes": st.f_files, "free_inodes": st.f_favail}
+    except OSError as e:
+        return {"error": errno.errorcode.get(e.errno, str(e.errno))}
+
+
+def case_install_archive_bomb(nonce, gw, canary):
+    root = f"/work/bomb-{nonce}"
+    os.makedirs(f"{root}/gnu", exist_ok=True)
+    out = {"statfs_before": statfs("/work")}
+    tgz = f"/tmp/bomb-{nonce}.tgz"
+    t0 = time.monotonic()
+    signal.setitimer(signal.ITIMER_REAL, BOMB_BUDGET["build"])
+    try:
+        build_bomb(tgz, nonce)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+    out["archive"] = {"bytes": os.path.getsize(tgz), "seconds": round(time.monotonic() - t0, 2)}
+    out["unpack"] = unpack(tgz, root)
+    try:
+        r = subprocess.run(["tar", "-xzf", tgz, "-C", f"{root}/gnu"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=BOMB_BUDGET["gnu_tar"])
+        out["gnu_tar"] = {"exit": r.returncode}
+    except Exception as e:  # noqa: BLE001
+        out["gnu_tar"] = {"error": type(e).__name__}
+    os.unlink(tgz)
+    out["fallocate"] = fallocate(f"{root}/fill.bin", BOMB_GIB << 30)
+    if not out["fallocate"]["ok"] and out["fallocate"].get("error") in ("EOPNOTSUPP", "ENOTSUP", "ENOSYS", "EINVAL"):
+        out["fill"] = fill(f"{root}/fill.bin", BOMB_GIB << 30)
+    out["statfs_after"] = statfs("/work")
+    return out
+
+
+# output-flood: stdout as fast as it goes, more than Docker may keep of a container's output
+# (gvisor.json container_logs), for at most FLOOD_SECONDS.
+FLOOD_BYTES = 2 << 30
+FLOOD_SECONDS = 40.0
+
+
+def case_output_flood(nonce, gw, canary):
+    line = (f"isk-flood-{nonce} " + "x" * 4000 + "\n").encode()
+    chunk = line * 256
+    n, err, t0 = 0, None, time.monotonic()
+    out = sys.stdout.buffer
+    try:
+        while n < FLOOD_BYTES and time.monotonic() - t0 < FLOOD_SECONDS:
+            out.write(chunk)
+            n += len(chunk)
+        out.flush()
+    except OSError as e:
+        err = errno.errorcode.get(e.errno, str(e.errno))
+    return {"flood": {"bytes": n, "seconds": round(time.monotonic() - t0, 2), "error": err}}
+
+
 CASES = {
     "direct-ip": case_direct_ip, "doh-ip": case_doh_ip, "raw-socket": case_raw_socket, "ipv6": case_ipv6, "icmp": case_icmp,
     "docker-host": case_docker_host, "metadata": case_metadata, "env-token": case_env_token, "write-outside": case_write_outside,
-    "fork-bomb": case_fork_bomb, "output-forgery": case_output_forgery,
+    "fork-bomb": case_fork_bomb, "output-forgery": case_output_forgery, "symlink-escape": case_symlink_escape, "unix-socket": case_unix_socket,
+    "output-flood": case_output_flood,
     "install-proxy-host": case_install_proxy_host, "install-proxy-ip": case_install_proxy_ip, "install-proxy-port": case_install_proxy_port,
     "install-direct": case_install_direct, "install-metadata": case_install_metadata, "install-host": case_install_host,
+    "install-archive-bomb": case_install_archive_bomb,
 }
 
 
 def main(argv):
-    if len(argv) != 5 or argv[1] not in CASES or not argv[4].isdigit():
-        sys.stderr.write("usage: hostile.py <case> <nonce> <gateway> <canary-port>\n")
+    if len(argv) not in (5, 6) or argv[1] not in CASES or not argv[4].isdigit() or (len(argv) == 6 and (argv[1] != "symlink-escape" or not argv[5].startswith("/"))):
+        sys.stderr.write("usage: hostile.py <case> <nonce> <gateway> <canary-port> [<host-canary-dir>, symlink-escape only]\n")
         return 2
     case, nonce, gw, canary = argv[1], argv[2], argv[3], int(argv[4])
     t0 = time.monotonic()
-    result = CASES[case](nonce, gw, canary)
-    print(json.dumps({"case": case, "nonce": nonce, "uid": os.getuid(), "seconds": round(time.monotonic() - t0, 2), "result": result}))
+    result = CASES[case](nonce, gw, canary, *argv[5:])
+    print(json.dumps({"case": case, "nonce": nonce, "uid": os.getuid(), "seconds": round(time.monotonic() - t0, 2), "result": result}), flush=True)
+    if case in LINGER:
+        time.sleep(LINGER[case])
     return 0
 
 

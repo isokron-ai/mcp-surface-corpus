@@ -41,7 +41,7 @@ export function canonical(v) {
 }
 export const settingsDigest = (m) => sha256(canonical(m));
 
-const VALUE_FLAGS = new Set(['--name', '--label', '--user', '--cap-drop', '--cap-add', '--security-opt', '--tmpfs', '--pids-limit', '--memory', '--memory-swap', '--cpus', '--ulimit', '--hostname', '--network', '--network-alias', '--ip', '--workdir', '--mount', '--env', '--entrypoint', '--runtime', '--cidfile', '--add-host']);
+const VALUE_FLAGS = new Set(['--log-driver', '--log-opt', '--name', '--label', '--user', '--cap-drop', '--cap-add', '--security-opt', '--tmpfs', '--pids-limit', '--memory', '--memory-swap', '--cpus', '--ulimit', '--hostname', '--network', '--network-alias', '--ip', '--workdir', '--mount', '--env', '--entrypoint', '--runtime', '--cidfile', '--add-host']);
 const BOOL_FLAGS = new Set(['--rm', '--detach', '--read-only', '--init', '--interactive']);
 
 function parseMount(s) {
@@ -56,7 +56,7 @@ function parseMount(s) {
  */
 export function settingsManifest(argv, { role = null } = {}) {
   const a = argv[0] === 'run' || argv[0] === 'create' ? argv.slice(1) : [...argv];
-  const m = { format: 'isokron-sandbox-settings/1', role, runtime: null, user: null, cap_drop: [], cap_add: [], security_opt: [], read_only: false, init: false, tmpfs: [], pids_limit: null, memory: null, memory_swap: null, cpus: null, ulimits: [], network: null, ip: null, aliases: [], hosts: [], workdir: null, mounts: [], env_names: [], env_sha256: null, entrypoint: null, image: null, cmd_sha256: null, cmd_argc: 0 };
+  const m = { format: 'isokron-sandbox-settings/1', role, log_driver: null, log_opts: [], runtime: null, user: null, cap_drop: [], cap_add: [], security_opt: [], read_only: false, init: false, tmpfs: [], pids_limit: null, memory: null, memory_swap: null, cpus: null, ulimits: [], network: null, ip: null, aliases: [], hosts: [], workdir: null, mounts: [], env_names: [], env_sha256: null, entrypoint: null, image: null, cmd_sha256: null, cmd_argc: 0 };
   const env = [];
   let i = 0;
   for (; i < a.length; i++) {
@@ -66,6 +66,8 @@ export function settingsManifest(argv, { role = null } = {}) {
     const v = a[++i];
     switch (f) {
       case '--runtime': m.runtime = v; break;
+      case '--log-driver': m.log_driver = v; break;
+      case '--log-opt': m.log_opts.push(v); break;
       case '--user': m.user = v; break;
       case '--cap-drop': m.cap_drop.push(v); break;
       case '--cap-add': m.cap_add.push(v); break;
@@ -126,6 +128,11 @@ export function inspectMismatches(ins, m, { canaries = [] } = {}) {
   if (m.memory !== null) want(hc.Memory === parseMemory(m.memory), `memory limit is ${hc.Memory}`);
   if (m.cpus !== null) want(hc.NanoCpus === Math.round(m.cpus * 1e9), `cpu limit is ${hc.NanoCpus}`);
   want(hc.NetworkMode === m.network, `network is ${hc.NetworkMode}`);
+  // What Docker keeps of the output: the declared driver and limits, and never none at all.
+  const lc = (hc.LogConfig && typeof hc.LogConfig === 'object') ? hc.LogConfig : {};
+  want(m.log_driver !== null && m.log_opts.some((o) => /^max-size=/.test(o)), 'no log limit declared');
+  want(lc.Type === m.log_driver, `log driver is ${lc.Type}`);
+  for (const o of m.log_opts) { const [k, v] = String(o).split('='); want((lc.Config || {})[k] === v, `log option ${k} is ${(lc.Config || {})[k]}`); }
   want(!hc.PidMode && !hc.IpcMode?.startsWith?.('host') && hc.UsernsMode !== 'host', 'shares a host namespace');
   want(!(hc.Devices || []).length, 'has host devices');
   want(!(hc.Binds || []).length, 'has -v binds');

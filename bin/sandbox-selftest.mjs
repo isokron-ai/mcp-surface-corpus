@@ -22,7 +22,7 @@
  * nothing falls back to runc.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, rmSync, statfsSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { arch, platform } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -35,8 +35,8 @@ import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, fromProxy, newRunId, readTelemetry } from '../src/telemetry.mjs';
-import { CASES, CANARY_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, caseNet, evaluateCase } from '../src/selftest.mjs';
-import { firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, caseNet, evaluateCase } from '../src/selftest.mjs';
+import { firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { lookup } from 'node:dns/promises';
 import { PROXY_PORT, PROXY_URL, loadImages, resolveRegistries } from './run-shard.mjs';
@@ -65,7 +65,17 @@ export const MUTATIONS = {
   'internal-net': 'the run network is made without --internal',
   'proxy-allowlist': 'the install network\'s egress proxy also allows the hosts the install cases must be refused',
   'proxy-allowlist-empty': 'the install network\'s egress proxy allows nothing (its allowlist names only a host that does not exist)',
+  'readout-follows-links': 'the result readout reads a path as it is, links and all (head -c, no check that the path resolves to itself)',
+  'no-teardown': 'a server-like case is not torn down when its stage ends: its container keeps running',
+  'volume-cap': 'the case\'s work volume is a folder on the runner\'s own disk (a bind volume under --out), not on the volume filesystem install-runsc.sh makes',
+  'log-cap': 'the case container keeps its output in Docker\'s json-file driver with no size limit (no --log-opt), as Docker does by default',
 };
+
+/**
+ * Cases that run like a server and do not end by themselves: the harness ends their stage after
+ * this long and tears the container down (docker kill), as the corpus does when a probe is done.
+ */
+export const STAGE_MS = { 'unix-socket': 20_000 };
 
 export function parseArgs(argv) {
   const o = { out: null, cases: [...CASES], images: join(root, 'images.json'), lane: 'local', disable: null };
@@ -110,6 +120,10 @@ export function mutateCaseArgs(argv, disable, canaries) {
   else if (disable === 'cap-drop') drop('--cap-drop', 'ALL');
   else if (disable === 'read-only') drop('--read-only');
   else if (disable === 'env-filter') a.splice(image, 0, ...Object.entries(canaries).flatMap(([k, v]) => ['--env', `${k}=${v}`]));
+  else if (disable === 'log-cap') {
+    a[a.indexOf('--log-driver') + 1] = 'json-file';
+    while (a.includes('--log-opt')) drop('--log-opt', a[a.indexOf('--log-opt') + 1]);
+  }
   return a;
 }
 
@@ -126,8 +140,13 @@ export function mutateHost(disable, run = spawnSync) {
 /**
  * The helper's command that hands the case its work volume (as root, with CAP_CHOWN only): chmod
  * first, because once /work belongs to 65534, root without CAP_FOWNER may no longer change its mode.
+ * And the volume must not stay empty: the case container's workdir is /work, so its root filesystem
+ * has an (empty, root-owned) /work, and Docker copies a mount point's contents and owner into a
+ * volume that is still empty when it is mounted there, which gave /work back to root (R-CI-08).
+ * /work/home is chowned before /work: once /work is 65534's (0750), root without
+ * CAP_DAC_READ_SEARCH can no longer reach what is inside it.
  */
-export const WORK_VOLUME_CMD = 'chmod 0750 /work && chown 65534:65534 /work';
+export const WORK_VOLUME_CMD = 'chmod 0750 /work && mkdir /work/home && chown 65534:65534 /work/home /work';
 
 /** The env the hostile target gets: what any target gets, nothing of the runner's. */
 const CASE_ENV = { HOME: P.home, TMPDIR: '/tmp', NO_COLOR: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUNBUFFERED: '1', SURFACE_SANDBOX: '1' };
@@ -179,6 +198,95 @@ const lastJson = (text) => {
   try { const o = JSON.parse(lines[lines.length - 1]); return o && typeof o === 'object' && !Array.isArray(o) ? o : null; } catch { return null; }
 };
 
+/** symlink-escape: a canary file on the host (in --out), at the path a GitHub runner gives it, which no link may reach. */
+function plantHostCanary(out, nonce) {
+  const dir = join(out, 'host-canary');
+  rmSync(dir, { recursive: true, force: true });
+  mkdirSync(dir, { recursive: true });
+  const content = `isk-canary-${nonce}-host\n`;
+  writeFileSync(join(dir, 'canary'), content, { mode: 0o644 });
+  return { dir, content };
+}
+function checkHostCanary(c, out, nonce) {
+  let intact = false; let planted = 0;
+  try { intact = readFileSync(join(c.dir, 'canary'), 'utf8') === c.content; } catch { intact = false; }
+  try { planted += readdirSync(c.dir).filter((n) => n !== 'canary').length; } catch { planted += 1; }
+  try { planted += readdirSync(out).filter((n) => n.includes(nonce)).length; } catch { /* the out folder is ours */ }
+  rmSync(c.dir, { recursive: true, force: true });
+  return { intact, planted };
+}
+
+/** The free bytes of the filesystems at `paths`, watched while a case runs: how far the lowest fell, in MB (null if unreadable). */
+function watchFree(paths, { intervalMs = 500, statfs = statfsSync } = {}) {
+  const free = (p) => { try { const s = statfs(p); return Number(s.bavail) * Number(s.bsize); } catch { return null; } };
+  const base = paths.map(free);
+  const low = [...base];
+  const tick = () => paths.forEach((p, i) => { const f = free(p); if (f !== null && low[i] !== null) low[i] = Math.min(low[i], f); });
+  const timer = setInterval(tick, intervalMs);
+  timer.unref?.();
+  return { stop: () => { clearInterval(timer); tick(); if (base.some((b) => b === null)) return null; return Math.max(0, ...base.map((b, i) => Math.round((b - low[i]) / 1048576))); } };
+}
+
+/** mutation volume-cap: the case's work volume as a folder on the runner's own disk (a bind volume), test-only. */
+async function uncappedVolume(dk, name, target, out) {
+  const dir = join(out, `uncapped-${target}`);
+  mkdirSync(dir, { recursive: true, mode: 0o755 });
+  // Owned by root like a volume Docker makes, so the work volume helper (root with CAP_CHOWN only) may chmod it.
+  if (spawnSync('sudo', ['-n', 'chown', '0:0', dir], { timeout: 30_000 }).status !== 0) throw new HarnessError('mutation volume-cap: the folder could not be given to root');
+  await dk.must(dk.d(['volume', 'create', '--driver', 'local', '--opt', 'type=none', '--opt', 'o=bind', '--opt', `device=${dir}`, '--label', `${LABEL_RUN}=${dk.runId}`, '--label', `${LABEL_TARGET}=${target}`, name]), 'volume create');
+  return { name, dir };
+}
+
+const lastLine = (buf) => lastJson(String(buf));
+
+/** Waits until a case has printed its report (its last line, with its nonce), at most `ms`. */
+async function waitForReport(dk, id, { name, nonce, ms }) {
+  for (const until = Date.now() + ms; Date.now() < until;) {
+    const r = await dk.d(['logs', id], { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 10_000 });
+    const o = lastJson(String(r.stdout));
+    if (o && o.case === name && o.nonce === nonce) return true;
+    await sleep(500);
+  }
+  return false;
+}
+const clip = (v, n = 120) => String(v ?? '').slice(0, n);
+
+/**
+ * Later stages: our code, in a helper container, after the case's container ended or was torn
+ * down, looking at what the case left behind. What each returns goes into case_evidence.stage.
+ */
+const STAGES = {
+  // The result readout over the paths the corpus reads out of a work volume, where the case planted links.
+  // As in the corpus, only once the target's container is no longer running.
+  'symlink-escape': async (ctx, { work, lbl, name, id }) => {
+    if ((await ctx.dk.anyRunning([id])).length) throw new HarnessError('the case container is still running: its work volume is not read');
+    const readout = [];
+    for (const path of READOUT_PATHS) {
+      const cmd = ctx.disable === 'readout-follows-links' ? ['sh', '-c', 'exec head -c "$2" -- "$1"', 'sh', path, String(1024 * 1024)] : workReadCmd(path, 1024 * 1024);
+      const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'readout'), image: ctx.images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }], cmd }), { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 60_000 });
+      readout.push({ path, exit: Number.isInteger(r.exit) ? r.exit : null, bytes: r.stdout_bytes });
+    }
+    return { readout };
+  },
+  // A later stage on the run network tries what the case left listening.
+  'unix-socket': async (ctx, { work, lbl, name, network, nonce }) => {
+    const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'reach'), image: ctx.images.node22, network, ip: NETS.run.probe, resolv: 'run', labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, 'reach', NETS.run.target, String(CASE_LISTEN_PORT), `${P.work}/isk-${nonce}.sock`, `isk-listen-${nonce}`] }), { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 60_000 });
+    const o = lastLine(r.stdout);
+    const reach = o && Array.isArray(o.reach) ? o.reach.slice(0, 8).map((x) => ({ to: clip(x && x.to), ok: !!(x && x.ok === true), code: clip(x && x.code, 40), bytes: Number.isInteger(x && x.bytes) ? x.bytes : 0 })) : [];
+    return { reach, exit: r.exit };
+  },
+  // What Docker kept of the flood is the case's target_output record; the harness adds how far the runner's disk fell.
+  'output-flood': async () => ({ disk: {} }),
+  // The filesystem the work volume lives on, as a helper sees it, and how far the runner's disk fell.
+  'install-archive-bomb': async (ctx, { work, lbl, name }) => {
+    const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'measure'), image: ctx.images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, 'measure', P.work] }), { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 120_000 });
+    const o = lastLine(r.stdout);
+    const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+    const d = o && o.disk && typeof o.disk === 'object' ? o.disk : null;
+    return { disk: d ? { work_fs_mb: n(d.work_fs_mb), work_fs_inodes: n(d.work_fs_inodes), work_used_mb: n(d.work_used_mb), work_files: n(d.work_files) } : null, exit: r.exit };
+  },
+};
+
 async function runCase(name, ctx) {
   const { dk, tel, cfg, images, out } = ctx;
   const nonce = randomBytes(8).toString('hex');
@@ -196,6 +304,8 @@ async function runCase(name, ctx) {
   let canary = null;
   let netlog = null;
   let watch = null;
+  let hostCanary = null;
+  let disk = null;
   const extra = { canary_bound: null };
   // The canaries go where a runner keeps its tokens: in the driver's own environment, for the whole
   // case. Every path that could carry them on (the docker client's environment, the target's
@@ -208,12 +318,20 @@ async function runCase(name, ctx) {
       : ctx.disable === 'internal-net'
         ? await externalRunNetwork(dk, `surface-${dk.runId}-${name}-run`, name)
         : await dk.network(`surface-${dk.runId}-${name}-run`, true, name, { sandbox: 'run' });
-    const work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
+    let work;
+    if (ctx.disable === 'volume-cap') {
+      const u = await uncappedVolume(dk, `surface-${dk.runId}-${name}-work`, name, out);
+      work = u.name; ctx.cleanup.push(u.dir);
+    } else work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
     await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', WORK_VOLUME_CMD] }), { deadline: Date.now() + 120_000 }), 'work volume');
     netlog = await startNetlogOn(dk, { net: netName, network, image: images.node22, toolsVol: ctx.toolsVol, labels: lbl, target: name });
     if (netName === 'install') proxy = await startProxy(dk, ctx, { inNet: network, name, lbl });
     canary = await listenCanary(NET.gateway, CANARY_PORT);
     extra.canary_bound = canary.bound;
+    if (name === 'symlink-escape') hostCanary = plantHostCanary(out, nonce);
+    // install-archive-bomb, output-flood: the runner's own disk (its root, and --out), watched while
+    // they run. Docker's data-root and volumes are filesystems of their own, reserved up front.
+    if (name === 'install-archive-bomb' || name === 'output-flood') disk = watchFree(['/', out]);
 
     const cname = dk.name(name, 'case');
     // An install case runs as an npm install with scripts runs: in the node24-build image, at .4 of
@@ -221,7 +339,7 @@ async function runCase(name, ctx) {
     let argv = sandboxRunArgs({
       name: cname, image: netName === 'install' ? images['node24-build'] : images.python, network, ip: NET.target, resolv: netName, detach: true, labels: lbl, workdir: P.work,
       mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: netName === 'install' ? INSTALL_CASE_ENV : CASE_ENV,
-      cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NET.gateway, String(CANARY_PORT)],
+      cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NET.gateway, String(CANARY_PORT), ...(hostCanary ? [hostCanary.dir] : [])],
       hostEnv: process.env,
     });
     if (ctx.disable) argv = mutateCaseArgs(argv, ctx.disable, canaries);
@@ -234,7 +352,18 @@ async function runCase(name, ctx) {
     const started = await dk.d(argv, { env: { ...dockerEnvFrom(process.env), ...canaries }, keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 120_000 });
     const id = started.stdout.toString().trim();
     if (started.exit !== 0 || !/^[0-9a-f]{64}$/.test(id)) throw new HarnessError(`the case container did not start (exit ${started.exit})`);
-    const w = await dk.d(['wait', id], { keepStdout: true, logStdout: false, cap: 64, deadline: Date.now() + CASE_MS, onTimeout: () => dk.d(['kill', id], { deadline: Date.now() + 30_000 }) });
+    // A server-like case runs until its stage ends: once it has reported (at most STAGE_MS), the later
+    // stage tries what it left listening while it still runs, which must answer (the positive
+    // control), and the case is torn down (unless the no-teardown mutation leaves it running), as
+    // the corpus tears a server down when its probe is done. The later stage then tries again.
+    const linger = STAGE_MS[name] ?? null;
+    let before = null;
+    if (linger !== null) {
+      await waitForReport(dk, id, { name, nonce, ms: linger });
+      before = await STAGES[name](ctx, { work, lbl, name, network, nonce, id });
+      if (ctx.disable !== 'no-teardown') await dk.d(['kill', id], { deadline: Date.now() + 30_000 });
+    }
+    const w = await dk.d(['wait', id], { keepStdout: true, logStdout: false, cap: 64, deadline: Date.now() + (linger !== null ? 15_000 : CASE_MS), onTimeout: () => (linger !== null ? null : dk.d(['kill', id], { deadline: Date.now() + 30_000 })) });
     const ins = await inspectOne(dk, id);
     const exit = ins && ins.State && Number.isInteger(ins.State.ExitCode) ? ins.State.ExitCode : null;
     const runtime = String((ins && ins.HostConfig && ins.HostConfig.Runtime) || 'unknown').slice(0, 20);
@@ -259,6 +388,14 @@ async function runCase(name, ctx) {
     ev.outputRecorded = true;
     const rep = lastJson(logs.stdout.toString('utf8'));
     ev.report = rep && rep.case === name && rep.nonce === nonce ? rep : null;
+
+    // The later stage, if the case has one: what a stage after it would meet of what it left behind.
+    if (STAGES[name]) {
+      ev.stage = await STAGES[name](ctx, { work, lbl, name, network, nonce, id });
+      if (before) ev.stage.reach_before = before.reach;
+      if (hostCanary) { ev.stage.host = checkHostCanary(hostCanary, out, nonce); hostCanary = null; }
+      if (disk) { const drop = disk.stop(); disk = null; if (ev.stage.disk) ev.stage.disk.host_free_drop_mb = drop; }
+    }
 
     const lines = await stopNetlog(dk, netlog);
     ev.netlogLines = lines.filter((o) => o.kind === 'stopped');
@@ -300,7 +437,7 @@ async function runCase(name, ctx) {
 
     // The evidence that is not in other records, so scripts/check-selftest.mjs can recompute the verdict.
     const limits = limitsHit({ fw0, fw1: firewallCounts(), netlogLines: ev.netlogLines || [], trace: ev.trace }).map((x) => x.slice(0, 200)).slice(0, 20);
-    tel.write('case_evidence', { case: name, limits_hit: limits, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches.map((m) => String(m).slice(0, 200)).slice(0, 20), canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: ev.pidsLimit }, meta);
+    tel.write('case_evidence', { case: name, limits_hit: limits, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches.map((m) => String(m).slice(0, 200)).slice(0, 20), canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: ev.pidsLimit, ...(ev.stage ? { stage: ev.stage } : {}) }, meta);
     const v = evaluateCase(name, ev);
     tel.write('bypass_result', { case: name, ...v }, meta);
     return { case: name, ...v, ...extra };
@@ -310,11 +447,15 @@ async function runCase(name, ctx) {
     return { case: name, ...v, ...extra };
   } finally {
     if (watch) watch.stop();
+    if (disk) disk.stop();
+    if (hostCanary) { try { rmSync(hostCanary.dir, { recursive: true, force: true }); } catch { /* ours */ } }
     for (const [k, val] of Object.entries(savedEnv)) { if (val === undefined) delete process.env[k]; else process.env[k] = val; }
     if (canary) canary.close();
     if (netlog) await dk.kill(netlog);
     if (proxy) await dk.kill(proxy);
     await dk.sweep(name);
+    // mutation volume-cap: the bind volume's folder holds what the case wrote, as 65534; root removes it.
+    for (const dir of ctx.cleanup.splice(0)) spawnSync('sudo', ['-n', 'rm', '-rf', '--one-file-system', dir], { timeout: 120_000 });
   }
 }
 
@@ -361,7 +502,7 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
       results.skipped = { reason: pf.reason, detail: pf.detail };
       say(`selftest: skipped (${pf.reason}): ${pf.detail}`);
     } else {
-      const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images) };
+      const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images), cleanup: [] };
       if (install) {
         // The proxy's network with egress, and the registry's addresses resolved on the host, as for a shard.
         ctx.outNet = await dk.network(`surface-${runId}-out`, false);

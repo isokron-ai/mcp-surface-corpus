@@ -1,7 +1,7 @@
 // Reads the syscall trace runsc writes for one container (`--strace`, the families in gvisor.json)
 // and keeps a compact summary for the run telemetry: counts by family, file opens outside the
 // expected paths, reads of credential paths, programs run, sockets, connections and other network
-// attempts, and privileged calls. The trace is the target's doing, so every string in it is
+// attempts, links made (and where they point), and privileged calls. The trace is the target's doing, so every string in it is
 // untrusted: paths and addresses are cut to a fixed length and every list is capped.
 //
 // Known limit: runsc prints path arguments without quoting (Go %s, pkg/sentry/strace path()), so a
@@ -170,7 +170,7 @@ export class TraceSummary {
     this.pending = new Map();
     this.opens = new Tally(cap); this.creds = new Tally(cap); this.execs = new Tally(cap);
     this.sockets = new Tally(cap); this.connects = new Tally(cap); this.sends = new Tally(cap); this.binds = new Tally(cap);
-    this.priv = new Tally(cap); this.dns = new Tally(cap);
+    this.priv = new Tally(cap); this.dns = new Tally(cap); this.links = new Tally(cap);
     this.clones = 0; this.cloneFailed = 0; this.rawSockets = 0;
   }
 
@@ -207,7 +207,17 @@ export class TraceSummary {
     } else if (r.name in PATH_WRITES) {
       const i = PATH_WRITES[r.name];
       const dir = i > 0 && /at2?$/.test(r.name) ? dirArg(a[i - 1]) : null;
-      file(resolvePath(pathArg(a[i]), dir), 'write');
+      const p = resolvePath(pathArg(a[i]), dir);
+      file(p, 'write');
+      // A link the target made, and where it points: a symbolic link's target is kept as written
+      // (it resolves when used), a hard link's source as a path (linkat: olddirfd, oldpath, newdirfd, newpath).
+      if (r.name === 'symlinkat' || r.name === 'symlink') {
+        const target = cut(pathArg(a[0]));
+        this.links.add(`symlink ${target} ${cut(p)}`, { kind: 'symlink', target, path: cut(p) }, ret);
+      } else if (r.name === 'linkat' || r.name === 'link') {
+        const target = cut(r.name === 'linkat' ? resolvePath(pathArg(a[1]), dirArg(a[0])) : resolvePath(pathArg(a[0]), null));
+        this.links.add(`hard ${target} ${cut(p)}`, { kind: 'hard', target, path: cut(p) }, ret);
+      }
     } else if (r.name === 'execve' || r.name === 'execveat') {
       const p = r.name === 'execve' ? resolvePath(pathArg(a[0]), null) : resolvePath(pathArg(a[1]), dirArg(a[0]));
       this.execs.add(cut(p), { path: cut(p) }, ret);
@@ -243,8 +253,8 @@ export class TraceSummary {
       opens_outside: t(this.opens), credential_paths: t(this.creds), exec: t(this.execs),
       process: { clones: this.clones, clone_failed: this.cloneFailed },
       network: { sockets: t(this.sockets), raw_sockets: this.rawSockets, connects: t(this.connects), sends: t(this.sends), binds: t(this.binds), dns_names: t(this.dns) },
-      privileged: t(this.priv),
-      omitted: { opens_outside: this.opens.omitted(), credential_paths: this.creds.omitted(), exec: this.execs.omitted(), connects: this.connects.omitted(), sends: this.sends.omitted() },
+      privileged: t(this.priv), links: t(this.links),
+      omitted: { opens_outside: this.opens.omitted(), credential_paths: this.creds.omitted(), exec: this.execs.omitted(), connects: this.connects.omitted(), sends: this.sends.omitted(), links: this.links.omitted() },
       // Calls that worked but found no place in a full table: a limit was hit where it matters.
       omitted_ok: { opens_outside: this.opens.moreOk, credential_paths: this.creds.moreOk, exec: this.execs.moreOk, connects: this.connects.moreOk, sends: this.sends.moreOk, sockets: this.sockets.moreOk },
     };
@@ -254,7 +264,7 @@ export class TraceSummary {
 /** The largest summary kept, as JSON: well under a telemetry record's 256 KiB. */
 export const SUMMARY_MAX = 192 * 1024;
 /** The lists a summary gives up first when it is too big; credential reads, programs run and connections last. */
-const SHRINK_ORDER = [[null, 'opens_outside'], ['network', 'dns_names'], ['network', 'binds'], ['network', 'sends'], ['network', 'sockets'], [null, 'privileged'], ['network', 'connects'], [null, 'exec'], [null, 'credential_paths']];
+const SHRINK_ORDER = [[null, 'opens_outside'], [null, 'links'], ['network', 'dns_names'], ['network', 'binds'], ['network', 'sends'], ['network', 'sockets'], [null, 'privileged'], ['network', 'connects'], [null, 'exec'], [null, 'credential_paths']];
 
 /**
  * Cuts a summary down to `max` bytes of JSON by halving its lists, least telling first, and counts

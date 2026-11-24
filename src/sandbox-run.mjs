@@ -147,6 +147,66 @@ export function traceFsProblem(cfg, { statfs = statfsSync } = {}) {
   return null;
 }
 
+/**
+ * null when Docker keeps its data where install-runsc.sh put it, else what is wrong. Read through
+ * `run` (sudo -n only for the inode counts: the data-root is root's alone):
+ *   - the daemon: its data-root is docker_root, its storage driver overlay2 (images on the
+ *     data-root, not in containerd's store), its default log driver the pinned one, and
+ *     /etc/docker/daemon.json gives every container the pinned log limits;
+ *   - docker_root and docker_root/volumes are each an ext4 of their own, loop-mounted from
+ *     <install_dir>/docker-fs.img and volume-fs.img, of about docker_fs_mb and volume_fs_mb, with
+ *     the pinned inode counts, and each image file fully reserved (no holes: a discard or a trim
+ *     would hand its blocks back to the runner's disk, which would then pay as it fills).
+ * So a pulled image, a container's output and a work volume all meet ENOSPC on their own filesystem.
+ */
+export function dockerFsProblem(cfg, run = spawnSync) {
+  const out = (cmd, argv) => { const r = run(cmd, argv, { encoding: 'utf8', timeout: 30_000 }); return r && r.status === 0 ? String(r.stdout) : null; };
+  const lg = cfg.container_logs;
+  const info = (out('docker', ['info', '--format', '{{.DockerRootDir}} {{.Driver}} {{.LoggingDriver}}']) ?? '').trim();
+  if (info !== `${cfg.docker_root} overlay2 ${lg.driver}`) return `the daemon does not keep its data on ${cfg.docker_root} with overlay2 and the ${lg.driver} log driver (it says: ${info.slice(0, 120) || 'nothing'}; run scripts/install-runsc.sh)`;
+  let dj = null;
+  try { dj = JSON.parse(out('cat', ['/etc/docker/daemon.json']) ?? ''); } catch { dj = null; }
+  const lo = dj && dj['log-opts'];
+  if (!dj || dj['log-driver'] !== lg.driver || !lo || lo['max-size'] !== `${lg.max_size_mb}m` || String(lo['max-file']) !== String(lg.max_file)) return 'the daemon\'s default container log limits are not the pinned ones (/etc/docker/daemon.json log-driver, log-opts)';
+  const mi = out('cat', ['/proc/self/mountinfo']);
+  if (mi === null) return 'the mount table could not be read';
+  const fs = [[cfg.docker_root, 'docker-fs.img', cfg.docker_fs_mb, cfg.docker_fs_inodes, 'Docker data-root'], [`${cfg.docker_root}/volumes`, 'volume-fs.img', cfg.volume_fs_mb, cfg.volume_fs_inodes, 'Docker volumes folder']];
+  for (const [dir, img, mb, inodes, what] of fs) {
+    const want = `the ${what} ${dir} is not a filesystem of its own of ${mb} MB and ${inodes} inodes, fully reserved (run scripts/install-runsc.sh)`;
+    // mountinfo: id parent major:minor root mountpoint options [tags] - fstype source superoptions
+    const line = mi.split('\n').map((l) => l.split(' ')).filter((f) => f[4] === dir).pop();
+    if (!line) return want;
+    const dash = line.indexOf('-');
+    const [fstype, source, sopts] = dash > 0 ? [line[dash + 1], line[dash + 2], line[dash + 3]] : [null, null, null];
+    const loop = /^\/dev\/(loop\d{1,4})$/.exec(String(source));
+    if (fstype !== 'ext4' || !loop) return want;
+    // Mounted with online discard, it hands freed blocks back to the runner's disk as it goes.
+    if (String(sopts).split(',').includes('discard')) return `${want}: mounted with discard`;
+    const sectors = Number((out('cat', [`/sys/block/${loop[1]}/size`]) ?? '').trim());
+    const backing = (out('cat', [`/sys/block/${loop[1]}/loop/backing_file`]) ?? '').trim();
+    const bytes = sectors * 512; const size = mb * 1024 * 1024;
+    if (!(bytes >= size * 0.95 && bytes <= size * 1.05) || backing !== `${cfg.install_dir}/${img}`) return want;
+    // Fully reserved: the image's allocated blocks cover its size.
+    const raw = (out('stat', ['-c', '%b %B %s', backing]) ?? '').trim();
+    const st = raw.split(' ').map(Number);
+    if (!(st.length === 3 && st[0] * st[1] >= st[2] && st[2] > 0)) return `${want}: ${img} has holes (stat: ${raw.slice(0, 60) || 'unreadable'})`;
+    // The inode count, as statfs gives it (ext4 rounds -N up to whole groups).
+    const n = Number((out('sudo', ['-n', 'stat', '-f', '-c', '%c', dir]) ?? '').trim());
+    if (!(n >= inodes && n <= inodes * 1.05)) return `${want}: it has ${Number.isFinite(n) ? n : 'an unknown number of'} inodes`;
+  }
+  return null;
+}
+
+/**
+ * The command a helper runs (our code, no network, the work volume mounted read-only, no target
+ * container running) to read one file a target wrote, such as a lock file: only a regular file whose
+ * path resolves to itself inside /work, so a link anywhere in the path, the last part or a folder
+ * above it, is refused (exit 3) rather than followed; exit 4 when there is no such file. Bounded by
+ * `cap` bytes. The self test plants links for it (case symlink-escape).
+ */
+export const WORK_READ_SCRIPT = 'r=$(realpath -e -- "$1" 2>/dev/null) || exit 4; [ "$r" = "$1" ] || exit 3; case "$r" in /work/*) ;; *) exit 3 ;; esac; [ -f "$r" ] || exit 4; exec head -c "$2" -- "$r"';
+export const workReadCmd = (path, cap = 16 * 1024 * 1024) => ['sh', '-c', WORK_READ_SCRIPT, 'sh', path, String(cap)];
+
 /** null when there is room to run one more target: the output folder and the trace filesystem, else why not. */
 export function diskProblem(cfg, outDir, { minOutBytes = 2 * 1024 ** 3, statfs = statfsSync } = {}) {
   const free = (p) => { try { const s = statfs(p); return Number(s.bavail) * Number(s.bsize); } catch { return null; } };
@@ -204,9 +264,10 @@ export async function preflight(dk, { cfg, arch, image, cmd, expect, tel, labels
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
   }
   // strict (the self test and the corpus's ci lane): the host as install-runsc.sh and net-guard.sh
-  // left it, checked live: the pinned runsc in its place, the trace filesystem, the firewall rules.
+  // left it, checked live: the pinned runsc in its place, the trace filesystem, Docker's data and
+  // volume filesystems and its log limits, the firewall rules.
   if (strict) {
-    const p = installProblem(cfg, await dk.runtimes(), run) ?? traceFsProblem(cfg, { statfs });
+    const p = installProblem(cfg, await dk.runtimes(), run) ?? traceFsProblem(cfg, { statfs }) ?? dockerFsProblem(cfg, run);
     if (p) { runtimeRecord('not_run'); return fail('sandbox_setup_missing', p); }
     const fw = firewallProblems(run);
     tel.write('firewall', { live: fw.length === 0, problems: fw.map((x) => String(x).slice(0, 200)).slice(0, 20) });

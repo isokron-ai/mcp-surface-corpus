@@ -7,7 +7,7 @@
 // Passes only when every line is a valid record, the run is a self test that ended ok, nothing was
 // skipped or left out, and every case (all of src/selftest.mjs CASES unless --cases names some)
 // passes on its evidence. The verdict is recomputed here with src/selftest.mjs evaluateCase from the
-// raw records of the case alone (its `case_evidence`, `trace_summary`, `container`, `target_output`,
+// raw records of the case alone (its `case_evidence` with any later stage's findings, `trace_summary`, `container`, `target_output`,
 // network logger, egress proxy and firewall records), so this check is the source of pass and fail; the harness's
 // own `bypass_result` must exist and agree, and can only veto (it also weighs the target's report,
 // which can make a case fail, never pass). Each case also needs its `settings` and a `container`
@@ -44,6 +44,7 @@ export function evidenceFrom(mine) {
     outputRecorded: true,
     report: null,
     pidsLimit: e.pids_limit,
+    stage: e.stage && typeof e.stage === 'object' && !Array.isArray(e.stage) ? e.stage : null,
   };
 }
 
