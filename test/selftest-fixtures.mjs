@@ -102,12 +102,12 @@ export const GOOD = {
     report: { case: 'fd-exhaustion', result: { opened: 4092, error: 'EMFILE' } },
   }),
   'clock-tamper': () => base({
-    trace: trace({ privileged: [fail({ name: 'settimeofday', errno: 1 }), fail({ name: 'clock_settime', n: 2, failed: 2, errno: 1 })] }),
+    trace: trace({ privileged: [fail({ name: 'clock_settime', n: 3, failed: 3, errno: 1 })] }),
     stage: { clock: { drift_ms: 3, forged_in_telemetry: false } },
   }),
   'install-git-submodule': () => base({
     trace: trace({ exec: [ok({ path: '/usr/bin/git', n: 9 }), ok({ path: '/usr/lib/git-core/git-remote-https' })] }),
-    egress: [{ host: 'evil.example', port: 443, allowed: false, error: 'host not on the allowlist' }],
+    egress: [{ host: 'sub.evil.example', port: 443, allowed: false, error: 'host not on the allowlist' }, { host: 'npm.evil.example', port: 443, allowed: false, error: 'host not on the allowlist' }],
     stage: { git: { cloned: true, file_followed: false, ext_ran: false } },
   }),
   'install-archive-bomb': () => base({

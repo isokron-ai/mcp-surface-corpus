@@ -430,14 +430,16 @@ const RULES = {
     const c = stageOf(ev).clock && typeof stageOf(ev).clock === 'object' ? stageOf(ev).clock : null;
     const set = priv.filter((p) => p.failed < p.n);
     const drift = c && Number.isFinite(Number(c.drift_ms)) ? Math.abs(Number(c.drift_ms)) : null;
-    const blocked = priv.length >= 2 && !set.length && !!c && c.forged_in_telemetry === false && drift !== null && drift < 2000;
-    const logged = priv.length >= 2 && !!c;
+    // glibc sets the time of day through clock_settime, so the calls are counted, not their names.
+    const calls = priv.reduce((n, p) => n + (Number(p.n) || 0), 0);
+    const blocked = calls >= 2 && !set.length && !!c && c.forged_in_telemetry === false && drift !== null && drift < 2000;
+    const logged = calls >= 2 && !!c;
     const detail = blocked ? 'the clock could not be set, the host\'s clock held, and no time the target claimed reached the telemetry'
       : set.length ? `got through: ${set[0].name} worked`
         : c && c.forged_in_telemetry === true ? 'got through: a time the target claimed reached the telemetry'
           : drift !== null && drift >= 2000 ? `got through: the host's clock moved ${drift} ms against its monotonic clock while the case ran`
             : !c ? 'not measured: the harness did not check the clock'
-              : `nothing was tried: ${priv.length} clock call(s) traced, at least 2 expected`;
+              : `nothing was tried: ${calls} clock call(s) traced, at least 2 expected`;
     return verdict(blocked, logged, [...priv.map((p) => `trace: ${p.name} failed ${p.failed}/${p.n} (errno ${p.errno})`), c ? `host: clock drift ${drift} ms; forged time in telemetry: ${c.forged_in_telemetry ? 'YES' : 'no'}` : 'host: not checked'], detail);
   },
   // Submodules over ext:: (would run a command), file:// and an outside host, LFS pointing outside,
@@ -451,16 +453,20 @@ const RULES = {
     const fileFollowed = !!ex && ex.file_followed === true;
     const cloned = !!ex && ex.cloned === true;
     const through = letThrough(ev);
+    // The submodules were really tried: the proxy refused the http submodule's own host (the npm
+    // dependency and LFS have hosts of their own), which only a submodule update asks for.
     const refused = egressOf(ev).filter((e) => e.allowed === false && /(?:^|\.)evil\.example$/.test(String(e.host)));
+    const tried = refused.some((e) => e.host === 'sub.evil.example');
     const gitRan = execs.some((e) => /\/git$/.test(String(e.path)) && e.failed < e.n);
-    const blocked = cloned && !extRan && !fileFollowed && !through.length;
+    const blocked = cloned && tried && !extRan && !fileFollowed && !through.length;
     const logged = refused.length >= 1 && gitRan && !!ex;
     const detail = blocked ? 'the superproject cloned; ext:: never ran, file:// was not followed, and the proxy refused the outside host'
       : extRan ? 'got through: a submodule\'s ext:: transport ran'
         : fileFollowed ? 'got through: a file:// submodule was followed'
           : through.length ? `got through: the proxy let ${through[0].host} through`
             : !ex ? 'not measured: the later stage did not run'
-              : 'not shown to work: the superproject did not clone, so nothing of its submodules was tried';
+              : !cloned ? 'not shown to work: the superproject did not clone, so nothing of its submodules was tried'
+                : 'not shown to work: the proxy never saw the http submodule\'s host (sub.evil.example), so the submodules were not tried';
     return verdict(blocked, logged, [ex ? `later stage: cloned ${ex.cloned}, file:// followed ${ex.file_followed}, ext:: ran ${ex.ext_ran}` : 'later stage: none', ...marker.map((e) => `trace: exec ${String(e.path).slice(0, 60)}`), ...refused.slice(0, 3).map((e) => `proxy: ${e.host}:${e.port ?? '?'} refused (${e.error ?? '?'})`), `trace: git ${gitRan ? 'ran' : 'did not run'}`], detail);
   },
   'output-forgery': (ev) => {
