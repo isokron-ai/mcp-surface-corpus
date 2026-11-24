@@ -207,6 +207,7 @@ if ! mountpoint -q "$docker_root"; then
   mkdir -p "$docker_root"
   mount -o loop,nodiscard "$install_dir/docker-fs.img" "$docker_root" || fail "the Docker data filesystem could not be mounted"
   chmod 0710 "$docker_root"
+  rmdir "$docker_root/lost+found" 2>/dev/null || true
 fi
 mountpoint -q "$docker_root" || fail "Docker's data-root is not its own filesystem"
 volumes_dir="$docker_root/volumes"
@@ -216,6 +217,8 @@ if ! mountpoint -q "$volumes_dir"; then
   mkdir -p "$volumes_dir"
   mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir" || fail "the volume filesystem could not be mounted"
   chmod 0701 "$volumes_dir"
+  # Docker's local driver takes every folder here for a volume: mkfs's lost+found would be one.
+  rmdir "$volumes_dir/lost+found" 2>/dev/null || true
 fi
 mountpoint -q "$volumes_dir" || fail "Docker's volumes folder is not its own filesystem"
 # fstrim would punch the same holes later: its timer trims every mounted filesystem that takes it.

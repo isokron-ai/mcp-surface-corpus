@@ -116,6 +116,7 @@ export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, fs = {} 
   return (cmd, argv) => {
     if (String(cmd).endsWith('/runsc')) return { status: 0, stdout: `runsc version ${version ?? `release-${cfg.release}`}\nspec: 1.1.0\n` };
     if (cmd === 'docker' && argv[0] === 'info') return { status: 0, stdout: `${F.info}\n` };
+    if (cmd === 'docker' && argv[0] === 'volume') return { status: 0, stdout: F.volumeList ?? '' };
     if (cmd === 'cat') {
       if (argv[0] === '/proc/self/mountinfo') return { status: 0, stdout: `${mountinfo}\n` };
       if (argv[0] === '/etc/docker/daemon.json') return { status: 0, stdout: F.daemonJson };

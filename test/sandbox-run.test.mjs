@@ -350,3 +350,12 @@ test('R-SBX-32 the strict preflight refuses a trace filesystem whose image has h
   assert.deepEqual([x.ok, x.reason], [false, 'sandbox_setup_missing']);
   assert.match(x.detail, /trace-fs\.img has holes/);
 });
+
+test('R-SBX-33 Docker lists no volume lost+found: the folder mkfs makes in the volumes filesystem is removed, and the preflight checks it', () => {
+  const cfg = loadRunscConfig();
+  assert.match(String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs: { volumeList: 'lost+found\n' } }))), /Docker lists a volume lost\+found/, 'seen on GitHub: mcp-check\'s sweep found 1 volume left after every run');
+  assert.equal(dockerFsProblem(cfg, fakeHostRun(cfg, { fs: { volumeList: 'surface-x-work\n' } })), null);
+  const sh = readFileSync(new URL('../scripts/install-runsc.sh', import.meta.url), 'utf8');
+  assert.ok(sh.indexOf('rmdir "$volumes_dir/lost+found"') > sh.indexOf('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'removed once mounted');
+  assert.match(sh, /rmdir "\$docker_root\/lost\+found"/);
+});

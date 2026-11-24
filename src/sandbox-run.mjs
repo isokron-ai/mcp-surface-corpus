@@ -183,6 +183,10 @@ export function dockerFsProblem(cfg, run = spawnSync) {
   try { dj = JSON.parse(out('cat', ['/etc/docker/daemon.json']) ?? ''); } catch { dj = null; }
   const lo = dj && dj['log-opts'];
   if (!dj || dj['log-driver'] !== lg.driver || !lo || lo['max-size'] !== `${lg.max_size_mb}m` || String(lo['max-file']) !== String(lg.max_file)) return 'the daemon\'s default container log limits are not the pinned ones (/etc/docker/daemon.json log-driver, log-opts)';
+  // A folder in the volumes folder that is no volume of ours (mkfs's lost+found) shows up as a volume,
+  // and lanes that check every volume is gone after a run would never see the sandbox gone.
+  const vols = out('docker', ['volume', 'ls', '-q']);
+  if (vols !== null && vols.split('\n').some((v) => v.trim() === 'lost+found')) return `Docker lists a volume lost+found: the folder mkfs made in ${cfg.docker_root}/volumes is still there (run scripts/install-runsc.sh)`;
   const mi = out('cat', ['/proc/self/mountinfo']);
   if (mi === null) return 'the mount table could not be read';
   const fs = [[cfg.docker_root, 'docker-fs.img', cfg.docker_fs_mb, cfg.docker_fs_inodes, 'Docker data-root'], [`${cfg.docker_root}/volumes`, 'volume-fs.img', cfg.volume_fs_mb, cfg.volume_fs_inodes, 'Docker volumes folder']];
