@@ -136,7 +136,8 @@ test('R-SBX-23 install-runsc.sh puts Docker\'s volumes on a filesystem of their 
   assert.match(sh, /docker info --format '\{\{\.DockerRootDir\}\}'/);
   assert.ok(at('docker volume ls -q') < at('systemctl stop docker ||'), 'no volume may exist yet');
   assert.ok(at('systemctl stop docker ||') < at('mount -o loop,nosuid,nodev "$vimg" "$volumes_dir"'), 'mounted while the daemon is stopped');
-  assert.ok(at('mkfs.ext4 -q -F -m 0 -N "$volume_fs_inodes" "$vimg"') < at('mount -o loop'));
+  assert.ok(at('mkfs.ext4 -q -F -m 0 -E nodiscard -N "$volume_fs_inodes" "$vimg"') < at('mount -o loop'), 'nodiscard: a discard would punch holes through the reservation (seen on GitHub: the runner lost 2 GB as the bomb filled the volume)');
+  assert.ok(!/mount -o loop,[^"]*discard/.test(sh), 'and no online discard either');
   assert.ok(at('fallocate -l "${volume_fs_mb}M" "$vimg"') > 0, 'the whole size is reserved up front: the cap never draws on the runner\'s disk later');
   assert.ok(at('mountpoint -q "$volumes_dir" || fail') < sh.indexOf('systemctl restart docker'), 'checked before the daemon comes back');
   assert.ok(!/mount -o loop,nosuid,nodev,noexec "\$vimg"/.test(sh), 'targets run programs from their work volume: no noexec');

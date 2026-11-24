@@ -168,7 +168,9 @@ if ! mountpoint -q "$volumes_dir"; then
   rm -f "$vimg"
   fallocate -l "${volume_fs_mb}M" "$vimg" || fail "the volume filesystem could not be made"
   chmod 0600 "$vimg"
-  mkfs.ext4 -q -F -m 0 -N "$volume_fs_inodes" "$vimg" >/dev/null || fail "the volume filesystem could not be formatted"
+  # nodiscard: mkfs would otherwise discard the whole device, which on a loop file punches holes
+  # through the reservation made above, and the runner's disk would pay as the volume fills.
+  mkfs.ext4 -q -F -m 0 -E nodiscard -N "$volume_fs_inodes" "$vimg" >/dev/null || fail "the volume filesystem could not be formatted"
   mkdir -p "$volumes_dir"
   mount -o loop,nosuid,nodev "$vimg" "$volumes_dir" || fail "the volume filesystem could not be mounted"
   chmod 0701 "$volumes_dir"
