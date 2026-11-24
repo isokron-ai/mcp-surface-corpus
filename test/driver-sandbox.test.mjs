@@ -96,7 +96,7 @@ function gnuTarOnPath(d) {
   return `${bin}:${process.env.PATH}`;
 }
 
-function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = null, hostLogFailsAfter = Infinity } = {}) {
+function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = null, hostLogFailsAfter = Infinity, targets = null } = {}) {
   const d = mkdtempSync(join(tmpdir(), 'surface-sbx-'));
   const logDir = join(d, 'runsc'); mkdirSync(logDir);
   const cfg = { ...loadRunscConfig(), log_dir: logDir };
@@ -118,7 +118,7 @@ function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = n
     if (!hostLog || box.logReads > hostLogFailsAfter) return { ok: false, text: '', via: null };
     return { ok: true, text: `${(Date.now() / 1000).toFixed(6)} runner kernel: isk-sbx-fwd: IN=br-1 OUT=eth0 SRC=10.213.53.3 DST=1.1.1.1 LEN=60 PROTO=TCP SPT=40000 DPT=443\n`, via: 'journalctl' };
   };
-  const list = { format: 'isokron-surface-targets/1', defaults: { timeout_s: 120 }, targets: [
+  const list = { format: 'isokron-surface-targets/1', defaults: { timeout_s: 120 }, targets: targets ?? [
     { id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3' } },
     { id: 's002', repo: 'o/n', commit: SHA, launch: { kind: 'docker', image: IMAGE, transport: 'http', http: { port: 8123, path: '/mcp' } } },
   ] };
@@ -299,4 +299,50 @@ test('R-SBX-11 the ci lane fails closed when the schema refuses a trace summary:
   assert.deepEqual([rec2.public_exit, rec2.excluded], [125, 'sandbox evidence missing']);
   assert.match(rec2.errors.find((e) => e.step === 'evidence').error, /a syscall trace record \(server\)/);
   assert.ok(r.by('run_end')[0].telemetry_dropped >= 1);
+});
+
+test('R-SBX-22 a native build runs in the build image with every hardening an install gets; the server runs in the slim image', async () => {
+  const s = setup({ targets: [
+    { id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3', install_scripts: true } },
+    { id: 's002', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3' } },
+  ] });
+  const r = await runMain(s);
+  assert.equal(r.rc, 0);
+  const images = D.loadImages(new URL('../images.json', import.meta.url).pathname);
+  const runs = s.box.dk.calls.filter((a) => a[0] === 'run' || a[0] === 'create');
+  const installs = runs.filter((a) => val(a, '--ip') === NETS.install.target);
+  const imageOf = (a) => a.find((x) => /@sha256:[0-9a-f]{64}$/.test(x));
+  const subject = (a) => (val(a, '--name') || '').match(/-(s00\d)-/)?.[1];
+  const built = installs.filter((a) => subject(a) === 's001');
+  const plain = installs.filter((a) => subject(a) === 's002');
+  assert.equal(built.length, 2, 'npm install and the entry helper');
+  assert.equal(plain.length, 2);
+  for (const a of built) assert.equal(imageOf(a), images['node24-build']);
+  for (const a of plain) assert.equal(imageOf(a), images.node24);
+  // The same hardening as any install: gVisor, user 65534, no capabilities, a read-only root with
+  // only the work volume writable, the install network (internal, proxy-only), our resolv.conf.
+  const flags = (a) => ({
+    runtime: val(a, '--runtime'), user: val(a, '--user'), capDrop: val(a, '--cap-drop'), readOnly: a.includes('--read-only'),
+    noNewPriv: a.includes('no-new-privileges') || a.some((x) => /no-new-privileges/.test(x)), ip: val(a, '--ip'),
+    resolv: a.includes(`type=bind,src=${NETS.install.resolv},dst=/etc/resolv.conf,readonly`), proxy: a.includes(`HTTPS_PROXY=http://${NETS.install.proxy}:8080`),
+    rwMounts: a.filter((x) => /^type=volume,/.test(x) && !/,readonly/.test(x)).map((x) => x.replace(/^.*dst=([^,]+).*$/, '$1')),
+  });
+  assert.deepEqual(flags(built[0]), flags(plain[0]), 'the build container is hardened exactly like an install container');
+  assert.deepEqual([flags(built[0]).runtime, flags(built[0]).user, flags(built[0]).capDrop, flags(built[0]).readOnly, flags(built[0]).rwMounts], ['runsc', '65534:65534', 'ALL', true, ['/work']]);
+  assert.ok(built[0].includes('npm_config_nodedir=/usr/local') && built[0].includes('npm_config_build_from_source=true'));
+  assert.ok(!plain[0].some((x) => x.startsWith('npm_config_nodedir=')));
+  assert.ok(!built[0].includes('--ignore-scripts') && plain[0].includes('--ignore-scripts'));
+  // Only the registry, as for any npm install.
+  const proxies = runs.filter((a) => a.some((x) => x.endsWith('/sandbox/egress-proxy.mjs')));
+  for (const p of proxies) assert.deepEqual(p.slice(p.findIndex((x) => x.endsWith('/sandbox/egress-proxy.mjs')) + 2), ['registry.npmjs.org']);
+  // The servers run in the slim image.
+  const servers = s.box.probes.filter((a) => /-s00[12]-/.test(val(a, '--name') || ''));
+  assert.ok(servers.length >= 2);
+  for (const a of servers) assert.equal(imageOf(a), images.node24);
+  // Traced and recorded like any install.
+  assert.deepEqual(r.by('settings', (x) => x.subject === 's001').map((x) => x.role).sort(), ['install', 'install', 'proxy', 'server']);
+  assert.deepEqual(r.by('trace_summary', (x) => x.subject === 's001').map((x) => x.role).sort(), ['install', 'install', 'server']);
+  const st = r.by('settings', (x) => x.subject === 's001' && x.role === 'install')[0];
+  assert.deepEqual([st.manifest.runtime, st.manifest.user, st.manifest.read_only], ['runsc', '65534:65534', true]);
+  assert.equal(JSON.parse(readFileSync(join(s.out, 's001', 'record.json'), 'utf8')).install.image, images['node24-build']);
 });

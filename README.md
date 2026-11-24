@@ -28,7 +28,13 @@ Every container that runs target code runs under gVisor (`runsc`; release and sh
 capabilities, a read-only root and memory, pid and CPU limits. Its network is `--internal`: every
 name resolves to our network logger (a DNS sinkhole that logs each query and connection attempt),
 installs reach their package registry only through an allowlist proxy, and `scripts/net-guard.sh`
-logs and drops anything that tries to leave, IPv6 included. Before any target the driver checks that
+logs and drops anything that tries to leave, IPv6 included. An npm target with `install_scripts`
+installs in the full Debian image of the same Node release (`node24-build`, `node22-build` in
+`images.json`: compilers, make, python3, the Node headers), so a native module compiles from source
+against those headers (`npm_config_nodedir=/usr/local`, `npm_config_build_from_source=true`; prebuilt
+binaries are not fetched, their hosts are not on the allowlist), in a container hardened exactly like
+any install: a compiler there runs untrusted build scripts like any install script. The server then
+runs in the slim image, where the module loads with the same ABI and glibc. Before any target the driver checks that
 the daemon's runsc has exactly the pinned flags and runs a smoke container under it; if anything is
 missing it records a `skip` and stops: nothing falls back to runc. Each run writes telemetry
 (settings, containers, syscall trace summaries, DNS queries, connections, egress, firewall drops;
@@ -77,7 +83,8 @@ servers. [`examples/reference-run/`](examples/reference-run/) is the output of t
 - `ci.yml` (pull requests, pushes to `main`): unit tests on Node 22 and 24, engine hashes,
   shellcheck; then gVisor and the network guard, the sandbox tests against the runner's Docker and
   the whole pipeline end to end on the public example list (`targets/example.targets.json`: three
-  reference servers from `modelcontextprotocol/servers`). No secret. `ci-ok` is the one required
+  reference servers from `modelcontextprotocol/servers`, and IsoKron's `kronicle-lite`, whose
+  `better-sqlite3` is a native module built from source in the sandbox). No secret. `ci-ok` is the one required
   status check.
 - `corpus.yml` (nightly 07:17 UTC and `workflow_dispatch` with optional `only` ids and `shards`):
   plan, a matrix of up to 16 shard jobs (8 for the whole list, never more than `LOOP_SLOTS`), one

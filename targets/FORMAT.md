@@ -47,7 +47,7 @@ Per kind:
 
 | Kind | Fields | Install (sandboxed, egress to the named registry only) | Run |
 |---|---|---|---|
-| `npm` | `package`, `version` (exact or `latest`), `bin`, `install_scripts` (default false: `--ignore-scripts`), `node` (`"22"` or `"24"`, default 24) | `npm install --omit=dev` into the target's volume via `registry.npmjs.org` | `node <bin script> <args>` |
+| `npm` | `package`, `version` (exact or `latest`), `bin`, `install_scripts` (default false: `--ignore-scripts`), `node` (`"22"` or `"24"`, default 24) | `npm install --omit=dev` into the target's volume via `registry.npmjs.org`; with `install_scripts`, in the full image of the same Node release (`node24-build` or `node22-build`) so native modules build from source against its headers | `node <bin script> <args>`, in the slim image |
 | `pypi` | `package`, `version` (exact or `latest`), `entry` (console script, default the package name), `constraints` (up to 10 version limits on dependencies, installed alongside the package, e.g. `"mcp<2"` for a server written against the 1.x SDK) | venv + `pip install` via `pypi.org`, `files.pythonhosted.org`; `pip freeze` kept as the lock | `<venv>/bin/<entry> <args>` |
 | `go` | `module` (package path of the main package), `version` (`vX.Y.Z`, a commit, or `latest`) | `go install` with `CGO_ENABLED=0` via `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`; `go version -m` kept as the lock | the static binary, in the node24 image |
 | `docker` | `image` (must be `name@sha256:<digest>`), `entrypoint` | none (the image is pulled by digest) | the image, with the same sandbox flags |

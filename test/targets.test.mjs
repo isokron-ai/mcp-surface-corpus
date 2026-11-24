@@ -8,11 +8,13 @@ const base = (o = {}) => ({ id: 's001', repo: 'owner/name', commit: SHA, ...o })
 const list = (targets, o = {}) => ({ format: TARGETS_FORMAT, targets, ...o });
 const bad = (t, re) => assert.throws(() => validateTarget(t), (e) => e instanceof ListError && re.test(e.message), JSON.stringify(t));
 
-test('the public example list is valid and names three reference servers', () => {
+test('the public example list is valid: three reference servers and one with a native module', () => {
   const l = validateList(JSON.parse(readFileSync(new URL('../targets/example.targets.json', import.meta.url), 'utf8')));
-  assert.equal(l.targets.length, 3);
-  assert.ok(l.targets.every((t) => t.repo === 'modelcontextprotocol/servers' && /^[0-9a-f]{40}$/.test(t.commit)));
-  assert.deepEqual(l.targets.map((t) => t.launch.kind), ['npm', 'npm', 'pypi']);
+  assert.equal(l.targets.length, 4);
+  assert.ok(l.targets.every((t) => /^[0-9a-f]{40}$/.test(t.commit)));
+  assert.ok(l.targets.slice(0, 3).every((t) => t.repo === 'modelcontextprotocol/servers'));
+  assert.deepEqual(l.targets.map((t) => t.launch.kind), ['npm', 'npm', 'pypi', 'npm']);
+  assert.deepEqual([l.targets[3].repo, l.targets[3].launch.package, l.targets[3].launch.version, l.targets[3].launch.install_scripts], ['isokron-ai/kronicle-lite', 'kronicle-lite', '0.12.1', true]);
 });
 
 test('a target needs an id, a GitHub repo and exactly one of commit and ref', () => {
@@ -98,4 +100,26 @@ test('launch plans: install with scripts off, run without npx or a shell, lock f
   assert.deepEqual(go.run(), ['/work/bin/srv']);
   const dk = launchPlan({ kind: 'docker', image: `x/y@sha256:${'a'.repeat(64)}`, args: ['--stdio'] });
   assert.deepEqual([dk.install.length, dk.targetImage.startsWith('x/y@sha256:'), dk.run()], [0, true, ['--stdio']]);
+});
+
+test('R-SBX-22 an npm install with scripts runs in the full image of the same Node release, built from source against its headers; the server runs in the slim image', () => {
+  const b = launchPlan({ kind: 'npm', package: 'kronicle-lite', version: '0.12.1', install_scripts: true, args: ['serve'] });
+  assert.deepEqual([b.image, b.runImage], ['node24-build', 'node24']);
+  assert.deepEqual(b.install[0].env, { npm_config_nodedir: '/usr/local', npm_config_build_from_source: 'true' });
+  assert.ok(!b.install[0].cmd.includes('--ignore-scripts'));
+  assert.deepEqual(b.registries, ['registry.npmjs.org'], 'no release hosts: the registry is the only door');
+  assert.equal(b.install[1].env, undefined, 'the entry helper needs nothing more');
+  const b22 = launchPlan({ kind: 'npm', package: 'p', version: '1.0.0', install_scripts: true, node: '22' });
+  assert.deepEqual([b22.image, b22.runImage], ['node22-build', 'node22'], 'the same Node release builds and runs: one ABI');
+  for (const l of [{ kind: 'npm', package: 'p', version: '1.0.0' }, { kind: 'npm', package: 'p', version: '1.0.0', install_scripts: false }]) {
+    const p = launchPlan(l);
+    assert.deepEqual([p.image, p.runImage, p.install[0].env], ['node24', undefined, undefined], 'no scripts: the slim image throughout');
+  }
+  // Each build image is the full Debian image of the very Node release its slim image is.
+  const images = JSON.parse(readFileSync(new URL('../images.json', import.meta.url), 'utf8'));
+  for (const n of ['node24', 'node22']) {
+    assert.match(images[n], new RegExp(`^docker\\.io/library/node:${n.slice(4)}-bookworm-slim@sha256:[0-9a-f]{64}$`));
+    assert.match(images[`${n}-build`], new RegExp(`^docker\\.io/library/node:${n.slice(4)}-bookworm@sha256:[0-9a-f]{64}$`));
+  }
+  assert.match(images.about, /24\.22\.3 and 22\.23\.5/);
 });
