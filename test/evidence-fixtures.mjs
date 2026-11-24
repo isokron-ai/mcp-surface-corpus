@@ -56,6 +56,7 @@ export function mutationTelemetry(file, protection) {
     if (protection === 'env-filter') ev.inspect.canaryInEnv = true;
     if (protection === 'read-only') ev.trace.opens_outside[0] = { path: '/var/tmp/isk-1', op: 'write', call: 'openat', n: 1, failed: 0, errno: null };
     if (protection === 'internal-net') for (const c of ev.trace.network.connects) c.errno = 4;
+    if (protection === 'proxy-allowlist-empty') ev.egress = [...ev.egress.filter((e) => e.allowed !== true), { host: 'registry.npmjs.org', port: 443, allowed: false, error: 'host not on the allowlist' }];
     if (protection === 'proxy-allowlist') ev.egress = [...ev.egress.filter((e) => e.host !== 'example.com' || e.port !== 443), { host: 'example.com', port: 443, allowed: true, up: 0, down: 0, ms: 3, error: 'EAI_AGAIN' }];
     const meta = { subject: `case:${exp.case}`, role: 'case' };
     tel.write('container', { runtime: ev.inspect.runtime, exit: 0, signal: null, timed_out: false, oom_killed: false, ms: 1 }, meta);

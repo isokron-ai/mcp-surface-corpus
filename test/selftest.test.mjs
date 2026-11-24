@@ -187,3 +187,19 @@ test('R-SBX-10 a datagram sent and not refused is no definite refusal, not a con
   ev.trace.network.connects[0] = ok({ family: 'AF_INET', addr: '1.1.1.1', port: 443 });
   assert.match(evaluateCase('direct-ip', ev).detail, /^got through: 1 traced connection/);
 });
+
+test('R-CASE-18 install-proxy-host has a positive control: the proxy must be shown to tunnel to the registry, from its own log, or the refusals prove nothing', () => {
+  const g = (f) => { const ev = GOOD['install-proxy-host'](); f(ev); return evaluateCase('install-proxy-host', ev); };
+  assert.equal(g(() => {}).pass, true);
+  const none = g((ev) => { ev.egress = ev.egress.filter((e) => e.allowed !== true); });
+  assert.deepEqual([none.blocked, none.logged, none.pass], [false, false, false]);
+  assert.match(none.detail, /^not shown to work: the proxy's log has no allowed tunnel to registry\.npmjs\.org:443/);
+  assert.equal(g((ev) => { ev.egress[0].down = 0; }).pass, false, 'a tunnel that carried nothing back is not shown to work');
+  assert.equal(g((ev) => { ev.egress[0].port = 8443; }).pass, false, 'only the registry on 443');
+  // The target's report cannot stand in for the proxy's log, and its own control tunnel is not a bypass.
+  assert.equal(g((ev) => { ev.egress = ev.egress.filter((e) => e.allowed !== true); ev.report = { result: { attempts: [{ to: 'CONNECT registry.npmjs.org:443', control: true, ok: true, status: '200', received: 400 }] } }; }).pass, false);
+  assert.equal(g((ev) => { ev.report = { result: { attempts: [{ to: 'CONNECT registry.npmjs.org:443', control: true, tunnel: true, ok: true, status: '200', received: 400 }] } }; }).pass, true);
+  assert.match(g(() => {}).evidence.join('\n'), /proxy: registry\.npmjs\.org:443 ALLOWED, 517 bytes up, 4096 down \(the positive control\)/);
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.match(py, /def case_install_proxy_host[\s\S]*?proxy_control\("registry\.npmjs\.org:443", "registry\.npmjs\.org"\)/);
+});

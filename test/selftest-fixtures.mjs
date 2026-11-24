@@ -44,7 +44,7 @@ export const GOOD = {
   }),
   'install-proxy-host': () => base({
     trace: trace({ network: { connects: [ok({ family: 'AF_INET', addr: IN.proxy, port: 8080, n: 3 })] } }),
-    egress: [proxyLine('example.com', 443, 'host not on the allowlist'), proxyLine('evil.example', 443, 'host not on the allowlist'), { host: 'example.com', port: null, method: 'GET', allowed: false, error: 'plain HTTP refused' }],
+    egress: [{ host: 'registry.npmjs.org', port: 443, allowed: true, up: 517, down: 4096, ms: 180 }, proxyLine('example.com', 443, 'host not on the allowlist'), proxyLine('evil.example', 443, 'host not on the allowlist'), { host: 'example.com', port: null, method: 'GET', allowed: false, error: 'plain HTTP refused' }],
   }),
   'install-proxy-ip': () => base({
     trace: trace({ network: { connects: [ok({ family: 'AF_INET', addr: IN.proxy, port: 8080, n: 3 })] } }),

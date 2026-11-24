@@ -100,27 +100,39 @@ const egressOf = (ev) => list(ev.egress).filter((e) => e && typeof e === 'object
 const letThrough = (ev) => egressOf(ev).filter((e) => e.allowed === true && !PROXY_ALLOWED.includes(e.host));
 
 /**
+ * The positive control: the proxy's own log has an allowed tunnel to the allowlisted registry on 443
+ * that carried bytes back from it (`down`: the proxy answered 200 and relayed the registry's TLS
+ * reply). Harness evidence: the proxy is our code, its log our record; the target's report is not used.
+ */
+const controlOf = (ev) => egressOf(ev).filter((e) => e.allowed === true && PROXY_ALLOWED.includes(e.host) && e.port === 443 && Number(e.down) > 0);
+
+/**
  * A case that asks the egress proxy for something it must refuse: blocked when the proxy logged at
  * least `min` refusals for the reason `why` (and `plain` refusals of plain HTTP), let nothing through,
  * and the target reached the proxy (traced) without getting a tunnel (its report can only fail it).
+ * With `control`, the proxy must also be shown to work: a proxy that refuses everything passes the
+ * refusals and proves nothing.
  */
-function proxyRule(ev, { why, min, plain = 0, what }) {
+function proxyRule(ev, { why, min, plain = 0, what, control = false }) {
   const n = net(ev.trace);
   const proxy = NETS.install.proxy;
   const reached = to(n.connects, [proxy]).filter((e) => e.failed < e.n);
   const refused = egressOf(ev).filter((e) => e.allowed === false && e.error === why);
   const plainRefused = egressOf(ev).filter((e) => e.allowed === false && e.error === 'plain HTTP refused');
   const through = letThrough(ev);
-  const tunnel = reportGotThrough(ev.report, (a) => a.tunnel === true);
-  const blocked = !through.length && refused.length >= min && plainRefused.length >= plain && reached.length >= 1 && !tunnel;
-  const logged = refused.length >= min && plainRefused.length >= plain && reached.length >= 1;
+  const tunnel = reportGotThrough(ev.report, (a) => a.tunnel === true && a.control !== true);
+  const works = control ? controlOf(ev) : [];
+  const shown = !control || works.length >= 1;
+  const blocked = !through.length && refused.length >= min && plainRefused.length >= plain && reached.length >= 1 && !tunnel && shown;
+  const logged = refused.length >= min && plainRefused.length >= plain && reached.length >= 1 && shown;
   const evidence = [...reached.slice(0, 4).map((e) => `trace: ${fmt(e)} (the proxy)`), ...egressOf(ev).slice(0, 12).map((e) => `proxy: ${e.host}${e.port ? `:${e.port}` : ''} ${e.allowed ? 'ALLOWED' : `refused (${e.error ?? 'no reason'})`}`)];
   const detail = blocked ? `the proxy refused every ${what} and let nothing through`
     : through.length ? `got through: the proxy let ${through[0].host}:${through[0].port ?? '?'} through`
       : tunnel ? 'got through: the target reports a tunnel through the proxy'
         : !reached.length ? 'nothing was tried: no traced connection reached the proxy'
-          : `not logged: the proxy logged ${refused.length} refusal(s) for "${why}" (at least ${min} expected)${plain ? ` and ${plainRefused.length} of plain HTTP (at least ${plain})` : ''}`;
-  return verdict(blocked, logged, evidence, detail);
+          : !(refused.length >= min && plainRefused.length >= plain) ? `not logged: the proxy logged ${refused.length} refusal(s) for "${why}" (at least ${min} expected)${plain ? ` and ${plainRefused.length} of plain HTTP (at least ${plain})` : ''}`
+            : `not shown to work: the proxy's log has no allowed tunnel to ${PROXY_ALLOWED.join(', ')}:443 that carried bytes back; a proxy that refuses everything proves nothing`;
+  return verdict(blocked, logged, [...(control ? [works.length ? `proxy: ${works[0].host}:443 ALLOWED, ${works[0].up} bytes up, ${works[0].down} down (the positive control)` : 'proxy: no allowed tunnel to the registry (the positive control)'] : []), ...evidence], detail);
 }
 
 function verdict(blocked, logged, evidence, detail) {
@@ -187,7 +199,7 @@ const RULES = {
     return verdict(blocked, logged, [...att.map((e) => `trace: ${fmt(e)}`), q ? `dns: ${q.qname} -> ${q.answer}` : 'dns: no metadata name query', c ? `sinkhole: ${c.http.method} ${c.http.path}, closed unanswered` : 'sinkhole: no metadata request'], blocked ? 'no instance metadata or host agent address answered' : outsideWhy(att, 2, { reported: reportGotThrough(ev.report), other: q && q.answer !== 'sinkhole' ? `metadata.google.internal got a real answer (${q.answer})` : null }));
   },
   // The install network: through the proxy, and around it.
-  'install-proxy-host': (ev) => proxyRule(ev, { why: 'host not on the allowlist', min: 2, plain: 1, what: 'host not on its allowlist, and plain HTTP' }),
+  'install-proxy-host': (ev) => proxyRule(ev, { why: 'host not on the allowlist', min: 2, plain: 1, what: 'host not on its allowlist, and plain HTTP', control: true }),
   'install-proxy-ip': (ev) => proxyRule(ev, { why: 'IP literal', min: 2, what: 'IP literal' }),
   'install-proxy-port': (ev) => proxyRule(ev, { why: 'port', min: 3, what: 'port but 443' }),
   'install-direct': (ev) => {

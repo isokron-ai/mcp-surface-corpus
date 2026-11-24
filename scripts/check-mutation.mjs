@@ -36,6 +36,8 @@ export const EXPECT = {
   'internal-net': { case: 'direct-ip', why: /^no definite refusal: /, blocked: false, logged: true },
   // The install network's proxy with the denied hosts on its allowlist: its own log shows it let one through.
   'proxy-allowlist': { case: 'install-proxy-host', why: /^got through: the proxy let (?:example\.com|evil\.example):443 through/, blocked: false },
+  // A proxy that refuses everything: the refusals are all there, the positive control is not.
+  'proxy-allowlist-empty': { case: 'install-proxy-host', why: /^not shown to work: the proxy's log has no allowed tunnel/, blocked: false, logged: false },
 };
 
 export function checkMutation(file, protection) {

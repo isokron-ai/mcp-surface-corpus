@@ -364,10 +364,34 @@ def proxy_plain(url, host_header):
     return {"to": f"GET {url}", **attempt(go)}
 
 
+def proxy_control(target, sni):
+    """The positive control: CONNECT to the one allowed host, then TLS and a request through the tunnel."""
+    host, port = proxy_address()
+    if not host:
+        return {"to": f"CONNECT {target}", "control": True, "ok": False, "error": "no HTTPS_PROXY"}
+
+    def go():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.connect((host, port))
+            s.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+            head = s.recv(4096)
+            status = head.split(b" ", 2)[1].decode("ascii", "replace") if head.startswith(b"HTTP/") else "?"
+            if status != "200":
+                raise ConnectionRefusedError(errno.ECONNREFUSED, f"proxy said {status}")
+            t = ssl.create_default_context().wrap_socket(s, server_hostname=sni)
+            t.sendall(f"GET /-/ping HTTP/1.1\r\nHost: {sni}\r\nConnection: close\r\n\r\n".encode())
+            return {"status": status, "received": len(t.recv(4096))}
+        finally:
+            s.close()
+    return {"to": f"CONNECT {target}", "control": True, **attempt(go, 15.0)}
+
+
 # The install network: the egress proxy (HTTPS_PROXY) allows registry.npmjs.org on 443 and nothing
-# else. These cases ask it for everything else, and go around it.
+# else. These cases ask it for everything else, and go around it. install-proxy-host also asks for the
+# registry itself, the positive control: a proxy that refused everything would prove nothing.
 def case_install_proxy_host(nonce, gw, canary):
-    return {"attempts": [proxy_connect("example.com:443"), proxy_connect("evil.example:443"), proxy_plain("http://example.com/", "example.com")]}
+    return {"attempts": [proxy_control("registry.npmjs.org:443", "registry.npmjs.org"), proxy_connect("example.com:443"), proxy_connect("evil.example:443"), proxy_plain("http://example.com/", "example.com")]}
 
 
 def case_install_proxy_ip(nonce, gw, canary):
