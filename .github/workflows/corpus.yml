@@ -61,11 +61,6 @@ concurrency:
   group: surface-corpus
   cancel-in-progress: false
 
-env:
-  # age v1.3.2, linux-amd64 release tarball (sha256 recorded 16 Nov 2026).
-  AGE_URL: https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz
-  AGE_SHA256: cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10
-
 jobs:
   # Derives the shard matrix from the inputs alone. No environment, so the key is out of reach; it
   # reads no secret, decrypts nothing and runs no third-party code. The loop guard comes first: unless

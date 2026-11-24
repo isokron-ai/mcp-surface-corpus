@@ -1,16 +1,20 @@
-# Sandbox self test: runs selftest/hostile.py in the real sandbox, once per escape attempt (direct IP,
-# DNS over HTTPS by IP, raw socket, IPv6, ICMP, the Docker host, cloud metadata, a token in the
-# environment, a write outside the work volume, a fork bomb, forged output), and passes only when the
-# harness's own evidence shows every attempt was blocked and logged (bin/sandbox-selftest.mjs,
-# src/selftest.mjs). The sandbox is the one every corpus target gets: gVisor (runsc) installed and
-# registered exactly as gvisor.json pins it, user 65534, no capabilities, a read-only root, limits, the
-# run network with our DNS logger and sinkhole, and net-guard.sh's log-and-drop firewall on the host.
-# If any of that is missing the run records a skip and fails: nothing falls back to runc.
+# Sandbox self test, on pull requests that touch the sandbox and by hand. It calls the reusable
+# workflow sandbox-conformance.yml of this same commit with mutations on:
 #
-# Then scripts/check-selftest.mjs reads the telemetry alone (docs/TELEMETRY.md) and fails unless each
-# case has exactly one bypass_result that is blocked, logged and passing, with a runsc container
-# record and a syscall trace summary. The telemetry and results.json are uploaded; what the hostile
-# target printed (untrusted/) is not.
+#   - the hostile self test: selftest/hostile.py in the real sandbox, once per escape attempt (direct
+#     IP, DNS over HTTPS by IP, raw socket, IPv6, ICMP, the Docker host, cloud metadata, a token in
+#     the environment, a write outside the work volume, a fork bomb, forged output), passing only
+#     when scripts/check-selftest.mjs recomputes every case as blocked and logged from the telemetry
+#     alone (docs/TELEMETRY.md). The sandbox is the one every corpus target gets: gVisor (runsc)
+#     installed and registered exactly as gvisor.json pins it, user 65534, no capabilities, a
+#     read-only root, limits, the run network with our DNS logger and sinkhole, and net-guard.sh's
+#     log-and-drop firewall on the host. If any of that is missing the run records a skip and fails:
+#     nothing falls back to runc;
+#   - the mutation matrix: each protection off in turn, and the self test must fail for that reason.
+#
+# The telemetry and results.json are uploaded; what the hostile target printed (untrusted/) is not.
+# The same self test and mutations also run every night, whatever the loop's switches say
+# (conformance-nightly.yml), and publish a status file tool-qa reads.
 #
 # Triggers: by hand, and on pull requests that touch the sandbox or anything the self test imports
 # (test/workflows.test.mjs checks the paths against the imports). No secret, no environment, a token
@@ -25,6 +29,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/sandbox-selftest.yml
+      - .github/workflows/sandbox-conformance.yml
+      - sandbox-guard/**
       - bin/sandbox-selftest.mjs
       - bin/run-shard.mjs
       - sandbox/**
@@ -46,6 +52,8 @@ on:
       - scripts/net-guard.sh
       - scripts/check-selftest.mjs
       - scripts/check-mutation.mjs
+      - scripts/runner-facts.mjs
+      - scripts/verify-conformance.mjs
       - gvisor.json
       - images.json
 
@@ -99,78 +107,27 @@ jobs:
             echo "slots=$slots"
           } >>"$GITHUB_OUTPUT"
 
-  selftest:
+  # The self test and the mutation matrix, from the reusable workflow of this same commit.
+  conformance:
     needs: gate
     if: needs.gate.outputs.go == 'true'
-    name: sandbox-selftest
-    runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Eleven cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 22
-          package-manager-cache: false
-      # Before net-guard.sh: registering runsc restarts the Docker daemon.
-      - name: Install gVisor
-        run: sudo scripts/install-runsc.sh "$(command -v node)"
-      - name: Guard the container networks
-        run: sudo scripts/net-guard.sh
-      # The harness's exit status does not decide: the telemetry check below recomputes every
-      # verdict from the raw records and is the pass or fail of this job.
-      - name: Run the self test
-        run: node bin/sandbox-selftest.mjs --out "$RUNNER_TEMP/selftest" --lane ci || echo "::warning::the harness reported a failure; the telemetry check decides"
-      - name: Check the telemetry
-        run: node scripts/check-selftest.mjs "$RUNNER_TEMP/selftest/telemetry.jsonl"
-      - name: Upload the telemetry and results
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: sandbox-selftest
-          path: |
-            ${{ runner.temp }}/selftest/telemetry.jsonl
-            ${{ runner.temp }}/selftest/results.json
-          if-no-files-found: warn
-          retention-days: 14
+    uses: ./.github/workflows/sandbox-conformance.yml
+    with:
+      mutations: true
+      artifact-prefix: sandbox
 
-  # Proof that the self test can fail: each protection off in turn (bin/sandbox-selftest.mjs
-  # --disable, refused on every lane but selftest-mutation). Each run must fail, its telemetry check
-  # must fail, and scripts/check-mutation.mjs must find the reason that protection explains: the
-  # preflight refusing, or the named case failing on its evidence. A crash does not count. Only the
-  # cases that show the protection run, to keep it short.
-  mutation:
-    needs: gate
+  # The verdict as the nightly publish job computes it: in a job that never ran a target, from the
+  # uploaded telemetry alone, with this checkout's checkers (scripts/verify-conformance.mjs). It
+  # proves on every pull request that the publish path recomputes a pass from real evidence.
+  evidence:
+    needs: [gate, conformance]
     if: needs.gate.outputs.go == 'true'
-    name: selftest-mutation (${{ matrix.disable }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - disable: runtime-runc
-            cases: direct-ip
-          - disable: firewall-forward
-            cases: direct-ip
-          - disable: firewall-input
-            cases: docker-host
-          - disable: firewall-order
-            cases: direct-ip
-          - disable: cap-drop
-            cases: raw-socket
-          - disable: env-filter
-            cases: env-token
-          - disable: read-only
-            cases: write-outside
-          - disable: internal-net
-            cases: direct-ip
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -179,38 +136,10 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - name: Install gVisor
-        run: sudo scripts/install-runsc.sh "$(command -v node)"
-      - name: Guard the container networks
-        run: sudo scripts/net-guard.sh
-      - name: Run the self test with one protection off
-        env:
-          DISABLE: ${{ matrix.disable }}
-          CASES: ${{ matrix.cases }}
-        run: |
-          if node bin/sandbox-selftest.mjs --out "$RUNNER_TEMP/selftest" --lane selftest-mutation --disable "$DISABLE" --cases "$CASES"; then
-            echo "::error::the self test passed with $DISABLE off"
-            exit 1
-          fi
-      - name: The telemetry check fails too
-        env:
-          CASES: ${{ matrix.cases }}
-        run: |
-          if node scripts/check-selftest.mjs "$RUNNER_TEMP/selftest/telemetry.jsonl" --cases "$CASES"; then
-            echo "::error::check-selftest passed with a protection off"
-            exit 1
-          fi
-      - name: It failed for the reason the protection explains
-        env:
-          DISABLE: ${{ matrix.disable }}
-        run: node scripts/check-mutation.mjs "$RUNNER_TEMP/selftest/telemetry.jsonl" "$DISABLE"
-      - name: Upload the telemetry
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: sandbox-mutation-${{ matrix.disable }}
-          path: |
-            ${{ runner.temp }}/selftest/telemetry.jsonl
-            ${{ runner.temp }}/selftest/results.json
-          if-no-files-found: warn
-          retention-days: 14
+          pattern: sandbox-*
+          path: ${{ runner.temp }}/evidence
+          merge-multiple: false
+      - name: Recompute the verdicts from the evidence
+        run: node scripts/verify-conformance.mjs --evidence "$RUNNER_TEMP/evidence" --prefix sandbox

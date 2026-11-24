@@ -7,7 +7,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, statSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { NETS, SANDBOX_RANGE, RESOLV_DIR, LOG_PREFIX, SINK_TCP, SINK_UDP, resolvConf, parseKernelLog, groupDrops, readHostLog, firewallProblems, jumpOrderProblems } from '../src/sandbox-net.mjs';
+import { NETS, SANDBOX_RANGE, RESOLV_DIR, LOG_PREFIX, SINK_TCP, SINK_UDP, resolvConf, parseKernelLog, groupDrops, readHostLog, firewallProblems, jumpOrderProblems, letsPast } from '../src/sandbox-net.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const ipNum = (ip) => ip.split('.').reduce((n, x) => n * 256 + Number(x), 0);
@@ -160,4 +160,20 @@ test('R-SBX-09 our jumps must come before any rule that could let a packet past 
   assert.deepEqual(top('iptables DOCKER-USER', ['-A DOCKER-USER -d 192.0.2.1/32 -j DROP', '-A DOCKER-USER -p tcp -j REJECT --reject-with tcp-reset', '-A DOCKER-USER -j LOG --log-prefix "x: "']), []);
   assert.deepEqual(firewallProblems(fakeHostRun(cfg)), [], 'the fixture ends DOCKER-USER with -j RETURN');
   assert.deepEqual(jumpOrderProblems('iptables', 'INPUT', ['-A INPUT -i br-+ -j ISK-SBX-IN', '-A INPUT -j ACCEPT'], ['-A INPUT -i br-+ -j ISK-SBX-IN']), [], 'an ACCEPT below our jump is fine');
+});
+
+test('R-SBX-12 a goto (-g) above our jumps is a way past too, in every shared chain and in FORWARD', () => {
+  const cfg = loadCfg();
+  const top = (k, rules) => firewallProblems(fakeHostRun(cfg, { top: { [k]: rules } }));
+  assert.match(top('iptables DOCKER-USER', ['-A DOCKER-USER -s 10.213.52.0/22 -g ISK-MUT-GOTO']).join(), /DOCKER-USER: -A DOCKER-USER -d 10\.213\.52\.0\/22 -j ISK-SBX comes after -A DOCKER-USER -s 10\.213\.52\.0\/22 -g ISK-MUT-GOTO/);
+  assert.match(top('iptables INPUT', ['-A INPUT -i br-+ -g OTHER']).join(), /iptables INPUT: -A INPUT -i br-\+ -j ISK-SBX-IN comes after -A INPUT -i br-\+ -g OTHER/);
+  assert.match(top('ip6tables FORWARD', ['-A FORWARD -i br-+ -g OTHER6']).join(), /ip6tables FORWARD: .* comes after -A FORWARD -i br-\+ -g OTHER6/);
+  assert.match(top('ip6tables INPUT', ['-A INPUT --goto OTHER6']).join(), /ip6tables INPUT: .* comes after -A INPUT --goto OTHER6/, 'the long form too');
+  assert.match(top('iptables FORWARD', ['-A FORWARD -s 10.213.52.0/22 -g ELSEWHERE']).join(), /iptables FORWARD goes to another chain before DOCKER-USER: -A FORWARD -s 10\.213\.52\.0\/22 -g ELSEWHERE/);
+  // What the rule decides, alone.
+  for (const l of ['-A X -g Y', '-A X -s 10.0.0.0/8 --goto Y', '-A X -j ACCEPT', '-A X -j RETURN', '-A X -j OTHER', '-A X --jump OTHER']) assert.equal(letsPast(l), true, l);
+  for (const l of ['-A X -j DROP', '-A X -p tcp -j REJECT --reject-with tcp-reset', '-A X -j LOG --log-prefix "x: "', '-A X -s 10.0.0.0/8']) assert.equal(letsPast(l), false, l);
+  // A goto below our jumps is as fine as an ACCEPT there.
+  assert.deepEqual(jumpOrderProblems('iptables', 'INPUT', ['-A INPUT -i br-+ -j ISK-SBX-IN', '-A INPUT -g OTHER'], ['-A INPUT -i br-+ -j ISK-SBX-IN']), []);
+  assert.deepEqual(firewallProblems(fakeHostRun(cfg)), [], 'the clean fixture is still live');
 });

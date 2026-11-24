@@ -83,14 +83,154 @@ servers. [`examples/reference-run/`](examples/reference-run/) is the output of t
   plan, a matrix of up to 16 shard jobs (8 for the whole list, never more than `LOOP_SLOTS`), one
   aggregate job. One run at a time.
 - `sandbox-selftest.yml` (`workflow_dispatch`, and pull requests that touch the sandbox or anything
-  the self test imports): installs gVisor, guards the networks, runs `bin/sandbox-selftest.mjs` and
-  checks its telemetry with `scripts/check-selftest.mjs`; uploads the telemetry and `results.json`.
-  No secret.
+  the self test imports): the loop guard, then `sandbox-conformance.yml` of the same commit with
+  the mutation matrix. No secret.
+- `sandbox-conformance.yml` (`workflow_call`): the shared sandbox conformance check, below.
+- `conformance-nightly.yml` (every night at 03:41 UTC, and `workflow_dispatch`): the same check
+  with the mutation matrix, then the public status file, below. No loop guard.
+- `pin-drift.yml` (Mondays 06:17 UTC, and `workflow_dispatch`): proposes newer pins, below.
 
-All three run on GitHub's free hosted runners in a public repository. `corpus.yml`, and
+All of them run on GitHub's free hosted runners in a public repository. `corpus.yml`, and
 `sandbox-selftest.yml` when run by hand, start with the loop guard: they do nothing (a notice, not a
 failure) unless the repository variable `LOOP_ENABLED` is exactly `true` and `LOOP_SLOTS` is a whole
-number from 1 to 999. A pull request's self test does not depend on them.
+number from 1 to 999. A pull request's self test does not depend on them. `conformance-nightly.yml`
+and `pin-drift.yml` are guards, not loop work, and run whatever those variables say.
+
+### Sandbox conformance (shared)
+
+Every repository that runs third-party servers calls the reusable workflow at a pinned commit:
+
+```yaml
+jobs:
+  sandbox:
+    permissions:
+      contents: read
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@<full sha>
+    with:
+      mutations: false
+```
+
+It tests the very commit it is pinned at (it checks out `job.workflow_repository` at
+`job.workflow_sha`): on a fresh runner it installs gVisor and `net-guard.sh`, runs
+`bin/sandbox-selftest.mjs`, and passes only when `scripts/check-selftest.mjs` recomputes a pass from
+the telemetry alone. The call fails when the self test (or, with `mutations`, any mutation) fails.
+
+| Input | Type, default | Meaning |
+|---|---|---|
+| `mutations` | boolean, `false` | Also run the mutation matrix: each protection off in turn, and the self test must fail for the reason that protection explains (`scripts/check-mutation.mjs`). About nine more jobs. |
+| `artifact-prefix` | string, `sandbox-conformance` | Prefix of the artifact names: lowercase letters, digits and dashes, at most 40. |
+
+| Output | Value |
+|---|---|
+| `verdict` | `pass` when the self test passed and, with `mutations`, every mutation was shown; otherwise `fail`. |
+| `selftest` | `pass` or `fail`, as `check-selftest.mjs` recomputed it. |
+| `mutations` | `pass`, `fail`, or `skipped` when `mutations` was false. |
+| `telemetry-artifact` | The artifact `<prefix>-selftest`: `telemetry.jsonl`, `results.json`, `environment.json` (never what the hostile target printed). Each mutation's is `<prefix>-mutation-<protection>`. |
+| `sandbox-sha` | The commit of this repository that was tested. |
+| `checked-at` | When the telemetry check ran (UTC, `YYYY-MM-DDTHH:MM:SSZ`). |
+| `runner-image` | The runner image (`ImageOS/ImageVersion`, for example `ubuntu24/20261117.1`). |
+| `kernel` | `uname -r` of the runner. |
+| `docker` | The Docker server version. |
+| `gvisor-release` | The gVisor release `gvisor.json` pins. |
+| `runsc-version` | What the installed `runsc --version` reported. |
+
+The reusable workflow's jobs run on runners of their own, so its pass says the pinned sandbox works
+on today's runner image, kernel and Docker; it cannot vouch for the runner that will run targets. A
+job that runs targets therefore also runs the same steps itself, on its own runner, after its
+checkout and node setup and before any target, with the composite action `sandbox-guard`:
+
+```yaml
+- uses: actions/setup-node@<sha> # node 22 or later
+  with:
+    node-version: 22
+- id: sandbox
+  uses: isokron-ai/mcp-surface-corpus/sandbox-guard@<full sha>   # the same sandbox commit
+  with:
+    out: ${{ runner.temp }}/sandbox-selftest
+```
+
+It fails the job unless the verdict is `pass`, and has the outputs `sandbox-sha` (the commit it ran
+from), `verdict`, `out`, `checked-at`, `runner-image`, `kernel`, `docker`, `gvisor-release` and
+`runsc-version` (as above). Never upload `<out>/untrusted/`.
+
+Use it at a full commit SHA: `@main`, a tag or any other branch fails its first step, because the
+sandbox under it could then change without review on the caller's side. Its input
+`allow-local-checkout: 'true'` is only for this repository's own `sandbox-conformance.yml`, which
+checks out a validated commit itself and runs the action from that checkout.
+
+### Nightly status
+
+`conformance-nightly.yml` publishes the night's result as the asset `conformance-status.json` of the
+release tagged `conformance` in this repository, readable without a token:
+
+```
+https://github.com/isokron-ai/mcp-surface-corpus/releases/download/conformance/conformance-status.json
+```
+
+A release asset, not an Actions artifact: artifacts need a token to download even from a public
+repository, and expire.
+
+The publish job decides pass or fail itself. It never runs a target and never reads the outputs of
+the jobs that did: a target that got out of its sandbox could write a job output in one line. It
+downloads the telemetry the self test and each mutation uploaded and recomputes both verdicts with
+its own checkout's checkers (`scripts/verify-conformance.mjs`: `check-selftest.mjs`, and
+`check-mutation.mjs` for every protection). The run, attempt and commit come from its own
+environment. `sandbox-selftest.yml` runs the same recomputation on every pull request (its
+`evidence` job). This catches wiring bugs between jobs and keeps the verdict in a job that never ran
+a target. It is not a defence against a compromised self test runner: the telemetry is written on
+that runner, so a target that took it over could write evidence that recomputes as a pass. A
+separate job that signs provenance for the evidence would be the fix if that is ever needed.
+
+`scripts/publish-conformance.sh` then refuses (uploads nothing) when the status does not supersede
+the published one: a later run (higher `run_id`), or a later attempt of the same run, with evidence
+no older. A re-run of an old night therefore never puts its green back over a newer red. A green
+status for another commit than main's head at that moment (main moved during the run, or a re-run
+tested an old commit) is published as not ok, with `result` `main_moved`: it says nothing about
+main, and publishing nothing would leave an older green up. A red status is always published when
+it supersedes.
+
+The file holds no secret and nothing a target printed:
+
+| Field | Value |
+|---|---|
+| `format` | `isokron-sandbox-conformance/1` |
+| `ok` | `true` only when the call succeeded, `selftest` is `pass` and `mutations` is `pass`. |
+| `selftest`, `mutations` | As the outputs above (`fail` when missing). |
+| `result` | The conformance call's result: `success`, `failure`, ...; or `main_moved` (then `ok` is false) when a green was for another commit than main's head at publish. |
+| `checked_at` | When the self test's evidence ended (UTC, never later than the publish); the publish time if there is none. |
+| `run_id`, `run_attempt`, `run_url` | The nightly run. |
+| `sandbox_sha` | The commit tested: main's head when published. |
+| `runner_image`, `kernel`, `docker`, `gvisor_release`, `runsc_version` | What the self test's runner reported about itself (labels, not part of the verdict); `unknown` when not known. |
+
+A red result is published too, so readers react at once. A cancelled run publishes nothing, and the
+last status ages. tool-qa's pump and watchdog read this file as a circuit breaker: while it is not
+`ok`, is more than 36 hours old, or cannot be read, no lane that runs third-party code is
+dispatched. If it goes stale, check that GitHub has not disabled `conformance-nightly.yml` for
+inactivity (scheduled workflows stop after 60 days without a commit), and run it by hand.
+
+### Pin drift
+
+`pin-drift.yml` runs `scripts/pin-drift.mjs --open-pr` weekly. It compares the pinned gVisor
+release (`gvisor.json`), age (`scripts/install-age.sh`) and actions (`pins/actions.json`) with their
+newest releases. The age tarball is downloaded, hashed and verified against the release attestation
+age's own release workflow signed (`gh attestation verify --repo FiloSottile/age`); without a valid
+one nothing is proposed. The gVisor and action pins are trust on first use, and the pull request
+says so: a new gVisor bundle is downloaded and its sha512 must match the `.sha512` file beside it,
+but both come from the same bucket; an action pin is the commit its release tag points to today. It then opens a pull request through the API, with the job token's
+`contents: write` and `pull-requests: write` and nothing else.
+
+That token cannot do two things, by GitHub's design, so the pull request says what a person does
+before merging:
+
+- It cannot change workflow files. Action pins therefore land in `pins/actions.json` (the one
+  record of them: `test/workflows.test.mjs` fails while a `uses:` line differs from it). Check out
+  the branch, run `node scripts/pin-drift.mjs --sync-workflows`, and commit and push the result.
+- A pull request it opens starts no workflow. The push above starts `ci` and `sandbox-selftest` on
+  the pull request; with nothing to sync, close and reopen the pull request instead. Merge only when
+  both pass; the next nightly run then checks the new pins on main.
+
+`node scripts/pin-drift.mjs --check` prints what is behind without opening anything (exit 3 when
+something is).
 
 ## Running it locally
 

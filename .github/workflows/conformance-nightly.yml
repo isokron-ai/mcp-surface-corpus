@@ -1,0 +1,89 @@
+# Nightly sandbox conformance: the self test and the whole mutation matrix on a fresh runner, every
+# night, through the reusable workflow sandbox-conformance.yml of main. It catches drift in what
+# GitHub changes under us (the runner image, Docker, the kernel) before a lane runs third-party
+# code on it.
+#
+# It is a guard, not loop work: it has no loop guard and runs whatever LOOP_ENABLED, LOOP_PAUSE_UNTIL
+# or LOOP_SLOTS say, so the status it publishes is fresh when the loop is turned back on.
+#
+# The publish job decides pass or fail itself. It never runs a target, never reads the outputs of the
+# jobs that did, and recomputes both verdicts from the uploaded telemetry with its own checkout's
+# checkers (scripts/verify-conformance.mjs). That catches wiring bugs between jobs and keeps the
+# verdict in a job that never ran a target; it is not a defence against a compromised self test
+# runner, which writes the telemetry itself (a separate signed-provenance job would be the fix if
+# that is ever needed). The run, attempt and commit come from its own environment. It writes a small public status
+# (scripts/conformance-status.mjs: ok, both verdicts, the evidence's date, the run, the runner image,
+# kernel, Docker and gVisor versions the runner reported; no secret, nothing a target printed) and
+# replaces the asset conformance-status.json on the release tagged `conformance`
+# (scripts/publish-conformance.sh) only when it supersedes the published one (a later run or
+# attempt, evidence no older); a green for another commit than main's head now (main moved during
+# the run) is published as not ok, result main_moved. A release asset, unlike an Actions artifact, can be read without
+# a token: tool-qa's pump and watchdog read it as a circuit breaker and hold every lane that runs
+# third-party code while it is red, older than 36 hours, or unreadable. A red result is published
+# too, so the breaker trips at once; a cancelled run publishes nothing and the last status ages out.
+#
+# Permissions: contents: read for the self test; contents: write in the publish job only, for the
+# release (main of this repository only). No secret, no environment.
+
+name: conformance-nightly
+
+on:
+  schedule:
+    - cron: '41 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: conformance-nightly
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    if: github.repository == 'isokron-ai/mcp-surface-corpus'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/sandbox-conformance.yml
+    with:
+      mutations: true
+      artifact-prefix: nightly
+
+  publish:
+    needs: conformance
+    if: ${{ !cancelled() && github.repository == 'isokron-ai/mcp-surface-corpus' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      # The evidence, not the claims: the telemetry the self test and each mutation uploaded. This
+      # job never ran a target; the outputs of the jobs that did are not read.
+      # Missing evidence is not an error here: it recomputes as a fail, and the red is published.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: nightly-*
+          path: ${{ runner.temp }}/evidence
+          merge-multiple: false
+      - name: Recompute the verdicts and write the status
+        env:
+          CONFORMANCE_RESULT: ${{ needs.conformance.result }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/status"
+          node scripts/conformance-status.mjs --evidence "$RUNNER_TEMP/evidence" --prefix nightly --out "$RUNNER_TEMP/status/conformance-status.json"
+          {
+            echo '```json'
+            cat "$RUNNER_TEMP/status/conformance-status.json"
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Publish it on the conformance release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/publish-conformance.sh "$RUNNER_TEMP/status/conformance-status.json"
