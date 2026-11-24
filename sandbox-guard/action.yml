@@ -13,6 +13,11 @@
 # The reusable workflow sandbox-conformance.yml runs these same steps on a runner of its own: it
 # proves the pinned sandbox on today's runner image, but it cannot vouch for another runner.
 #
+# It must be used at a full commit SHA: `@main`, `@v1` or any other branch or tag fails the first
+# step, because the sandbox under it could change without a review on the caller's side. The one
+# exception is `allow-local-checkout: 'true'`, for this repository's own sandbox-conformance.yml,
+# which checks out a validated 40-hex commit itself and runs the action from that checkout.
+#
 # The step fails (and so does the job) unless the verdict is pass. It needs no token and no secret.
 # What the hostile target printed stays in <out>/untrusted/; never upload that folder.
 name: IsoKron sandbox guard
@@ -22,7 +27,14 @@ inputs:
     description: Folder for telemetry.jsonl, results.json and environment.json; an absolute plain path. Default $RUNNER_TEMP/sandbox-selftest.
     required: false
     default: ''
+  allow-local-checkout:
+    description: Only for this repository's sandbox-conformance.yml, which checks out a validated commit itself. Everyone else uses the action at a full commit SHA.
+    required: false
+    default: 'false'
 outputs:
+  sandbox-sha:
+    description: The commit of the sandbox this action ran from.
+    value: ${{ steps.setup.outputs.sha }}
   verdict:
     description: pass when check-selftest recomputed a pass from the telemetry, otherwise fail (the step has then failed).
     value: ${{ steps.check.outputs.verdict }}
@@ -55,9 +67,34 @@ runs:
       shell: bash
       env:
         OUT_IN: ${{ inputs.out }}
+        ALLOW_LOCAL: ${{ inputs.allow-local-checkout }}
+        ACTION_REF: ${{ github.action_ref }}
       run: |
         set -euo pipefail
         root="$(cd "$GITHUB_ACTION_PATH/.." && pwd)"
+        # Pinned at a full commit: a remote action sits in _actions/<owner>/<repo>/<ref>/sandbox-guard.
+        actions_dir="$(dirname "${RUNNER_WORKSPACE:-/nonexistent/x}")/_actions/"
+        case "$GITHUB_ACTION_PATH" in
+          "$actions_dir"*)
+            rest="${GITHUB_ACTION_PATH#"$actions_dir"}"
+            rest="${rest#*/}"
+            rest="${rest#*/}"
+            ref="${rest%/sandbox-guard}"
+            [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::use sandbox-guard at a full commit SHA, not a branch or tag"; exit 1; }
+            # GitHub's own record of the ref, where it gives one, must be a full commit too.
+            if [ -n "${ACTION_REF:-}" ] && ! [[ "$ACTION_REF" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::use sandbox-guard at a full commit SHA, not a branch or tag"
+              exit 1
+            fi
+            sha="$ref"
+            ;;
+          *)
+            [ "$ALLOW_LOCAL" = true ] || { echo "::error::sandbox-guard runs from a local checkout only for this repository's sandbox-conformance.yml (allow-local-checkout); use it at a full commit SHA"; exit 1; }
+            sha="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the local sandbox checkout has no commit"; exit 1; }
+            ;;
+        esac
+        echo "sandbox-guard: sandbox commit $sha"
         [ "${RUNNER_OS:-}" = Linux ] || { echo "::error::the sandbox runs on Linux runners only"; exit 1; }
         command -v node >/dev/null || { echo "::error::node 22 or later must be on PATH (actions/setup-node before this action)"; exit 1; }
         major="$(node -p 'process.versions.node.split(".")[0]')"
@@ -68,6 +105,7 @@ runs:
         {
           echo "root=$root"
           echo "out=$out"
+          echo "sha=$sha"
         } >>"$GITHUB_OUTPUT"
     # Before net-guard.sh: registering runsc restarts the Docker daemon.
     - name: Install gVisor

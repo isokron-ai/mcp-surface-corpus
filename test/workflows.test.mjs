@@ -216,7 +216,13 @@ test('sandbox-selftest: by hand or from a pull request that touches the sandbox;
   assert.ok(!/schedule:|\n  push:|pull_request_target|workflow_run/.test(y));
   assert.ok(!/secrets\.|environment:|github\.token|GH_TOKEN/.test(y), 'no secret, no environment, no token');
   assert.match(y, /\nconcurrency:\n  group: sandbox-selftest-\$\{\{ github\.ref \}\}\n  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}\n/);
-  assert.deepEqual(jobsOf(raw), ['gate', 'conformance']);
+  assert.deepEqual(jobsOf(raw), ['gate', 'conformance', 'evidence']);
+  const e = job(y, 'evidence');
+  assert.match(e, /^    needs: \[gate, conformance\]\n    if: needs\.gate\.outputs\.go == 'true'\n/);
+  assert.match(e, /\n    permissions:\n      contents: read\n/);
+  assert.match(e, /pattern: sandbox-\*\n/);
+  assert.match(e, /run: node scripts\/verify-conformance\.mjs --evidence "\$RUNNER_TEMP\/evidence" --prefix sandbox(?:\n|$)/);
+  assert.ok(!/needs\.conformance\.outputs/.test(e), 'the evidence, not the claims');
   const c = job(y, 'conformance');
   assert.match(c, /^    needs: gate\n    if: needs\.gate\.outputs\.go == 'true'\n    permissions:\n      contents: read\n    uses: \.\/\.github\/workflows\/sandbox-conformance\.yml\n    with:\n      mutations: true\n/);
 });
@@ -345,7 +351,7 @@ test('sandbox-guard: gVisor, then net-guard, then the runner facts, the self tes
   const at = order.map((x) => { const i = y.indexOf(x); assert.ok(i >= 0, x); return i; });
   assert.deepEqual([...at].sort((p, q) => p - q), at, 'in this order');
   assert.ok(!/secrets\.|github\.token|GH_TOKEN|GITHUB_TOKEN|untrusted\//.test(y.replace(/^#.*$/gm, '')), 'no token, no secret, nothing of the target');
-  for (const o of ['verdict', 'out', 'checked-at', 'runner-image', 'kernel', 'docker', 'gvisor-release', 'runsc-version']) assert.match(y, new RegExp(`\\n  ${o}:\\n    description: `), `output ${o}`);
+  for (const o of ['sandbox-sha', 'verdict', 'out', 'checked-at', 'runner-image', 'kernel', 'docker', 'gvisor-release', 'runsc-version']) assert.match(y, new RegExp(`\\n  ${o}:\\n    description: `), `output ${o}`);
   assert.match(read('README.md'), /sandbox-guard/);
 });
 
@@ -363,10 +369,12 @@ test('conformance-nightly: every night and by hand, no loop guard, the reusable 
   assert.match(p, /^    needs: conformance\n    if: \$\{\{ !cancelled\(\) && github\.repository == 'isokron-ai\/mcp-surface-corpus' && github\.ref == 'refs\/heads\/main' \}\}\n/, 'a red result is published too; a cancelled run is not');
   assert.match(p, /\n    timeout-minutes: \d+\n/);
   const st = steps(p);
-  assert.match(st[2], /CONFORMANCE_RESULT: \$\{\{ needs\.conformance\.result \}\}/);
-  assert.match(st[2], /node scripts\/conformance-status\.mjs --out "\$RUNNER_TEMP\/status\/conformance-status\.json"/);
-  assert.ok(!/GH_TOKEN|github\.token/.test(st[2]), 'the status is written without a token');
-  assert.match(st[3], /GH_TOKEN: \$\{\{ github\.token \}\}\n        run: scripts\/publish-conformance\.sh "\$RUNNER_TEMP\/status\/conformance-status\.json"\n?$/);
+  assert.match(st[2], /uses: actions\/download-artifact@/);
+  assert.match(st[3], /CONFORMANCE_RESULT: \$\{\{ needs\.conformance\.result \}\}\n/);
+  assert.match(st[3], /node scripts\/conformance-status\.mjs --evidence "\$RUNNER_TEMP\/evidence" --prefix nightly --out "\$RUNNER_TEMP\/status\/conformance-status\.json"/);
+  assert.ok(!/GH_TOKEN|github\.token/.test(st[3]), 'the status is written without a token');
+  assert.ok(!/needs\.conformance\.outputs/.test(p), 'no output of a job that ran targets reaches the publish job');
+  assert.match(st[4], /GH_TOKEN: \$\{\{ github\.token \}\}\n        run: scripts\/publish-conformance\.sh "\$RUNNER_TEMP\/status\/conformance-status\.json"\n?$/);
   assert.equal((y.match(/github\.token/g) || []).length, 1, 'only the publish step holds the token');
   assert.ok(!/secrets\.|environment:/.test(y));
 });
@@ -382,7 +390,7 @@ test('pin-drift: weekly and by hand, contents and pull-requests write only, no k
   assert.match(d, /^    if: github\.repository == 'isokron-ai\/mcp-surface-corpus' && github\.ref == 'refs\/heads\/main'\n/);
   assert.match(d, /\n    timeout-minutes: \d+\n/);
   assert.match(d, /\n          persist-credentials: false(?:\n|$)/);
-  assert.match(d, /GITHUB_TOKEN: \$\{\{ github\.token \}\}\n        run: node scripts\/pin-drift\.mjs --open-pr\n?$/);
+  assert.match(d, /GITHUB_TOKEN: \$\{\{ github\.token \}\}\n          GH_TOKEN: \$\{\{ github\.token \}\}\n        run: node scripts\/pin-drift\.mjs --open-pr\n?$/);
   assert.ok(!/secrets\.|environment:|git push/.test(y));
 });
 

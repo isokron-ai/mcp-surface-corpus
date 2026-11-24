@@ -5,7 +5,10 @@
 //   gvisor.json              the gVisor (runsc) release, its bundle URLs and their sha512. A new
 //                            bundle's sha512 must equal the .sha512 file published beside it, and
 //                            the bundle is downloaded and hashed here to be sure.
-//   scripts/install-age.sh   the age release tarball (linux-amd64) and its sha256, hashed here.
+//   scripts/install-age.sh   the age release tarball (linux-amd64) and its sha256, hashed here, and
+//                            its release attestation verified (gh attestation verify --repo
+//                            FiloSottile/age): the build provenance age's own release workflow
+//                            signed. A tarball without a valid attestation is not proposed.
 //   pins/actions.json        each action the workflows use: the release tag and the commit it is.
 //
 //   node scripts/pin-drift.mjs --check            print what is behind; exit 0 (nothing) or 3
@@ -13,6 +16,10 @@
 //                                                 pins (GITHUB_TOKEN, GITHUB_REPOSITORY)
 //   node scripts/pin-drift.mjs --sync-workflows   rewrite every `uses: actions/...` line to match
 //                                                 pins/actions.json (run by a person: see below)
+//
+// The gVisor and action pins are trust on first use: the gVisor .sha512 comes from the same bucket
+// as the bundle, and an action tag is whatever commit its repository points it at. The pull request
+// says so; the review and the self test on it are the check.
 //
 // The pull request is made through the API (a tree, a commit, a branch, the pull request), so the
 // token needs contents: write and pull-requests: write and nothing else, and no git credentials are
@@ -22,7 +29,9 @@
 // it runs no checks; pushing the sync commit, or closing and reopening the pull request, starts ci
 // and sandbox-selftest).
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -68,6 +77,27 @@ export async function hashUrl(fetchFn, url, algo) {
   return h.digest('hex');
 }
 
+/**
+ * Verifies a downloaded age release file against age's release attestation with the gh CLI
+ * (GH_TOKEN from the environment). True only when gh says the attestation is valid.
+ */
+export function ghAttestationVerify(bytes, name, run = spawnSync) {
+  const d = mkdtempSync(join(tmpdir(), 'age-attest-'));
+  try {
+    const f = join(d, name);
+    writeFileSync(f, bytes);
+    const r = run('gh', ['attestation', 'verify', f, '--repo', 'FiloSottile/age'], { encoding: 'utf8', timeout: 120_000 });
+    return r.status === 0;
+  } finally { rmSync(d, { recursive: true, force: true }); }
+}
+
+/** The bytes a URL serves. */
+export async function fetchBytes(fetchFn, url) {
+  const res = await fetchFn(url, { redirect: 'follow' });
+  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
 /** A GitHub REST client: api(path, { method, body }) -> parsed JSON; a 404 or 422 throws with .status. */
 export function githubApi({ fetchFn = globalThis.fetch, token, apiUrl = 'https://api.github.com' } = {}) {
   return async (path, { method = 'GET', body } = {}) => {
@@ -91,7 +121,7 @@ export async function tagCommit(api, repo, tag) {
 }
 
 /** The newest pins. Anything that does not check out (a hash, a tag) throws: nothing is guessed. */
-export async function latestPins({ api, fetchFn = globalThis.fetch, current }) {
+export async function latestPins({ api, fetchFn = globalThis.fetch, current, verifyAge = ghAttestationVerify }) {
   const next = structuredClone(current);
   const g = (await api('/repos/google/gvisor/releases/latest')).tag_name;
   const rel = /^release-(\d{8}\.\d+)$/.exec(String(g));
@@ -111,7 +141,11 @@ export async function latestPins({ api, fetchFn = globalThis.fetch, current }) {
   }
   const a = (await api('/repos/FiloSottile/age/releases/latest')).tag_name;
   if (!SEMVER.test(String(a))) throw new Error(`age's latest release tag is not vX.Y.Z: ${String(a).slice(0, 40)}`);
-  if (a !== current.age.version) next.age = { version: a, url: AGE_ASSET(a), sha256: await hashUrl(fetchFn, AGE_ASSET(a), 'sha256') };
+  if (a !== current.age.version) {
+    const bytes = await fetchBytes(fetchFn, AGE_ASSET(a));
+    if (!verifyAge(bytes, `age-${a}-linux-amd64.tar.gz`)) throw new Error(`age ${a}: the tarball's release attestation did not verify`);
+    next.age = { version: a, url: AGE_ASSET(a), sha256: createHash('sha256').update(bytes).digest('hex') };
+  }
   for (const name of Object.keys(current.actions)) {
     const tag = (await api(`/repos/${name}/releases/latest`)).tag_name;
     if (!SEMVER.test(String(tag))) throw new Error(`${name}'s latest release tag is not vX.Y.Z: ${String(tag).slice(0, 40)}`);
@@ -125,7 +159,7 @@ export async function latestPins({ api, fetchFn = globalThis.fetch, current }) {
 export function describe(cur, next) {
   const out = [];
   if (cur.gvisor.release !== next.gvisor.release) out.push(`gVisor ${cur.gvisor.release} -> ${next.gvisor.release} (gvisor.json)`);
-  if (cur.age.version !== next.age.version) out.push(`age ${cur.age.version} -> ${next.age.version} (scripts/install-age.sh)`);
+  if (cur.age.version !== next.age.version) out.push(`age ${cur.age.version} -> ${next.age.version} (scripts/install-age.sh; release attestation verified)`);
   for (const [n, p] of Object.entries(next.actions)) if (cur.actions[n]?.sha !== p.sha) out.push(`${n} ${cur.actions[n]?.version} -> ${p.version} (${p.sha}) (pins/actions.json)`);
   return out;
 }
@@ -187,7 +221,12 @@ export async function openPr({ api, repo, changes, lines, base = 'main' }) {
     '',
     ...lines.map((l) => `- ${l}`),
     '',
-    'Hashes: each new gVisor bundle was downloaded and its sha512 matched the `.sha512` file published beside it; the age tarball was downloaded and hashed. Action pins are the commits their release tags point to.',
+    'How far to trust the new pins:',
+    '',
+    '- age: the tarball was downloaded, hashed, and verified against the release attestation age\'s own release workflow signed (`gh attestation verify --repo FiloSottile/age`).',
+    '- gVisor: **trust on first use.** The bundle was downloaded and its sha512 matched the `.sha512` file beside it, but both come from the same bucket, so this only shows the download was whole.',
+    '- Actions: **trust on first use.** Each pin is the commit its release tag points to today.',
+    '- The review of this pull request and the self test on it are the check for the last two.',
     '',
     '**Before merging (a person):**',
     '',

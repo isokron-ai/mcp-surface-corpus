@@ -149,9 +149,14 @@ checkout and node setup and before any target, with the composite action `sandbo
     out: ${{ runner.temp }}/sandbox-selftest
 ```
 
-It fails the job unless the verdict is `pass`, and has the outputs `verdict`, `out`, `checked-at`,
-`runner-image`, `kernel`, `docker`, `gvisor-release` and `runsc-version` (as above). Never upload
-`<out>/untrusted/`.
+It fails the job unless the verdict is `pass`, and has the outputs `sandbox-sha` (the commit it ran
+from), `verdict`, `out`, `checked-at`, `runner-image`, `kernel`, `docker`, `gvisor-release` and
+`runsc-version` (as above). Never upload `<out>/untrusted/`.
+
+Use it at a full commit SHA: `@main`, a tag or any other branch fails its first step, because the
+sandbox under it could then change without review on the caller's side. Its input
+`allow-local-checkout: 'true'` is only for this repository's own `sandbox-conformance.yml`, which
+checks out a validated commit itself and runs the action from that checkout.
 
 ### Nightly status
 
@@ -163,7 +168,24 @@ https://github.com/isokron-ai/mcp-surface-corpus/releases/download/conformance/c
 ```
 
 A release asset, not an Actions artifact: artifacts need a token to download even from a public
-repository, and expire. The file holds no secret and nothing a target printed:
+repository, and expire.
+
+The publish job decides pass or fail itself. It never runs a target and never reads the outputs of
+the jobs that did: a target that got out of its sandbox could write a job output in one line. It
+downloads the telemetry the self test and each mutation uploaded and recomputes both verdicts with
+its own checkout's checkers (`scripts/verify-conformance.mjs`: `check-selftest.mjs`, and
+`check-mutation.mjs` for every protection). The run, attempt and commit come from its own
+environment. `sandbox-selftest.yml` runs the same recomputation on every pull request (its
+`evidence` job). This raises the bar from one forged line to a whole forged self test of evidence; a
+target with full control of the runner that ran it could still forge its own telemetry, which no
+check on GitHub's hosted runners can rule out.
+
+`scripts/publish-conformance.sh` then refuses (uploads nothing) when the status is not for main's
+head at that moment, or does not supersede the published one: a later run (higher `run_id`), or a
+later attempt of the same run, with evidence no older. A re-run of an old night therefore never puts
+its green back over a newer red, and a re-run that tests an old commit never publishes.
+
+The file holds no secret and nothing a target printed:
 
 | Field | Value |
 |---|---|
@@ -171,10 +193,10 @@ repository, and expire. The file holds no secret and nothing a target printed:
 | `ok` | `true` only when the call succeeded, `selftest` is `pass` and `mutations` is `pass`. |
 | `selftest`, `mutations` | As the outputs above (`fail` when missing). |
 | `result` | The conformance call's result: `success`, `failure`, ... |
-| `checked_at` | When the telemetry check ran (UTC); the publish time if it never ran. |
+| `checked_at` | When the self test's evidence ended (UTC, never later than the publish); the publish time if there is none. |
 | `run_id`, `run_attempt`, `run_url` | The nightly run. |
-| `sandbox_sha` | The commit tested (main), or `null`. |
-| `runner_image`, `kernel`, `docker`, `gvisor_release`, `runsc_version` | As the outputs above; `unknown` when not known. |
+| `sandbox_sha` | The commit tested: main's head when published. |
+| `runner_image`, `kernel`, `docker`, `gvisor_release`, `runsc_version` | What the self test's runner reported about itself (labels, not part of the verdict); `unknown` when not known. |
 
 A red result is published too, so readers react at once. A cancelled run publishes nothing, and the
 last status ages. tool-qa's pump and watchdog read this file as a circuit breaker: while it is not
@@ -186,9 +208,11 @@ inactivity (scheduled workflows stop after 60 days without a commit), and run it
 
 `pin-drift.yml` runs `scripts/pin-drift.mjs --open-pr` weekly. It compares the pinned gVisor
 release (`gvisor.json`), age (`scripts/install-age.sh`) and actions (`pins/actions.json`) with their
-newest releases. A new gVisor bundle is downloaded and its sha512 must match the `.sha512` file
-published beside it; the age tarball is downloaded and hashed; an action pin is the commit its
-release tag points to. It then opens a pull request through the API, with the job token's
+newest releases. The age tarball is downloaded, hashed and verified against the release attestation
+age's own release workflow signed (`gh attestation verify --repo FiloSottile/age`); without a valid
+one nothing is proposed. The gVisor and action pins are trust on first use, and the pull request
+says so: a new gVisor bundle is downloaded and its sha512 must match the `.sha512` file beside it,
+but both come from the same bucket; an action pin is the commit its release tag points to today. It then opens a pull request through the API, with the job token's
 `contents: write` and `pull-requests: write` and nothing else.
 
 That token cannot do two things, by GitHub's design, so the pull request says what a person does

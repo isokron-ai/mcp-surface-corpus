@@ -7,9 +7,11 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { STATUS_FORMAT, buildStatus, statusProblems } from '../scripts/conformance-status.mjs';
+import { STATUS_FORMAT, buildStatus, statusFrom, statusProblems, supersedes } from '../scripts/conformance-status.mjs';
+import { verifyEvidence } from '../scripts/verify-conformance.mjs';
+import { evidenceDir } from './evidence-fixtures.mjs';
 import { plain, runnerFacts } from '../scripts/runner-facts.mjs';
-import { applyPins, currentPins, describe, latestPins, openPr, readFiles, syncUses, tagCommit, workflowFiles } from '../scripts/pin-drift.mjs';
+import { applyPins, currentPins, describe, ghAttestationVerify, latestPins, openPr, readFiles, syncUses, tagCommit, workflowFiles } from '../scripts/pin-drift.mjs';
 
 const root = new URL('..', import.meta.url).pathname;
 const SHA = 'a'.repeat(40);
@@ -53,19 +55,151 @@ test('R-SBX-13 the conformance status is ok only when the call succeeded and bot
   assert.ok(statusProblems(null).length > 0);
 });
 
-test('R-SBX-13 conformance-status.mjs writes red and green alike (a red one must be published), from the environment only', () => {
+test('R-SBX-13 conformance-status.mjs writes red and green alike (a red one must be published), from the evidence and its own environment', () => {
   const d = mkdtempSync(join(tmpdir(), 'status-'));
-  const run = (env) => spawnSync(process.execPath, [join(root, 'scripts/conformance-status.mjs'), '--out', join(d, 'conformance-status.json')], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
-  const env = { CONFORMANCE_RESULT: 'failure', SELFTEST: 'fail', MUTATIONS: 'pass', CHECKED_AT: good.checkedAt, GITHUB_RUN_ID: '9', GITHUB_RUN_ATTEMPT: '1', GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: good.repo, SANDBOX_SHA: SHA, RUNNER_IMAGE: good.runnerImage, KERNEL: good.kernel, DOCKER: good.docker, GVISOR_RELEASE: good.gvisorRelease, RUNSC_VERSION: good.runscVersion };
-  const r = run(env);
+  const out = join(d, 'conformance-status.json');
+  const run = (evidence, env) => spawnSync(process.execPath, [join(root, 'scripts/conformance-status.mjs'), '--evidence', evidence, '--prefix', 'nightly', '--out', out], { env: { PATH: process.env.PATH, ...env }, encoding: 'utf8' });
+  const env = { CONFORMANCE_RESULT: 'success', GITHUB_RUN_ID: '9', GITHUB_RUN_ATTEMPT: '1', GITHUB_SERVER_URL: 'https://github.com', GITHUB_REPOSITORY: good.repo, GITHUB_SHA: SHA };
+  let r = run(evidenceDir('nightly'), env);
   assert.equal(r.status, 0, r.stderr);
-  const s = JSON.parse(readFileSync(join(d, 'conformance-status.json'), 'utf8'));
+  let s = JSON.parse(readFileSync(out, 'utf8'));
+  assert.equal(s.ok, true, r.stdout);
+  assert.equal(s.sandbox_sha, SHA);
+  assert.equal(s.checked_at, '2026-11-20T03:58:12Z', 'the time the evidence ended');
+  assert.equal(s.runner_image, 'ubuntu24/20261117.1');
+  r = run(evidenceDir('nightly', { bad: 'direct-ip' }), env);
+  assert.equal(r.status, 0, r.stderr);
+  s = JSON.parse(readFileSync(out, 'utf8'));
   assert.equal(s.ok, false);
   assert.equal(s.selftest, 'fail');
   assert.match(r.stdout, /NOT OK/);
-  assert.equal(run({ ...env, CONFORMANCE_RESULT: 'success', SELFTEST: 'pass' }).status, 0);
-  assert.equal(JSON.parse(readFileSync(join(d, 'conformance-status.json'), 'utf8')).ok, true);
   assert.equal(spawnSync(process.execPath, [join(root, 'scripts/conformance-status.mjs')], { encoding: 'utf8' }).status, 2);
+});
+
+test('R-SBX-15 the published verdict is recomputed from the evidence in a job that ran no target; the self test jobs\' outputs are never read', () => {
+  const now = new Date('2026-11-24T05:00:00Z');
+  const ok = verifyEvidence(evidenceDir('nightly'), 'nightly', { now });
+  assert.equal(ok.selftest, 'pass', ok.lines.join('\n'));
+  assert.equal(ok.mutations, 'pass', ok.lines.join('\n'));
+  for (const [opts, field, why] of [
+    [{ bad: 'metadata' }, 'selftest', 'a case that got through'],
+    [{ missing: ['selftest'] }, 'selftest', 'no self test evidence'],
+    [{ missing: ['firewall-order-goto'] }, 'mutations', 'a mutation with no evidence'],
+    [{ passing: ['cap-drop'] }, 'mutations', 'a mutation run that passed'],
+  ]) assert.equal(verifyEvidence(evidenceDir('nightly', opts), 'nightly', { now })[field], 'fail', why);
+  // A claim of "pass" in the environment cannot make one: only the evidence counts.
+  const forged = statusFrom(evidenceDir('nightly', { bad: 'env-token' }), 'nightly', { CONFORMANCE_RESULT: 'success', SELFTEST: 'pass', MUTATIONS: 'pass', GITHUB_RUN_ID: '9', GITHUB_RUN_ATTEMPT: '1', GITHUB_REPOSITORY: good.repo, GITHUB_SHA: SHA }, now).status;
+  assert.equal(forged.ok, false);
+  assert.equal(forged.selftest, 'fail');
+  // Evidence that claims a later time than now is held to now.
+  assert.equal(verifyEvidence(evidenceDir('nightly', { end: '2027-01-01T00:00:00.000Z' }), 'nightly', { now }).checked_at, '2026-11-24T05:00:00Z');
+  const wf = readFileSync(join(root, '.github/workflows/conformance-nightly.yml'), 'utf8');
+  const publish = wf.slice(wf.indexOf('\n  publish:\n'));
+  assert.ok(!/needs\.conformance\.outputs/.test(publish), 'the publish job reads no output of the jobs that ran targets');
+  assert.match(publish, /uses: actions\/download-artifact@[0-9a-f]{40} # v[\d.]+\n        continue-on-error: true\n        with:\n          pattern: nightly-\*\n/);
+  assert.match(publish, /node scripts\/conformance-status\.mjs --evidence "\$RUNNER_TEMP\/evidence" --prefix nightly --out /);
+});
+
+test('R-SBX-16 a status replaces the published one only when it is later and for main\'s head: a re-run never republishes an old green', async () => {
+  const st = (o) => ({ ...buildStatus(good), ...o });
+  const night1 = st({ run_id: 100, run_attempt: 1, checked_at: '2026-11-23T03:58:00Z' });
+  const night2red = st({ run_id: 200, run_attempt: 1, checked_at: '2026-11-24T03:58:00Z', ok: false, selftest: 'fail' });
+  assert.equal(supersedes(night2red, night1).ok, true);
+  assert.equal(supersedes(st({ run_id: 100, run_attempt: 2, checked_at: '2026-11-23T03:58:00Z' }), night2red).ok, false, 're-run of night 1 over night 2');
+  assert.equal(supersedes(st({ run_id: 200, run_attempt: 2, checked_at: '2026-11-24T04:30:00Z' }), night2red).ok, true, 'a later attempt of the same run');
+  assert.equal(supersedes(st({ run_id: 200, run_attempt: 2, checked_at: '2026-11-23T00:00:00Z' }), night2red).ok, false, 'older evidence');
+  assert.equal(supersedes(st({ run_id: 200, run_attempt: 1 }), night2red).ok, false, 'the same attempt again');
+  assert.equal(supersedes(night1, null).ok, true, 'first publish');
+  assert.equal(supersedes(night1, { junk: 1 }).ok, true, 'an unreadable old status');
+  assert.equal(supersedes(st({ run_id: null }), null).ok, false, 'no run id');
+
+  // The script: main's head and the published status come from gh; refusals upload nothing.
+  const d = mkdtempSync(join(tmpdir(), 'pub-'));
+  const bin = join(d, 'bin');
+  spawnSync('mkdir', ['-p', bin, join(d, 'rel')]);
+  writeFileSync(join(bin, 'gh'), `#!/bin/bash
+echo "$*" >> "${d}/gh.log"
+case "$1 $2" in
+  "api repos/o/r/commits/main") cat "${d}/head" ;;
+  "release view") [ -f "${d}/rel/conformance-status.json" ] && echo conformance-status.json; exit 0 ;;
+  "release download") shift 2; while [ $# -gt 0 ]; do [ "$1" = --dir ] && cp "${d}/rel/conformance-status.json" "$2/"; shift; done ;;
+  "release upload") cp "$4" "${d}/rel/conformance-status.json" ;;
+esac
+`, { mode: 0o755 });
+  const publish = (status, head = SHA) => {
+    writeFileSync(join(d, 'head'), `${head}\n`);
+    const f = join(mkdtempSync(join(tmpdir(), 'st-')), 'conformance-status.json');
+    writeFileSync(f, JSON.stringify(status));
+    return spawnSync('bash', [join(root, 'scripts/publish-conformance.sh'), f], { env: { PATH: `${bin}:${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r' }, encoding: 'utf8' });
+  };
+  const published = () => JSON.parse(readFileSync(join(d, 'rel/conformance-status.json'), 'utf8'));
+  let r = publish(night1);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(published().run_id, 100);
+  r = publish(night2red);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(published().ok, false);
+  r = publish(st({ run_id: 100, run_attempt: 2, checked_at: '2026-11-23T03:58:00Z' }));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /refused: run 100 attempt 2 is not later than the published run 200 attempt 1/);
+  assert.equal(published().run_id, 200, 'the red stays');
+  r = publish(st({ run_id: 300, run_attempt: 1, checked_at: '2026-11-25T03:58:00Z' }), 'c'.repeat(40));
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /refused: the status is for a{40}, main is at c{40}/);
+  assert.equal(published().run_id, 200);
+  writeFileSync(join(d, 'junk.json'), '{}');
+  assert.equal(publish({ hello: 'world' }).status, 1, 'not a status');
+});
+
+test('R-SBX-17 sandbox-guard runs only at a full commit SHA; a local checkout only with this repository\'s own switch', () => {
+  const y = readFileSync(join(root, 'sandbox-guard/action.yml'), 'utf8');
+  const lines = y.split('\n');
+  const i = lines.indexOf('    - id: setup');
+  const j = lines.indexOf('      run: |', i);
+  const body = [];
+  for (let k = j + 1; k < lines.length && (lines[k] === '' || lines[k].startsWith('        ')); k++) body.push(lines[k].slice(8));
+  const d = mkdtempSync(join(tmpdir(), 'guard-'));
+  writeFileSync(join(d, 'setup.sh'), `${body.join('\n')}\n`);
+  const work = join(d, 'work');
+  const ws = join(work, 'caller');
+  const remote = (ref) => {
+    const p = join(work, '_actions', 'isokron-ai', 'mcp-surface-corpus', ref, 'sandbox-guard');
+    spawnSync('mkdir', ['-p', p]);
+    return p;
+  };
+  const run = (actionPath, env = {}) => {
+    const out = join(d, `o${Math.random()}`);
+    writeFileSync(out, '');
+    const r = spawnSync('bash', ['-e', join(d, 'setup.sh')], { env: { PATH: process.env.PATH, GITHUB_ACTION_PATH: actionPath, RUNNER_WORKSPACE: ws, RUNNER_OS: 'Linux', RUNNER_TEMP: d, GITHUB_OUTPUT: out, ALLOW_LOCAL: 'false', ...env }, encoding: 'utf8' });
+    return { status: r.status, log: r.stdout + r.stderr, out: readFileSync(out, 'utf8') };
+  };
+  const sha = 'e'.repeat(40);
+  let r = run(remote(sha));
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.out, new RegExp(`^sha=${sha}$`, 'm'));
+  for (const ref of ['main', 'v1', 'v1.2.3', 'feature/x', 'e'.repeat(39), `${'e'.repeat(40)}x`]) {
+    r = run(remote(ref));
+    assert.equal(r.status, 1, ref);
+    assert.match(r.log, /use sandbox-guard at a full commit SHA/, ref);
+  }
+  r = run(remote(sha), { ACTION_REF: 'main' });
+  assert.equal(r.status, 1, 'GitHub says the ref is a branch');
+  // A local checkout: refused without the switch, allowed with it when the checkout is a commit.
+  const local = join(d, 'checkout', 'sandbox-guard');
+  spawnSync('mkdir', ['-p', local]);
+  r = run(local);
+  assert.equal(r.status, 1);
+  assert.match(r.log, /only for this repository's sandbox-conformance\.yml/);
+  r = run(local, { ALLOW_LOCAL: 'true' });
+  assert.equal(r.status, 1, 'not a git checkout: no commit');
+  spawnSync('git', ['-C', join(d, 'checkout'), 'init', '-q']);
+  spawnSync('git', ['-C', join(d, 'checkout'), '-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'x']);
+  r = run(local, { ALLOW_LOCAL: 'true' });
+  assert.equal(r.status, 0, r.log);
+  assert.match(r.out, /^sha=[0-9a-f]{40}$/m);
+  // Only the reusable workflow sets the switch.
+  const wf = readFileSync(join(root, '.github/workflows/sandbox-conformance.yml'), 'utf8');
+  assert.equal((wf.match(/allow-local-checkout: 'true'/g) || []).length, 1);
 });
 
 test('R-SBX-13 the runner facts are short plain tokens or unknown, whatever the commands print', () => {
@@ -119,10 +253,12 @@ test('R-SBX-14 pin drift: nothing behind proposes nothing; a newer gVisor, age o
   assert.ok(!same.calls.some((c) => /storage\.googleapis|github\.com\/FiloSottile/.test(c.url)), 'nothing is downloaded when nothing moved');
 
   const net = fakeNet({ gvisorTag: 'release-20261201.0', ageTag: 'v1.4.0', actionTags: { 'actions/checkout': 'v7.1.0' } });
-  const next = await latestPins({ api: apiOf(net.fetchFn), fetchFn: net.fetchFn, current: cur });
+  const attested = [];
+  const next = await latestPins({ api: apiOf(net.fetchFn), fetchFn: net.fetchFn, current: cur, verifyAge: (bytes, name) => { attested.push([bytes.toString(), name]); return true; } });
+  assert.deepEqual(attested, [['bundle', 'age-v1.4.0-linux-amd64.tar.gz']], 'the age tarball is checked against its attestation');
   assert.deepEqual(describe(cur, next), [
     `gVisor ${cur.gvisor.release} -> 20261201.0 (gvisor.json)`,
-    `age ${cur.age.version} -> v1.4.0 (scripts/install-age.sh)`,
+    `age ${cur.age.version} -> v1.4.0 (scripts/install-age.sh; release attestation verified)`,
     `actions/checkout ${cur.actions['actions/checkout'].version} -> v7.1.0 (${'b'.repeat(40)}) (pins/actions.json)`,
   ]);
   const out = applyPins(files, cur, next, new Date('2026-12-02T06:17:00Z'));
@@ -192,8 +328,8 @@ test('R-SBX-14 publish-conformance.sh refuses anything but a well-formed status 
   const d = mkdtempSync(join(tmpdir(), 'pub-'));
   const bin = join(d, 'bin');
   spawnSync('mkdir', ['-p', bin]);
-  // A gh that records its calls.
-  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$@" >> "${d}/gh.log"\n`, { mode: 0o755 });
+  // A gh that records its calls; main is at SHA, and there is no published status yet.
+  writeFileSync(join(bin, 'gh'), `#!/bin/sh\necho "$@" >> "${d}/gh.log"\n[ "$1" = api ] && echo ${SHA}\n[ "$1 $2" = "release view" ] && exit 1\nexit 0\n`, { mode: 0o755 });
   const run = (file) => spawnSync('bash', [join(root, 'scripts/publish-conformance.sh'), file], { env: { PATH: `${bin}:${process.env.PATH}`, GITHUB_REPOSITORY: 'o/r', GITHUB_SHA: SHA }, encoding: 'utf8' });
   const f = join(d, 'conformance-status.json');
   writeFileSync(f, JSON.stringify({ hello: 'world' }));
@@ -206,5 +342,31 @@ test('R-SBX-14 publish-conformance.sh refuses anything but a well-formed status 
   writeFileSync(f, JSON.stringify(buildStatus({ ...good, result: 'failure' })));
   const r = run(f);
   assert.equal(r.status, 0, r.stderr);
-  assert.match(readFileSync(join(d, 'gh.log'), 'utf8'), /release upload conformance .*conformance-status\.json --repo o\/r --clobber/);
+  const log2 = readFileSync(join(d, 'gh.log'), 'utf8');
+  assert.match(log2, /release create conformance --repo o\/r --target a{40} --prerelease --latest=false/, 'made on first use, never latest');
+  assert.match(log2, /release upload conformance .*conformance-status\.json --repo o\/r --clobber/);
+});
+
+test('R-SBX-18 pin drift proposes no age without a valid release attestation, and says the gVisor and action pins are trust on first use', async () => {
+  const cur = currentPins(readFiles(root));
+  const net = fakeNet({ ageTag: 'v1.4.0' });
+  await assert.rejects(latestPins({ api: apiOf(net.fetchFn), fetchFn: net.fetchFn, current: cur, verifyAge: () => false }), /release attestation did not verify/);
+  // The default check is gh attestation verify, against age's own repository.
+  const seen = [];
+  assert.equal(ghAttestationVerify(Buffer.from('x'), 'age-v1.4.0-linux-amd64.tar.gz', (cmd, argv) => { seen.push([cmd, ...argv.map((a) => a.replace(/^.*\/(age-v[^/]+)$/, '<dir>/$1'))]); return { status: 0 }; }), true);
+  assert.deepEqual(seen, [['gh', 'attestation', 'verify', '<dir>/age-v1.4.0-linux-amd64.tar.gz', '--repo', 'FiloSottile/age']]);
+  assert.equal(ghAttestationVerify(Buffer.from('x'), 'a.tgz', () => ({ status: 1 })), false);
+  // The pull request says which pins are trust on first use.
+  let body = '';
+  const api = async (path, { method = 'GET', body: b } = {}) => {
+    if (method === 'GET' && path.includes('/git/ref/heads/pin-drift/')) { const e = new Error('404'); e.status = 404; throw e; }
+    if (path.endsWith('/git/ref/heads/main')) return { object: { sha: SHA } };
+    if (path.includes('/git/commits/')) return { tree: { sha: SHA } };
+    if (path.endsWith('/pulls')) { body = b.body; return { number: 1, html_url: 'u' }; }
+    return { sha: SHA };
+  };
+  await openPr({ api, repo: 'o/r', changes: { 'gvisor.json': '{}' }, lines: ['x'] });
+  assert.match(body, /gVisor: \*\*trust on first use\.\*\*/);
+  assert.match(body, /Actions: \*\*trust on first use\.\*\*/);
+  assert.match(body, /gh attestation verify --repo FiloSottile\/age/);
 });

@@ -1,6 +1,7 @@
 # Pin drift, weekly: scripts/pin-drift.mjs compares the pinned gVisor release (gvisor.json), age
 # (scripts/install-age.sh) and actions (pins/actions.json) with their newest releases, checks the
-# new hashes, and opens a pull request with the new pins through the API.
+# new hashes (age's against its release attestation; gVisor's and the actions' are trust on first
+# use, and the pull request says so), and opens a pull request with the new pins through the API.
 #
 # The job token has contents: write and pull-requests: write and nothing else. By GitHub's design
 # that token cannot change workflow files and a pull request it opens starts no workflow, so the
@@ -41,4 +42,6 @@ jobs:
       - name: Propose newer pins
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          # gh attestation verify (age's release attestation) reads GH_TOKEN.
+          GH_TOKEN: ${{ github.token }}
         run: node scripts/pin-drift.mjs --open-pr

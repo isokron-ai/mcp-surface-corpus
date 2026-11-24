@@ -6,10 +6,15 @@
 # It is a guard, not loop work: it has no loop guard and runs whatever LOOP_ENABLED, LOOP_PAUSE_UNTIL
 # or LOOP_SLOTS say, so the status it publishes is fresh when the loop is turned back on.
 #
-# The publish job writes a small public status (scripts/conformance-status.mjs: ok, both verdicts,
-# the date, the run, the runner image, kernel, Docker and gVisor versions; no secret, nothing a target
-# printed) and replaces the asset conformance-status.json on the release tagged `conformance`
-# (scripts/publish-conformance.sh). A release asset, unlike an Actions artifact, can be read without
+# The publish job decides pass or fail itself. It never runs a target, never reads the outputs of the
+# jobs that did (a target that got out could write those in one line), and recomputes both verdicts
+# from the uploaded telemetry with its own checkout's checkers (scripts/verify-conformance.mjs). The
+# run, attempt and commit come from its own environment. It writes a small public status
+# (scripts/conformance-status.mjs: ok, both verdicts, the evidence's date, the run, the runner image,
+# kernel, Docker and gVisor versions the runner reported; no secret, nothing a target printed) and
+# replaces the asset conformance-status.json on the release tagged `conformance`
+# (scripts/publish-conformance.sh), only when the status is for main's head now and supersedes the
+# published one (a later run or attempt, evidence no older). A release asset, unlike an Actions artifact, can be read without
 # a token: tool-qa's pump and watchdog read it as a circuit breaker and hold every lane that runs
 # third-party code while it is red, older than 36 hours, or unreadable. A red result is published
 # too, so the breaker trips at once; a cancelled run publishes nothing and the last status ages out.
@@ -55,21 +60,21 @@ jobs:
         with:
           node-version: 22
           package-manager-cache: false
-      - name: Write the status
+      # The evidence, not the claims: the telemetry the self test and each mutation uploaded. This
+      # job never ran a target; the outputs of the jobs that did are not read.
+      # Missing evidence is not an error here: it recomputes as a fail, and the red is published.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        continue-on-error: true
+        with:
+          pattern: nightly-*
+          path: ${{ runner.temp }}/evidence
+          merge-multiple: false
+      - name: Recompute the verdicts and write the status
         env:
           CONFORMANCE_RESULT: ${{ needs.conformance.result }}
-          SELFTEST: ${{ needs.conformance.outputs.selftest }}
-          MUTATIONS: ${{ needs.conformance.outputs.mutations }}
-          CHECKED_AT: ${{ needs.conformance.outputs.checked-at }}
-          SANDBOX_SHA: ${{ needs.conformance.outputs.sandbox-sha }}
-          RUNNER_IMAGE: ${{ needs.conformance.outputs.runner-image }}
-          KERNEL: ${{ needs.conformance.outputs.kernel }}
-          DOCKER: ${{ needs.conformance.outputs.docker }}
-          GVISOR_RELEASE: ${{ needs.conformance.outputs.gvisor-release }}
-          RUNSC_VERSION: ${{ needs.conformance.outputs.runsc-version }}
         run: |
           mkdir -p "$RUNNER_TEMP/status"
-          node scripts/conformance-status.mjs --out "$RUNNER_TEMP/status/conformance-status.json"
+          node scripts/conformance-status.mjs --evidence "$RUNNER_TEMP/evidence" --prefix nightly --out "$RUNNER_TEMP/status/conformance-status.json"
           {
             echo '```json'
             cat "$RUNNER_TEMP/status/conformance-status.json"
