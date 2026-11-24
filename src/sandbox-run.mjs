@@ -185,8 +185,9 @@ export function dockerFsProblem(cfg, run = spawnSync) {
     const bytes = sectors * 512; const size = mb * 1024 * 1024;
     if (!(bytes >= size * 0.95 && bytes <= size * 1.05) || backing !== `${cfg.install_dir}/${img}`) return want;
     // Fully reserved: the image's allocated blocks cover its size.
-    const st = (out('stat', ['-c', '%b %B %s', backing]) ?? '').trim().split(' ').map(Number);
-    if (!(st.length === 3 && st[0] * st[1] >= st[2] && st[2] > 0)) return `${want}: ${img} has holes`;
+    const raw = (out('stat', ['-c', '%b %B %s', backing]) ?? '').trim();
+    const st = raw.split(' ').map(Number);
+    if (!(st.length === 3 && st[0] * st[1] >= st[2] && st[2] > 0)) return `${want}: ${img} has holes (stat: ${raw.slice(0, 60) || 'unreadable'})`;
     // The inode count, as statfs gives it (ext4 rounds -N up to whole groups).
     const n = Number((out('sudo', ['-n', 'stat', '-f', '-c', '%c', dir]) ?? '').trim());
     if (!(n >= inodes && n <= inodes * 1.05)) return `${want}: it has ${Number.isFinite(n) ? n : 'an unknown number of'} inodes`;

@@ -200,6 +200,7 @@ fi
 mountpoint -q "$volumes_dir" || fail "Docker's volumes folder is not its own filesystem"
 # fstrim would punch the same holes later: its timer trims every mounted filesystem that takes it.
 systemctl disable --now fstrim.timer >/dev/null 2>&1 || true
+for img in docker-fs volume-fs; do echo "$img.img: $(stat -c '%b blocks of %B bytes allocated, %s bytes' "$install_dir/$img.img")"; done
 echo "Docker data in $docker_root (${docker_fs_mb} MB, ${docker_fs_inodes} inodes), volumes in $volumes_dir (${volume_fs_mb} MB, ${volume_fs_inodes} inodes), each its own"
 daemon_json=/etc/docker/daemon.json
 mkdir -p /etc/docker
