@@ -136,9 +136,10 @@ test('R-SBX-23 install-runsc.sh puts Docker\'s volumes on a filesystem of their 
   const at = (x) => { const i = body.indexOf(x); assert.ok(i >= 0, x); return i; };
   assert.ok(at('docker volume ls -q') < at('if ! mountpoint -q "$volumes_dir"'), 'no volume may exist yet');
   assert.ok(at('stop_docker\n  make_fs "$install_dir/volume-fs.img" "$volume_fs_mb" "$volume_fs_inodes"') < at('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'mounted while the daemon is stopped, and nodiscard: seen on GitHub, the inner ext4 discarded what it freed');
-  assert.ok(at('fallocate -l "${2}M" "$1"') < at('mkfs.ext4 -q -F -m 0 -E nodiscard -N "$3" "$1"'), 'reserved up front, and nodiscard: a discard would punch holes through the reservation (seen on GitHub: the runner lost 2 GB as the bomb filled the volume)');
+  assert.ok(at('fallocate -l "${2}M" "$1"') < at('mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -N "$3" "$1"'), 'reserved up front, and nodiscard: a discard would punch holes through the reservation (seen on GitHub: the runner lost 2 GB as the bomb filled the volume)');
   assert.ok(at('mountpoint -q "$volumes_dir" || fail') < at('systemctl restart docker'), 'checked before the daemon comes back');
   assert.ok(at('systemctl disable --now fstrim.timer') < at('systemctl restart docker'), 'fstrim would punch the same holes later');
+  assert.match(body, /lazy_itable_init=0,lazy_journal_init=0/, 'seen on GitHub: the lazy init zeroed 512 MB of inode tables later, which the loop device turned into holes');
   assert.ok(!/mount -o loop[^"]*(?:noexec|discard)[^"]*" "\$install_dir\/(?:volume|docker)-fs\.img"/.test(sh), 'targets run programs from their work volume and images, and no online discard');
   assert.ok(!/discard/.test(sh.replace(/nodiscard/g, '').replace(/^\s*#.*$/gm, '')), 'no discard anywhere but nodiscard');
 });

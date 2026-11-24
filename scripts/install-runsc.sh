@@ -173,14 +173,17 @@ command -v docker >/dev/null || fail "docker not found"
 # the daemon back on them.
 stop_docker() { systemctl stop docker.socket 2>/dev/null || true; systemctl stop docker || fail "the Docker daemon did not stop"; }
 # make_fs IMAGE MB INODES: fallocate reserves every block; nodiscard keeps mkfs from punching holes
-# through that reservation (a discard on a loop file frees its blocks). Each is mounted nodiscard
-# too: on GitHub's runners an ext4 discarded what it freed (seen: 512 MB of the data-root's
-# reservation gone after the image pulls), so the runner's disk would pay as it filled.
+# through that reservation (a discard on a loop file frees its blocks), and each is mounted
+# nodiscard too. On GitHub 512 MB of the data-root's reservation was still gone after the image
+# pulls, so the runner's disk would pay as it filled. That 512 MB
+# was the inode tables (2,097,152 of 256 bytes): left to the kernel's lazy init, they are zeroed
+# later with write-zeroes requests, which a loop device turns into holes in its file; so they, and
+# the journal, are written out by mkfs instead.
 make_fs() {
   rm -f "$1"
   fallocate -l "${2}M" "$1" || fail "a filesystem image could not be made"
   chmod 0600 "$1"
-  mkfs.ext4 -q -F -m 0 -E nodiscard -N "$3" "$1" >/dev/null || fail "a filesystem image could not be formatted"
+  mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -N "$3" "$1" >/dev/null || fail "a filesystem image could not be formatted"
 }
 [ -z "$(docker volume ls -q 2>/dev/null)" ] || mountpoint -q "$docker_root/volumes" || fail "Docker already has volumes: the volume filesystem goes in before any volume exists"
 if ! mountpoint -q "$docker_root"; then
