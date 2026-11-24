@@ -102,7 +102,7 @@ test('seal-targets: validates, encrypts to two public keys, refuses a private ke
   writeFileSync(join(t, 'ci.pub'), execFileSync('age-keygen', ['-y', join(t, 'ci.key')]));
   const ok = sh('bin/seal-targets.sh', [join(root, 'targets/example.targets.json'), join(t, 'ci.pub'), '--out', join(t, 'targets.json.age')], {});
   assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /3 target\(s\) valid: 2 npm, 1 pypi/);
+  assert.match(ok.stdout, /4 target\(s\) valid: 3 npm, 1 pypi/);
   assert.equal(JSON.parse(execFileSync('age', ['-d', '-i', join(t, 'ci.key'), join(t, 'targets.json.age')]).toString()).targets.length, 3);
   assert.notEqual(sh('bin/seal-targets.sh', [join(root, 'targets/example.targets.json'), join(t, 'ci.key'), '--out', join(t, 'x.age')], {}).status, 0, 'a private key file is refused');
   writeFileSync(join(t, 'bad.json'), '{"format":"isokron-surface-targets/1","targets":[{"id":"x"}]}');
