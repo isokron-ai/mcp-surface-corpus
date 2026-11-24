@@ -97,7 +97,7 @@ export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, fs = {} 
     FORWARD: ['-A FORWARD -o br-+ -j ISK-SBX6', '-A FORWARD -i br-+ -j ISK-SBX6', '-A FORWARD -o docker0 -j ISK-SBX6', '-A FORWARD -i docker0 -j ISK-SBX6'],
   };
   const lg = cfg.container_logs;
-  const mk = (img, mb, inodes, o = {}) => ({ fstype: 'ext4', sectors: mb * 2048, backing: `${cfg.install_dir}/${img}`, mounted: true, blocks: mb * 2048, inodes: inodes + 512, ...o });
+  const mk = (img, mb, inodes, o = {}) => ({ fstype: 'ext4', sopts: 'rw', sectors: mb * 2048, backing: `${cfg.install_dir}/${img}`, mounted: true, blocks: mb * 2048, inodes: inodes + 512, ...o });
   const F = {
     info: `${cfg.docker_root} overlay2 ${lg.driver}`,
     daemonJson: JSON.stringify({ runtimes: { runsc: {} }, 'data-root': cfg.docker_root, 'log-driver': lg.driver, 'log-opts': { 'max-size': `${lg.max_size_mb}m`, 'max-file': String(lg.max_file) } }),
@@ -109,8 +109,8 @@ export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, fs = {} 
   const mountinfo = [
     '24 1 8:1 / / rw,relatime shared:1 - ext4 /dev/root rw,discard',
     `130 24 7:7 / ${cfg.log_dir} rw,nosuid,nodev,noexec,relatime shared:70 - ext4 /dev/loop7 rw`,
-    ...(F.data.mounted ? [`131 24 7:8 / ${cfg.docker_root} rw,relatime shared:71 - ${F.data.fstype} /dev/loop8 rw`] : []),
-    ...(F.volumes.mounted ? [`132 131 7:9 / ${cfg.docker_root}/volumes rw,nosuid,nodev,relatime shared:72 - ${F.volumes.fstype} /dev/loop9 rw`] : []),
+    ...(F.data.mounted ? [`131 24 7:8 / ${cfg.docker_root} rw,relatime shared:71 - ${F.data.fstype} /dev/loop8 ${F.data.sopts}`] : []),
+    ...(F.volumes.mounted ? [`132 131 7:9 / ${cfg.docker_root}/volumes rw,nosuid,nodev,relatime shared:72 - ${F.volumes.fstype} /dev/loop9 ${F.volumes.sopts}`] : []),
   ].join('\n');
   return (cmd, argv) => {
     if (String(cmd).endsWith('/runsc')) return { status: 0, stdout: `runsc version ${version ?? `release-${cfg.release}`}\nspec: 1.1.0\n` };

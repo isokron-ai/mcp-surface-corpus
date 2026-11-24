@@ -177,9 +177,11 @@ export function dockerFsProblem(cfg, run = spawnSync) {
     const line = mi.split('\n').map((l) => l.split(' ')).filter((f) => f[4] === dir).pop();
     if (!line) return want;
     const dash = line.indexOf('-');
-    const [fstype, source] = dash > 0 ? [line[dash + 1], line[dash + 2]] : [null, null];
+    const [fstype, source, sopts] = dash > 0 ? [line[dash + 1], line[dash + 2], line[dash + 3]] : [null, null, null];
     const loop = /^\/dev\/(loop\d{1,4})$/.exec(String(source));
     if (fstype !== 'ext4' || !loop) return want;
+    // Mounted with online discard, it hands freed blocks back to the runner's disk as it goes.
+    if (String(sopts).split(',').includes('discard')) return `${want}: mounted with discard`;
     const sectors = Number((out('cat', [`/sys/block/${loop[1]}/size`]) ?? '').trim());
     const backing = (out('cat', [`/sys/block/${loop[1]}/loop/backing_file`]) ?? '').trim();
     const bytes = sectors * 512; const size = mb * 1024 * 1024;

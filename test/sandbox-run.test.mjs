@@ -281,6 +281,8 @@ test('R-SBX-25 the strict preflight refuses Docker data off its own capped files
   assert.match(why({ data: { mounted: false } }), /Docker data-root \/var\/lib\/isokron-docker is not a filesystem of its own of 20480 MB/);
   assert.match(why({ data: { blocks: 1024 } }), /docker-fs\.img has holes/, 'a discard or a trim gave its blocks back');
   assert.match(why({ volumes: { blocks: 2048 } }), /volume-fs\.img has holes/);
+  assert.match(why({ data: { sopts: 'rw,discard' } }), /mounted with discard/, 'seen on GitHub: online discard handed 512 MB of the reservation back');
+  assert.equal(why({ data: { sopts: 'rw,nodiscard' } }), 'null', 'nodiscard is fine');
   assert.match(why({ volumes: { inodes: 19529728 } }), /it has 19529728 inodes/);
   assert.match(why({ data: { inodes: 1000 } }), /it has 1000 inodes/);
 });

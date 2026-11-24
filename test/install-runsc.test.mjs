@@ -135,20 +135,20 @@ test('R-SBX-23 install-runsc.sh puts Docker\'s volumes on a filesystem of their 
   const body = sh.slice(sh.indexOf('# 5b. Docker\'s data-root, and its volumes'));
   const at = (x) => { const i = body.indexOf(x); assert.ok(i >= 0, x); return i; };
   assert.ok(at('docker volume ls -q') < at('if ! mountpoint -q "$volumes_dir"'), 'no volume may exist yet');
-  assert.ok(at('stop_docker\n  make_fs "$install_dir/volume-fs.img" "$volume_fs_mb" "$volume_fs_inodes"') < at('mount -o loop,nosuid,nodev "$install_dir/volume-fs.img" "$volumes_dir"'), 'mounted while the daemon is stopped');
+  assert.ok(at('stop_docker\n  make_fs "$install_dir/volume-fs.img" "$volume_fs_mb" "$volume_fs_inodes"') < at('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'mounted while the daemon is stopped, and nodiscard: seen on GitHub, the inner ext4 discarded what it freed');
   assert.ok(at('fallocate -l "${2}M" "$1"') < at('mkfs.ext4 -q -F -m 0 -E nodiscard -N "$3" "$1"'), 'reserved up front, and nodiscard: a discard would punch holes through the reservation (seen on GitHub: the runner lost 2 GB as the bomb filled the volume)');
   assert.ok(at('mountpoint -q "$volumes_dir" || fail') < at('systemctl restart docker'), 'checked before the daemon comes back');
   assert.ok(at('systemctl disable --now fstrim.timer') < at('systemctl restart docker'), 'fstrim would punch the same holes later');
   assert.ok(!/mount -o loop[^"]*(?:noexec|discard)[^"]*" "\$install_dir\/(?:volume|docker)-fs\.img"/.test(sh), 'targets run programs from their work volume and images, and no online discard');
-  assert.ok(!/discard/.test(sh.replace(/nodiscard/g, '').replace(/^#.*$/gm, '')), 'no discard anywhere but nodiscard');
+  assert.ok(!/discard/.test(sh.replace(/nodiscard/g, '').replace(/^\s*#.*$/gm, '')), 'no discard anywhere but nodiscard');
 });
 
 test('R-SBX-25 install-runsc.sh puts Docker\'s whole data-root on a filesystem of its own, with overlay2 and not containerd\'s image store, and checks it after the restart', () => {
   const sh = readFileSync(join(root, 'scripts/install-runsc.sh'), 'utf8');
   const body = sh.slice(sh.indexOf('# 5b. Docker\'s data-root, and its volumes'));
   const at = (x) => { const i = body.indexOf(x); assert.ok(i >= 0, x); return i; };
-  assert.ok(at('make_fs "$install_dir/docker-fs.img" "$docker_fs_mb" "$docker_fs_inodes"') < at('mount -o loop "$install_dir/docker-fs.img" "$docker_root"'));
-  assert.ok(at('mount -o loop "$install_dir/docker-fs.img" "$docker_root"') < at('mount -o loop,nosuid,nodev "$install_dir/volume-fs.img" "$volumes_dir"'), 'the volumes inside the data-root');
+  assert.ok(at('make_fs "$install_dir/docker-fs.img" "$docker_fs_mb" "$docker_fs_inodes"') < at('mount -o loop,nodiscard "$install_dir/docker-fs.img" "$docker_root"'), 'nodiscard: seen on GitHub, 512 MB of the reservation gone after the image pulls');
+  assert.ok(at('mount -o loop,nodiscard "$install_dir/docker-fs.img" "$docker_root"') < at('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'the volumes inside the data-root');
   assert.ok(at('c["data-root"] = process.env.DOCKER_ROOT;') < at('systemctl restart docker'));
   assert.ok(at('"containerd-snapshotter": false') < at('systemctl restart docker'), 'images stay on the data-root');
   assert.ok(at('systemctl restart docker') < at("docker info --format '{{.DockerRootDir}} {{.Driver}} {{.LoggingDriver}}'"), 'and checked once the daemon is back');

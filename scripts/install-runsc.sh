@@ -173,7 +173,9 @@ command -v docker >/dev/null || fail "docker not found"
 # the daemon back on them.
 stop_docker() { systemctl stop docker.socket 2>/dev/null || true; systemctl stop docker || fail "the Docker daemon did not stop"; }
 # make_fs IMAGE MB INODES: fallocate reserves every block; nodiscard keeps mkfs from punching holes
-# through that reservation (a discard on a loop file frees its blocks).
+# through that reservation (a discard on a loop file frees its blocks). Each is mounted nodiscard
+# too: on GitHub's runners an ext4 discarded what it freed (seen: 512 MB of the data-root's
+# reservation gone after the image pulls), so the runner's disk would pay as it filled.
 make_fs() {
   rm -f "$1"
   fallocate -l "${2}M" "$1" || fail "a filesystem image could not be made"
@@ -185,7 +187,7 @@ if ! mountpoint -q "$docker_root"; then
   stop_docker
   make_fs "$install_dir/docker-fs.img" "$docker_fs_mb" "$docker_fs_inodes"
   mkdir -p "$docker_root"
-  mount -o loop "$install_dir/docker-fs.img" "$docker_root" || fail "the Docker data filesystem could not be mounted"
+  mount -o loop,nodiscard "$install_dir/docker-fs.img" "$docker_root" || fail "the Docker data filesystem could not be mounted"
   chmod 0710 "$docker_root"
 fi
 mountpoint -q "$docker_root" || fail "Docker's data-root is not its own filesystem"
@@ -194,7 +196,7 @@ if ! mountpoint -q "$volumes_dir"; then
   stop_docker
   make_fs "$install_dir/volume-fs.img" "$volume_fs_mb" "$volume_fs_inodes"
   mkdir -p "$volumes_dir"
-  mount -o loop,nosuid,nodev "$install_dir/volume-fs.img" "$volumes_dir" || fail "the volume filesystem could not be mounted"
+  mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir" || fail "the volume filesystem could not be mounted"
   chmod 0701 "$volumes_dir"
 fi
 mountpoint -q "$volumes_dir" || fail "Docker's volumes folder is not its own filesystem"
