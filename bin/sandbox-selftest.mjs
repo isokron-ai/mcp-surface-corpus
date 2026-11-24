@@ -138,8 +138,10 @@ export function mutateHost(disable, run = spawnSync) {
  * And the volume must not stay empty: the case container's workdir is /work, so its root filesystem
  * has an (empty, root-owned) /work, and Docker copies a mount point's contents and owner into a
  * volume that is still empty when it is mounted there, which gave /work back to root (R-CI-08).
+ * /work/home is chowned before /work: once /work is 65534's (0750), root without
+ * CAP_DAC_READ_SEARCH can no longer reach what is inside it.
  */
-export const WORK_VOLUME_CMD = 'chmod 0750 /work && mkdir /work/home && chown 65534:65534 /work /work/home';
+export const WORK_VOLUME_CMD = 'chmod 0750 /work && mkdir /work/home && chown 65534:65534 /work/home /work';
 
 /** The env the hostile target gets: what any target gets, nothing of the runner's. */
 const CASE_ENV = { HOME: P.home, TMPDIR: '/tmp', NO_COLOR: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUNBUFFERED: '1', SURFACE_SANDBOX: '1' };

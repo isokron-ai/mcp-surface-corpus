@@ -178,7 +178,7 @@ test('R-CI-01 the work volume is chmod-ed before it is chown-ed: root without CA
 });
 
 test('R-CI-08 the self test hands the case a work volume that is not empty, so Docker\'s copy-up cannot give /work back to root', () => {
-  assert.match(WORK_VOLUME_CMD, /mkdir \/work\/home && chown 65534:65534 \/work \/work\/home$/);
+  assert.match(WORK_VOLUME_CMD, /mkdir \/work\/home && chown 65534:65534 \/work\/home \/work$/, 'the child first: once /work is 65534\'s, root cannot reach inside it');
   assert.ok(WORK_VOLUME_CMD.indexOf('mkdir /work/home') < WORK_VOLUME_CMD.indexOf('chown'), 'made as root while root still owns /work');
   const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
   assert.match(py, /def case_write_outside[\s\S]*?"inside": \[write\(f"\/work\/inside-\{nonce\}"\)/, 'write-outside also writes inside the work folder');
