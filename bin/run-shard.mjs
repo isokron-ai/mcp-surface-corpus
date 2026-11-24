@@ -74,7 +74,7 @@ const STEP_MS = 120_000;
 const OUT_CAP = 96 * 1024 * 1024;
 const LOCK_CAP = 16 * 1024 * 1024;
 const MAX_ENV = 40;
-const PROXY_PORT = 8080;
+export const PROXY_PORT = 8080;
 
 export function parseArgs(argv) {
   const o = { lane: 'local', shard: 1, shards: 1, only: null, consume: false, images: join(root, 'images.json'), sourceCache: process.env.SURFACE_SOURCE_CACHE || null };
@@ -287,7 +287,7 @@ async function baseline(ctx, dk) {
 
 const runEnv = (extra) => ({ HOME: P.home, TMPDIR: '/tmp', NO_COLOR: '1', DO_NOT_TRACK: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUNBUFFERED: '1', npm_config_update_notifier: 'false', SURFACE_SANDBOX: '1', ...extra });
 // The proxy by its fixed address: on the install network every name resolves to the network logger.
-const PROXY_URL = `http://${NETS.install.proxy}:${PROXY_PORT}`;
+export const PROXY_URL = `http://${NETS.install.proxy}:${PROXY_PORT}`;
 const installEnv = (ctx, extra) => ({
   HOME: `${P.work}/home`, TMPDIR: '/tmp', NO_COLOR: '1', DO_NOT_TRACK: '1', SURFACE_SANDBOX: '1', CI: '1',
   npm_config_cache: `${P.work}/home/.npm`, npm_config_update_notifier: 'false', npm_config_fund: 'false', npm_config_audit: 'false',

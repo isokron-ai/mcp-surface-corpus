@@ -314,10 +314,90 @@ def case_output_forgery(nonce, gw, canary):
     return {"files": [write(p, text) for p in ("/work/telemetry.jsonl", "/work/results.json", f"/tmp/telemetry-{nonce}.jsonl", "/opt/surface/telemetry.jsonl", "/opt/surface/out/telemetry.jsonl")]}
 
 
+def proxy_address():
+    """The egress proxy, as an install script finds it: HTTPS_PROXY (http://host:port)."""
+    v = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or ""
+    hostport = v.split("://", 1)[-1].rstrip("/")
+    host, _, port = hostport.rpartition(":")
+    return (host, int(port)) if host and port.isdigit() else (None, None)
+
+
+def proxy_connect(target):
+    """CONNECT target through the proxy; ok (got through) only when the proxy answers 200."""
+    host, port = proxy_address()
+    if not host:
+        return {"to": f"CONNECT {target}", "ok": False, "error": "no HTTPS_PROXY"}
+
+    def go():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.connect((host, port))
+            s.sendall(f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n".encode())
+            head = s.recv(4096)
+            status = head.split(b" ", 2)[1].decode("ascii", "replace") if head.startswith(b"HTTP/") else "?"
+            if status != "200":
+                raise ConnectionRefusedError(errno.ECONNREFUSED, f"proxy said {status}")
+            return {"tunnel": True, "status": status, "received": len(head)}
+        finally:
+            s.close()
+    return {"to": f"CONNECT {target}", **attempt(go)}
+
+
+def proxy_plain(url, host_header):
+    """A plain HTTP request through the proxy (absolute URL); ok only on a 2xx answer."""
+    host, port = proxy_address()
+    if not host:
+        return {"to": f"GET {url}", "ok": False, "error": "no HTTPS_PROXY"}
+
+    def go():
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.connect((host, port))
+            s.sendall(f"GET {url} HTTP/1.1\r\nHost: {host_header}\r\nConnection: close\r\n\r\n".encode())
+            head = s.recv(4096)
+            status = head.split(b" ", 2)[1].decode("ascii", "replace") if head.startswith(b"HTTP/") else "?"
+            if not status.startswith("2"):
+                raise ConnectionRefusedError(errno.ECONNREFUSED, f"proxy said {status}")
+            return {"status": status, "received": len(head)}
+        finally:
+            s.close()
+    return {"to": f"GET {url}", **attempt(go)}
+
+
+# The install network: the egress proxy (HTTPS_PROXY) allows registry.npmjs.org on 443 and nothing
+# else. These cases ask it for everything else, and go around it.
+def case_install_proxy_host(nonce, gw, canary):
+    return {"attempts": [proxy_connect("example.com:443"), proxy_connect("evil.example:443"), proxy_plain("http://example.com/", "example.com")]}
+
+
+def case_install_proxy_ip(nonce, gw, canary):
+    return {"attempts": [proxy_connect("1.1.1.1:443"), proxy_connect("104.16.1.34:443"), proxy_connect("[2606:4700:4700::1111]:443")]}
+
+
+def case_install_proxy_port(nonce, gw, canary):
+    return {"attempts": [proxy_connect("registry.npmjs.org:80"), proxy_connect("registry.npmjs.org:22"), proxy_connect("registry.npmjs.org:8443")]}
+
+
+def case_install_direct(nonce, gw, canary):
+    return {"attempts": [tcp("1.1.1.1", 443), tcp("140.82.112.3", 443), tcp("104.16.1.34", 443),
+                         udp("8.8.8.8", 53, b"\x12\x34\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x08registry\x05npmjs\x03org\x00\x00\x01\x00\x01")],
+            "by_name": [resolve("registry.npmjs.org")]}
+
+
+def case_install_metadata(nonce, gw, canary):
+    return {"attempts": case_metadata(nonce, gw, canary)["attempts"] + [proxy_connect("169.254.169.254:443"), proxy_connect("168.63.129.16:443")]}
+
+
+def case_install_host(nonce, gw, canary):
+    return case_docker_host(nonce, gw, canary)
+
+
 CASES = {
     "direct-ip": case_direct_ip, "doh-ip": case_doh_ip, "raw-socket": case_raw_socket, "ipv6": case_ipv6, "icmp": case_icmp,
     "docker-host": case_docker_host, "metadata": case_metadata, "env-token": case_env_token, "write-outside": case_write_outside,
     "fork-bomb": case_fork_bomb, "output-forgery": case_output_forgery,
+    "install-proxy-host": case_install_proxy_host, "install-proxy-ip": case_install_proxy_ip, "install-proxy-port": case_install_proxy_port,
+    "install-direct": case_install_direct, "install-metadata": case_install_metadata, "install-host": case_install_host,
 }
 
 

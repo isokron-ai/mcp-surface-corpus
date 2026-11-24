@@ -4,6 +4,8 @@ import { CANARY_PORT } from '../src/selftest.mjs';
 import { NETS } from '../src/sandbox-net.mjs';
 
 export const GW = NETS.run.gateway;
+const IN = NETS.install;
+const proxyLine = (host, port, error) => ({ host, port, allowed: false, error });
 export const fail = (o) => ({ n: 1, failed: 1, errno: 101, ...o });
 export const ok = (o) => ({ n: 1, failed: 0, errno: null, ...o });
 export const conn = (addr, port, o = {}) => fail({ family: 'AF_INET', addr, port, ...o });
@@ -13,7 +15,7 @@ export const trace = (o = {}) => ({
   ...o,
   network: { sockets: [], raw_sockets: 0, connects: [], sends: [], binds: [], dns_names: [], ...(o.network || {}) },
 });
-export const base = (o = {}) => ({ inspect: { runtime: 'runsc', mismatches: [], canaryInEnv: false }, container: { exit: 0, timed_out: false, oom_killed: false }, canaryHits: 0, dns: [], conns: [], drops: [], telemetryHasNonce: false, output: { bytes: 10 }, outputRecorded: true, report: null, ...o });
+export const base = (o = {}) => ({ inspect: { runtime: 'runsc', mismatches: [], canaryInEnv: false }, container: { exit: 0, timed_out: false, oom_killed: false }, canaryHits: 0, dns: [], conns: [], drops: [], egress: [], telemetryHasNonce: false, output: { bytes: 10 }, outputRecorded: true, report: null, ...o });
 
 /** For every case, evidence of an attempt that was blocked and logged. */
 export const GOOD = {
@@ -39,6 +41,34 @@ export const GOOD = {
     trace: trace({ network: { connects: [conn('169.254.169.254', 80, { n: 2, failed: 2 }), conn('168.63.129.16', 80)] } }),
     dns: [{ qname: 'metadata.google.internal', qtype: 'A', answer: 'sinkhole', proto: 'udp', from: NETS.run.target }],
     conns: [{ from: NETS.run.target, proto: 'tcp', port: 80, bytes: 90, http: { method: 'GET', host: 'metadata.google.internal', path: '/computeMetadata/v1/' } }],
+  }),
+  'install-proxy-host': () => base({
+    trace: trace({ network: { connects: [ok({ family: 'AF_INET', addr: IN.proxy, port: 8080, n: 3 })] } }),
+    egress: [proxyLine('example.com', 443, 'host not on the allowlist'), proxyLine('evil.example', 443, 'host not on the allowlist'), { host: 'example.com', port: null, method: 'GET', allowed: false, error: 'plain HTTP refused' }],
+  }),
+  'install-proxy-ip': () => base({
+    trace: trace({ network: { connects: [ok({ family: 'AF_INET', addr: IN.proxy, port: 8080, n: 3 })] } }),
+    egress: [proxyLine('1.1.1.1', 443, 'IP literal'), proxyLine('104.16.1.34', 443, 'IP literal'), proxyLine('[2606:4700:4700::1111]:443', null, 'not host:port')],
+  }),
+  'install-proxy-port': () => base({
+    trace: trace({ network: { connects: [ok({ family: 'AF_INET', addr: IN.proxy, port: 8080, n: 3 })] } }),
+    egress: [proxyLine('registry.npmjs.org', 80, 'port'), proxyLine('registry.npmjs.org', 22, 'port'), proxyLine('registry.npmjs.org', 8443, 'port')],
+  }),
+  'install-direct': () => base({
+    trace: trace({ network: { connects: [conn('1.1.1.1', 443), conn('140.82.112.3', 443), conn('104.16.1.34', 443)], sends: [conn('8.8.8.8', 53)] } }),
+    dns: [{ qname: 'registry.npmjs.org', qtype: 'A', answer: 'sinkhole', proto: 'udp', from: IN.target }],
+  }),
+  'install-metadata': () => base({
+    trace: trace({ network: { connects: [conn('169.254.169.254', 80, { n: 2, failed: 2 }), conn('168.63.129.16', 80), ok({ family: 'AF_INET', addr: IN.proxy, port: 8080, n: 2 })] } }),
+    dns: [{ qname: 'metadata.google.internal', qtype: 'A', answer: 'sinkhole', proto: 'udp', from: IN.target }],
+    conns: [{ from: IN.target, proto: 'tcp', port: 80, bytes: 90, http: { method: 'GET', host: 'metadata.google.internal', path: '/computeMetadata/v1/' } }],
+    egress: [proxyLine('169.254.169.254', 443, 'IP literal'), proxyLine('168.63.129.16', 443, 'IP literal')],
+  }),
+  'install-host': () => base({
+    trace: trace({ network: { connects: [ok({ family: 'AF_INET', addr: IN.netlog, port: 2375 }), conn(IN.gateway, 2375, { errno: 4 }), conn(IN.gateway, 2376, { errno: 4 }), conn(IN.gateway, CANARY_PORT, { errno: 4 }), fail({ family: 'AF_UNIX', addr: '/var/run/docker.sock', port: null, errno: 2 })] } }),
+    dns: [{ qname: 'host.docker.internal', qtype: 'A', answer: 'sinkhole', proto: 'udp', from: IN.target }],
+    conns: [{ from: IN.target, proto: 'tcp', port: 2375, bytes: 60, http: { method: 'GET', host: 'host.docker.internal', path: '/version' } }],
+    drops: [{ chain: 'input', family: 4, proto: 'TCP', src: IN.target, dst: IN.gateway, dpt: 2375, n: 3 }, { chain: 'input', family: 4, proto: 'TCP', src: IN.target, dst: IN.gateway, dpt: CANARY_PORT, n: 3 }],
   }),
   'env-token': () => base({ trace: trace({ credential_paths: [ok({ path: '/proc/self/environ', op: 'read' }), ok({ path: '/proc/1/environ', op: 'read' })] }), report: { case: 'env-token', result: { canary_in_env: 0, token_names: [], files: [{ ok: true, canary: 0 }] } } }),
   'write-outside': () => base({ trace: trace({ opens_outside: ['/etc/isk-1', '/usr/local/isk-1', '/opt/surface/forged-1.json', '/isk-1', '/proc/sys/kernel/hostname'].map((path) => fail({ path, op: 'write', call: 'openat', errno: 30 })), privileged: [fail({ name: 'mount', errno: 1 })] }) }),

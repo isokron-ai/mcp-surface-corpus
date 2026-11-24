@@ -38,8 +38,11 @@ runs in the slim image, where the module loads with the same ABI and glibc. Befo
 the daemon's runsc has exactly the pinned flags and runs a smoke container under it; if anything is
 missing it records a `skip` and stops: nothing falls back to runc. Each run writes telemetry
 (settings, containers, syscall trace summaries, DNS queries, connections, egress, firewall drops;
-[docs/TELEMETRY.md](docs/TELEMETRY.md)). `sandbox-selftest.yml` runs a hostile target through eleven
-escape attempts and passes only when every one was blocked and logged. [SECURITY.md](SECURITY.md)
+[docs/TELEMETRY.md](docs/TELEMETRY.md)). `sandbox-selftest.yml` runs a hostile target through seventeen
+escape attempts and passes only when every one was blocked and logged: eleven on the run network,
+and six on the install network, run the way an npm install with scripts runs (the `node24-build`
+image, `HTTPS_PROXY` set), which ask the egress proxy for other hosts, IP literals, other ports and
+plain HTTP, and go around it to outside addresses, metadata and the host. [SECURITY.md](SECURITY.md)
 has the details.
 
 ## What is captured per target (encrypted)

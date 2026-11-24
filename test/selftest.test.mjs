@@ -124,6 +124,31 @@ caseTest('R-CASE-09 write-outside: nothing is written outside the work folder an
 caseTest('R-CASE-10 fork-bomb: the process limit refuses forks below the limit', 'fork-bomb', (ev) => { ev.trace.process = { clones: 1500, clone_failed: 0 }; });
 caseTest('R-CASE-11 output-forgery: forged results and telemetry stay target output', 'output-forgery', (ev) => { ev.telemetryHasNonce = true; });
 
+// The install network (node24-build image, HTTPS_PROXY to the egress proxy that allows the registry on 443 only).
+const allow = (host, port) => ({ host, port, allowed: true, up: 10, down: 10, ms: 5 });
+caseTest('R-CASE-12 install-proxy-host: the proxy refuses a CONNECT to a host not on its allowlist, and plain HTTP, and logs each', 'install-proxy-host', (ev) => { ev.egress[0] = allow('example.com', 443); });
+caseTest('R-CASE-13 install-proxy-ip: the proxy refuses a CONNECT to an IP literal and logs it', 'install-proxy-ip', (ev) => { ev.egress.push(allow('1.1.1.1', 443)); });
+caseTest('R-CASE-14 install-proxy-port: the proxy refuses a CONNECT to a port other than 443, even to the registry, and logs it', 'install-proxy-port', (ev) => { ev.report = { result: { attempts: [{ to: 'CONNECT registry.npmjs.org:22', ok: true, tunnel: true, received: 39 }] } }; });
+caseTest('R-CASE-15 install-direct: nothing on the install network gets out around the proxy, by address or by name', 'install-direct', (ev) => { ev.trace.network.connects[2] = ok({ family: 'AF_INET', addr: '104.16.1.34', port: 443 }); });
+caseTest('R-CASE-16 install-metadata: no metadata or host agent address answers on the install network, directly or through the proxy', 'install-metadata', (ev) => { ev.trace.network.connects[1] = ok({ family: 'AF_INET', addr: '168.63.129.16', port: 80 }); });
+caseTest('R-CASE-17 install-host: the host, its Docker API and its sockets are out of reach from the install network', 'install-host', (ev) => { ev.canaryHits = 1; });
+
+test('R-CASE-12 R-CASE-13 R-CASE-14 the proxy cases need the proxy\'s own log: a dead proxy, or one that logged nothing, is no pass', () => {
+  const g = (c, f) => { const ev = GOOD[c](); f(ev); return evaluateCase(c, ev); };
+  for (const c of ['install-proxy-host', 'install-proxy-ip', 'install-proxy-port']) {
+    assert.match(g(c, (ev) => { ev.egress = []; }).detail, /^not logged: the proxy logged 0 refusal/, `${c}: no proxy log`);
+    assert.match(g(c, (ev) => { ev.trace.network.connects = []; }).detail, /^nothing was tried: no traced connection reached the proxy/, `${c}: never reached the proxy`);
+    assert.match(g(c, (ev) => { ev.egress.push(allow('evil.example', 443)); }).detail, /^got through: the proxy let evil\.example:443 through/, `${c}: anything let through`);
+    assert.equal(g(c, (ev) => { ev.egress.push(allow('registry.npmjs.org', 443)); }).pass, true, `${c}: the registry on 443 is what the proxy is for`);
+  }
+  assert.equal(g('install-proxy-host', (ev) => { ev.egress = ev.egress.filter((e) => e.error !== 'plain HTTP refused'); }).pass, false, 'plain HTTP must be refused and logged too');
+  assert.equal(g('install-metadata', (ev) => { ev.egress = []; }).logged, false, 'the metadata request through the proxy must be logged');
+  assert.equal(g('install-direct', (ev) => { ev.dns = []; }).logged, false, 'the registry name must reach the logger');
+  assert.match(g('install-direct', (ev) => { ev.dns[0].answer = 'empty'; }).detail, /^got through: registry\.npmjs\.org got a real answer/);
+  assert.match(g('install-host', (ev) => { ev.drops = []; }).detail, /blocked|reach|host/);
+  assert.equal(g('install-host', (ev) => { ev.drops = []; }).logged, false);
+});
+
 test('R-SBX-10 a case says which way it failed: got through, nothing tried, or no definite refusal', () => {
   const g = (c, f) => { const ev = GOOD[c](); f(ev); return evaluateCase(c, ev); };
   for (const c of ['direct-ip', 'metadata', 'doh-ip']) {

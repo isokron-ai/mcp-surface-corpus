@@ -8,14 +8,14 @@
 // skipped or left out, and every case (all of src/selftest.mjs CASES unless --cases names some)
 // passes on its evidence. The verdict is recomputed here with src/selftest.mjs evaluateCase from the
 // raw records of the case alone (its `case_evidence`, `trace_summary`, `container`, `target_output`,
-// network logger and firewall records), so this check is the source of pass and fail; the harness's
+// network logger, egress proxy and firewall records), so this check is the source of pass and fail; the harness's
 // own `bypass_result` must exist and agree, and can only veto (it also weighs the target's report,
 // which can make a case fail, never pass). Each case also needs its `settings` and a `container`
 // under runsc. Prints one line per case and a total; exits 1 on any failure.
 import { existsSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { readTelemetry } from '../src/telemetry.mjs';
-import { CASES, evaluateCase } from '../src/selftest.mjs';
+import { CASES, caseNet, evaluateCase } from '../src/selftest.mjs';
 import { RUNTIME } from '../src/runsc.mjs';
 import { NETS } from '../src/sandbox-net.mjs';
 
@@ -27,13 +27,15 @@ export function evidenceFrom(mine) {
   const out = mine.filter((r) => r.type === 'target_output' && r.stream === 'stdout');
   if (ce.length !== 1 || ctr.length !== 1 || out.length !== 1 || traces.length > 1) return null;
   const e = ce[0]; const c = ctr[0];
-  const target = NETS.run.target;
+  // The case's own network: the run network, or the install network for the install cases.
+  const target = NETS[caseNet(e.case)]?.target ?? NETS.run.target;
   const net = (type) => mine.filter((r) => r.type === type && r.source === 'netlog' && r.from === target);
   return {
     trace: traces.length ? traces[0].summary : null,
     dns: net('dns_query'),
     conns: net('connection'),
     drops: mine.filter((r) => r.type === 'host_drop' && r.source === 'host'),
+    egress: mine.filter((r) => r.type === 'egress' && r.source === 'proxy'),
     canaryHits: e.canary_hits,
     inspect: e.inspect && typeof e.inspect === 'object' ? { runtime: c.runtime === e.inspect.runtime ? e.inspect.runtime : `${c.runtime}/${e.inspect.runtime}`, mismatches: Array.isArray(e.inspect.mismatches) ? e.inspect.mismatches : ['unreadable'], canaryInEnv: e.inspect.canary_in_env } : null,
     container: { exit: c.exit, timed_out: c.timed_out, oom_killed: c.oom_killed },

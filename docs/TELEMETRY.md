@@ -172,7 +172,7 @@ the client sends first, keeps a little of it, and closes without answering.
 
 ### `egress`
 
-One request to the egress proxy on the install network (source `proxy`).
+One request to the egress proxy on the install network (source `proxy`). The self test's install cases write these too, with the case as subject: `scripts/check-selftest.mjs` recomputes those cases from them (what the proxy refused, and anything it let through).
 
 | Field | Type | Meaning |
 |---|---|---|

@@ -27,6 +27,7 @@ export function selftestTelemetry(file, { bad = null, end = '2026-11-20T03:58:12
     for (const d of ev.dns) tel.write('dns_query', { from: d.from ?? null, proto: d.proto, qname: d.qname, qtype: d.qtype, answer: d.answer }, { ...meta, source: 'netlog' });
     for (const c of ev.conns) tel.write('connection', { ...c, from: c.from ?? null }, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
+    for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
     if (ev.trace) tel.write('trace_summary', { summary: ev.trace }, { source: 'runsc', ...meta });
     tel.write('case_evidence', { case: name, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
     tel.write('bypass_result', { case: name, blocked: true, logged: true, pass: true, evidence: ['trace: x'], detail: 'ok' }, meta);
@@ -55,6 +56,7 @@ export function mutationTelemetry(file, protection) {
     if (protection === 'env-filter') ev.inspect.canaryInEnv = true;
     if (protection === 'read-only') ev.trace.opens_outside[0] = { path: '/var/tmp/isk-1', op: 'write', call: 'openat', n: 1, failed: 0, errno: null };
     if (protection === 'internal-net') for (const c of ev.trace.network.connects) c.errno = 4;
+    if (protection === 'proxy-allowlist') ev.egress = [...ev.egress.filter((e) => e.host !== 'example.com' || e.port !== 443), { host: 'example.com', port: 443, allowed: true, up: 0, down: 0, ms: 3, error: 'EAI_AGAIN' }];
     const meta = { subject: `case:${exp.case}`, role: 'case' };
     tel.write('container', { runtime: ev.inspect.runtime, exit: 0, signal: null, timed_out: false, oom_killed: false, ms: 1 }, meta);
     tel.write('target_output', { stream: 'stdout', bytes: 10, sha256: hex('b'), untrusted: true }, meta);
@@ -62,6 +64,7 @@ export function mutationTelemetry(file, protection) {
     for (const d of ev.dns) tel.write('dns_query', d, { ...meta, source: 'netlog' });
     for (const x of ev.conns) tel.write('connection', x, { ...meta, source: 'netlog' });
     for (const d of ev.drops) tel.write('host_drop', d, { ...meta, source: 'host' });
+    for (const e of ev.egress ?? []) tel.write('egress', e, { ...meta, source: 'proxy' });
     tel.write('case_evidence', { case: exp.case, limits_hit: [], canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches, canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: 512 }, meta);
     tel.write('bypass_result', { case: exp.case, blocked: false, logged: false, pass: false, evidence, detail: 'x' }, meta);
   }
