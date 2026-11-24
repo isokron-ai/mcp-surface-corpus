@@ -186,6 +186,8 @@ jobs:
             cases: direct-ip
           - disable: proxy-allowlist
             cases: install-proxy-host
+          - disable: proxy-allowlist-empty
+            cases: install-proxy-host
     steps:
       - id: which
         name: Name the sandbox commit and the artifact

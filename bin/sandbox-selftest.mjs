@@ -64,6 +64,7 @@ export const MUTATIONS = {
   'read-only': 'the case container has a writable root filesystem',
   'internal-net': 'the run network is made without --internal',
   'proxy-allowlist': 'the install network\'s egress proxy also allows the hosts the install cases must be refused',
+  'proxy-allowlist-empty': 'the install network\'s egress proxy allows nothing (its allowlist names only a host that does not exist)',
 };
 
 export function parseArgs(argv) {
@@ -139,7 +140,8 @@ const INSTALL_CASE_ENV = { ...CASE_ENV, HTTPS_PROXY: PROXY_URL, https_proxy: PRO
  * (as fixed host entries the host resolved) on 443 and nothing else. Returns its name.
  */
 async function startProxy(dk, ctx, { inNet, name, lbl }) {
-  const allow = ctx.disable === 'proxy-allowlist' ? [...PROXY_ALLOWED, ...PROXY_DENIED_HOSTS] : [...PROXY_ALLOWED];
+  const allow = ctx.disable === 'proxy-allowlist' ? [...PROXY_ALLOWED, ...PROXY_DENIED_HOSTS]
+    : ctx.disable === 'proxy-allowlist-empty' ? ['allowlist.invalid'] : [...PROXY_ALLOWED];
   const proxy = dk.name(name, 'proxy');
   const args = helperRunArgs({ name: proxy, image: ctx.images.node24, network: ctx.outNet, create: true, labels: lbl, memory: '256m', publicHosts: ctx.publicHosts, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/egress-proxy.mjs`, String(PROXY_PORT), ...allow] });
   ctx.tel.write('settings', { digest: settingsDigest(settingsManifest(args, { role: 'proxy' })), manifest: settingsManifest(args, { role: 'proxy' }) }, { subject: `case:${name}`, role: 'proxy' });

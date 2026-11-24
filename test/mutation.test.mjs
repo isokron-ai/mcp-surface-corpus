@@ -37,7 +37,7 @@ test('each container mutation takes out exactly its one protection', () => {
   const e = mutateCaseArgs(a, 'env-filter', can);
   assert.ok(e.includes('GITHUB_TOKEN=isk-canary-1'));
   assert.ok(e.indexOf('GITHUB_TOKEN=isk-canary-1') < e.indexOf(IMG), 'before the image, so docker reads it as an option');
-  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net', 'proxy-allowlist']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
+  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net', 'proxy-allowlist', 'proxy-allowlist-empty']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
   assert.deepEqual(a, caseArgs(), 'the original arguments are not changed');
 });
 
@@ -124,4 +124,13 @@ test('R-MUT-01 proxy-allowlist: a proxy that lets the denied hosts through is ca
   assert.equal(checkMutation(mutated('proxy-allowlist', { ev }), 'proxy-allowlist').ok, true);
   assert.equal(checkMutation(mutated('proxy-allowlist', { ev: GOOD['install-proxy-host']() }), 'proxy-allowlist').ok, false, 'a proxy that refused is not the mutation shown');
   assert.equal(mutateHost('proxy-allowlist', () => { throw new Error('no host change'); }), true, 'a change to the proxy, not the host');
+});
+
+test('R-MUT-02 proxy-allowlist-empty: a proxy that refuses everything is caught by the positive control, not passed on its refusals', () => {
+  const ev = GOOD['install-proxy-host']();
+  ev.egress = [...ev.egress.filter((e) => e.allowed !== true), { host: 'registry.npmjs.org', port: 443, allowed: false, error: 'host not on the allowlist' }];
+  const r = checkMutation(mutated('proxy-allowlist-empty', { ev }), 'proxy-allowlist-empty');
+  assert.equal(r.ok, true, r.lines.join('\n'));
+  assert.equal(checkMutation(mutated('proxy-allowlist-empty', { ev: GOOD['install-proxy-host']() }), 'proxy-allowlist-empty').ok, false, 'a working proxy is not the mutation shown');
+  assert.equal(MUTATIONS['proxy-allowlist-empty'].includes('allows nothing'), true);
 });
