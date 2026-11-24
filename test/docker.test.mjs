@@ -4,6 +4,7 @@ import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, chec
 import { WORK_VOLUME_CMD } from '../bin/sandbox-selftest.mjs';
 import { decide, makeProxy } from '../sandbox/egress-proxy.mjs';
 import { connect } from 'node:net';
+import { readFileSync } from 'node:fs';
 
 const IMG = `docker.io/library/node:24-bookworm-slim@sha256:${'d'.repeat(64)}`;
 const sb = (o = {}) => sandboxRunArgs({ name: 'surface-x-s001-s1', image: IMG, network: 'none', cmd: ['node', 'x.js'], ...o });
@@ -174,6 +175,13 @@ test('R-SBX-07 the egress proxy gets registry names as fixed host entries: DNS n
 
 test('R-CI-01 the work volume is chmod-ed before it is chown-ed: root without CAP_FOWNER cannot chmod what it no longer owns', () => {
   assert.ok(WORK_VOLUME_CMD.indexOf('chmod 0750 /work') >= 0 && WORK_VOLUME_CMD.indexOf('chmod') < WORK_VOLUME_CMD.indexOf('chown 65534:65534 /work'), WORK_VOLUME_CMD);
+});
+
+test('R-CI-08 the self test hands the case a work volume that is not empty, so Docker\'s copy-up cannot give /work back to root', () => {
+  assert.match(WORK_VOLUME_CMD, /mkdir \/work\/home && chown 65534:65534 \/work \/work\/home$/);
+  assert.ok(WORK_VOLUME_CMD.indexOf('mkdir /work/home') < WORK_VOLUME_CMD.indexOf('chown'), 'made as root while root still owns /work');
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.match(py, /def case_write_outside[\s\S]*?"inside": \[write\(f"\/work\/inside-\{nonce\}"\)/, 'write-outside also writes inside the work folder');
 });
 
 test('R-CI-03 the process limit a target meets inside gVisor is RLIMIT_NPROC, set on every target container', () => {
