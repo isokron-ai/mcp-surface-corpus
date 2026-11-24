@@ -6,10 +6,16 @@
 //   node stage.mjs reach HOST PORT UDS_PATH ABSTRACT_NAME
 //       tries what unix-socket left listening: TCP HOST:PORT on the run network, the unix socket it
 //       bound in the work volume, and its abstract socket; { reach: [{ to, ok, code, bytes }] }
+//   node stage.mjs grow MS PATH...
+//       the size of each file, then again MS later: whether something still writes them
+//       (background's heartbeats); { grow: [{ path, before, after }] }
+//   node stage.mjs exists PATH...
+//       whether each path exists (links not followed); { exists: { path: true|false } }
 //   node stage.mjs measure DIR
 //       the filesystem DIR (the work volume, mounted read-only) lives on, as statfs gives it, and how
 //       much of it is used; { disk: { work_fs_mb, work_fs_inodes, work_used_mb, work_files } }
 import { readdirSync, lstatSync, statfsSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { connect } from 'node:net';
 import { join } from 'node:path';
 
@@ -58,7 +64,20 @@ async function main(argv) {
     return 0;
   }
   if (argv[0] === 'measure' && argv.length === 2) { say({ disk: measure(argv[1]) }); return 0; }
-  process.stderr.write('usage: stage.mjs reach HOST PORT UDS ABSTRACT | measure DIR\n');
+  if (argv[0] === 'grow' && argv.length >= 3 && /^\d{1,5}$/.test(argv[1])) {
+    const size = (p) => { try { return lstatSync(p).size; } catch { return -1; } };
+    const paths = argv.slice(2);
+    const before = paths.map(size);
+    await sleep(Number(argv[1]));
+    say({ grow: paths.map((path, i) => ({ path, before: before[i], after: size(path) })) });
+    return 0;
+  }
+  if (argv[0] === 'exists' && argv.length >= 2) {
+    const there = (p) => { try { lstatSync(p); return true; } catch { return false; } };
+    say({ exists: Object.fromEntries(argv.slice(1).map((p) => [p, there(p)])) });
+    return 0;
+  }
+  process.stderr.write('usage: stage.mjs reach HOST PORT UDS ABSTRACT | measure DIR | grow MS PATH... | exists PATH...\n');
   return 2;
 }
 

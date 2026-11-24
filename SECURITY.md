@@ -104,7 +104,10 @@ Every container that runs target code (install and server):
 - every container we start keeps at most `container_logs` of its output (`--log-driver local`,
   `max-size`, `max-file`, checked against `docker inspect`), and that is the daemon's default too
   (`daemon.json`, checked by the strict preflight): a target that prints without end, or a flood of
-  DNS queries or CONNECTs at the logger or the proxy, cannot fill a disk with logs;
+  DNS queries or CONNECTs at the logger or the proxy, cannot fill a disk with logs; the logger and
+  the proxy also print at most 20,000 lines each and count the rest, so rotation never drops their
+  first lines unseen; a target's own image is removed once it is done, and a shard stops before a
+  target when Docker's data filesystem has less than 3 GB free;
 - what the harness reads back out of a work volume (lock files) is read by a helper of ours with
   the volume read-only, only once no target container of it is running (checked, not assumed), and
   only when the path resolves to itself inside `/work`: a link anywhere in it, the last part or a
@@ -155,13 +158,17 @@ Self test: `sandbox-selftest.yml` runs `selftest/hostile.py` in this sandbox onc
 the environment, a write outside the work volume, a fork bomb, forged output, links planted to
 outside the work folder with the result readout run over them, unix sockets of the host and abstract
 ones with listeners a later stage tries while the case runs and again once it is torn down, a stdout
-flood), and on the install network, the most permissive one, the way an install with scripts runs (the `node24-build` image,
+flood, a daemon and a nohup child that try to outlive their stage, /proc and /sys searched for the
+host's facts, descriptors run out, the clock set and a measured_at claimed), and on the install
+network, the most permissive one, the way an install with scripts runs (the `node24-build` image,
 `HTTPS_PROXY` to the egress proxy): a CONNECT to a host not on the allowlist and plain HTTP (with a
 positive control: the proxy's own log must also show a working tunnel to the registry, so a proxy
 that refused everything would not pass), to IP
 literals, to ports other than 443, direct egress around the proxy, cloud metadata (directly and
 through the proxy), the host, and an archive bomb (a gibibyte from a megabyte, twenty thousand
-entries, deep folders, entries that climb out, then an allocation past the work volume's cap). A case passes only when the harness's own evidence (trace,
+entries, deep folders, entries that climb out, then an allocation past the work volume's cap, after
+which the volume's image must still be fully reserved), and git submodules over ext::, file:// and
+an outside host, with LFS and an npm git dependency pointing outside too. A case passes only when the harness's own evidence (trace,
 logger, the proxy's own log, firewall log, `docker inspect`, a listener on the host) shows it was
 blocked and logged, never on what the target printed; `scripts/check-selftest.mjs`
 then checks the same from the telemetry alone. Some cases have a later stage, our code run after

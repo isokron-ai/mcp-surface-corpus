@@ -2,8 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { BOMB_LANDED_MB, CASES, READOUT_PATHS, VOLUME_CAP, evaluateCase } from '../src/selftest.mjs';
-import { LOGS } from '../src/docker.mjs';
-import { GOOD, base, trace, ok } from './selftest-fixtures.mjs';
+import { LIMITS, LOGS } from '../src/docker.mjs';
+import { hostFactsIn } from '../bin/sandbox-selftest.mjs';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync as wf } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { GOOD, base, trace, ok, fail } from './selftest-fixtures.mjs';
 
 test('every case of the hostile target has a verdict, and the two lists agree', () => {
   assert.deepEqual(Object.keys(GOOD).sort(), [...CASES].sort());
@@ -293,4 +298,90 @@ test('R-CASE-19 symlink-escape links to the very host folder where the harness k
   const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
   assert.match(py, /targets = LINK_TARGETS \+ \(\[host_canary, f"\{host_canary\}\/canary"\] if host_canary else \[\]\)/);
   assert.ok(!/_temp\/selftest\/host-canary/.test(py), 'no guessed runner path');
+});
+
+test('R-SBX-30 install-archive-bomb also checks the volume filesystem\'s image is still fully reserved after it zero-ranges and punches its own files', () => {
+  const ev = GOOD['install-archive-bomb'](); ev.stage.disk.reservation_intact = false;
+  const v = evaluateCase('install-archive-bomb', ev);
+  assert.equal(v.blocked, false);
+  assert.match(v.detail, /^got through: the volume filesystem's image file has holes after the bomb/);
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.match(py, /\("zero_range", 0x10, 0, 32 << 20\), \("punch_hole", 0x02 \| 0x01, 32 << 20, 16 << 20\)/);
+  assert.ok(py.indexOf('out["punch"] = punch_and_zero') < py.indexOf('out["fallocate"] = fallocate'), 'before the volume is full');
+  const st = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
+  assert.match(st, /imageHoles\(`\$\{ctx\.cfg\.install_dir\}\/volume-fs\.img`\)/);
+});
+
+// The deferred cases (part B).
+caseTest('R-CASE-23 background: a daemon (double fork, setsid) and a nohup child beat while the case runs and stop when its stage is torn down', 'background', (ev) => { ev.stage.grow[1].after = 90; });
+caseTest('R-CASE-24 proc-sys: what /proc and /sys tell a target holds none of the host\'s facts', 'proc-sys', (ev) => { ev.stage.host_facts.seen = ['kernel']; });
+caseTest('R-CASE-25 fd-exhaustion: descriptors run out at the nofile limit with EMFILE, and the limit cannot be raised past it', 'fd-exhaustion', (ev) => { ev.trace.network.sockets[0] = { ...ev.trace.network.sockets[0], n: 20000, failed: 0, errno: null }; });
+caseTest('R-CASE-26 clock-tamper: the clock cannot be set, and a time the target claims never becomes the harness\'s', 'clock-tamper', (ev) => { ev.stage.clock.forged_in_telemetry = true; });
+caseTest('R-CASE-27 install-git-submodule: ext:: never runs, file:// is not followed, the outside host is refused, and the superproject clones', 'install-git-submodule', (ev) => { ev.stage.git.file_followed = true; });
+
+test('R-CASE-23 background needs its control (heartbeats while it runs) and fails on any heartbeat or host process after teardown', () => {
+  const g = (f) => { const ev = GOOD.background(); f(ev); return evaluateCase('background', ev); };
+  assert.match(g((ev) => { ev.stage.grow[0].after = 99; }).detail, /^got through: a process of the case kept running after its stage was torn down \(\/work\/hb-1-daemon grew 59 bytes\)/);
+  assert.match(g((ev) => { ev.stage.host_procs = 2; }).detail, /^got through: 2 process\(es\) of the case outlived it on the host/);
+  assert.match(g((ev) => { ev.stage.grow_before[1].after = ev.stage.grow_before[1].before; }).detail, /^not shown to work: the heartbeats did not grow while the case ran/);
+  assert.equal(g((ev) => { ev.stage.host_procs = null; }).pass, false, 'the host must be checked');
+  assert.equal(g((ev) => { ev.trace.process.clones = 1; }).logged, false);
+});
+
+test('R-CASE-24 proc-sys fails when a host fact shows in the output, and the harness looks for real facts of its host', () => {
+  const g = (f) => { const ev = GOOD['proc-sys'](); f(ev); return evaluateCase('proc-sys', ev); };
+  assert.match(g((ev) => { ev.stage.host_facts.seen = ['kernel', 'boot_id']; }).detail, /^got through: the target's output holds host facts \(kernel, boot_id\)/);
+  assert.match(g((ev) => { ev.stage.host_facts.checked = ['kernel']; }).detail, /^not measured: only 1 host fact/);
+  assert.match(g((ev) => { ev.output.bytes = 100; }).detail, /^nothing was tried/);
+  assert.equal(g((ev) => { ev.trace.opens_outside = ev.trace.opens_outside.slice(0, 2); }).logged, false);
+  const osInfo = { release: () => '7.0.0-1017-azure', hostname: () => 'runnervm42abc', networkInterfaces: () => ({ eth0: [{ family: 'IPv4', address: '10.1.0.33', internal: false, mac: '7c:1e:52:aa:bb:cc' }], docker0: [{ family: 'IPv4', address: '172.17.0.1', internal: false, mac: '02:42:00:00:00:01' }], lo: [{ family: 'IPv4', address: '127.0.0.1', internal: true }] }) };
+  const read = (f) => (f.endsWith('boot_id') ? '5f2c1a0e-aaaa-bbbb-cccc-0123456789ab\n' : 'f00dfeedf00dfeedf00dfeedf00dfeed\n');
+  const cfg = { docker_root: '/var/lib/isokron-docker' };
+  const gvisor = hostFactsIn('Linux version 4.4.0 #1 SMP Sun Jan 10 15:06:54 PST 2016 surface 10.213.53.3', cfg, { read, osInfo });
+  assert.deepEqual(gvisor.checked.sort(), ['boot_id', 'docker_root', 'hostname', 'ipv4 eth0', 'kernel', 'mac eth0', 'machine_id'].sort());
+  assert.deepEqual(gvisor.seen, []);
+  const runc = hostFactsIn('Linux version 7.0.0-1017-azure ... overlay /var/lib/isokron-docker/overlay2/x ... 5F2C1A0E-aaaa-bbbb-cccc-0123456789ab', cfg, { read, osInfo });
+  assert.deepEqual(runc.seen.sort(), ['boot_id', 'docker_root', 'kernel']);
+});
+
+test('R-CASE-25 fd-exhaustion: past the limit, or stopped without EMFILE, is no pass', () => {
+  const g = (f) => { const ev = GOOD['fd-exhaustion'](); f(ev); return evaluateCase('fd-exhaustion', ev); };
+  assert.match(g((ev) => { ev.report.result.opened = 9000; }).detail, /^got through: 9000 descriptors opened, past the limit of 4096/);
+  assert.match(g((ev) => { ev.trace.network.sockets[0].errno = 12; }).detail, /^not shown: the sockets stopped at 4092 without EMFILE/);
+  assert.match(g((ev) => { ev.trace.network.sockets = []; }).detail, /^nothing was tried/);
+  assert.equal(LIMITS.nofile, '4096');
+});
+
+test('R-CASE-26 clock-tamper: a clock call that worked, or the host clock jumping, fails it; it needs the harness\'s clock check', () => {
+  const g = (f) => { const ev = GOOD['clock-tamper'](); f(ev); return evaluateCase('clock-tamper', ev); };
+  assert.match(g((ev) => { ev.trace.privileged[0] = ok({ name: 'settimeofday' }); }).detail, /^got through: settimeofday worked/);
+  assert.match(g((ev) => { ev.stage.clock.drift_ms = 3_600_000; }).detail, /^got through: the host's clock moved 3600000 ms/);
+  assert.match(g((ev) => { ev.stage = {}; }).detail, /^not measured/);
+  assert.match(g((ev) => { ev.trace.privileged = []; }).detail, /^nothing was tried/);
+});
+
+test('R-CASE-27 install-git-submodule: ext:: by its trace alone, the proxy letting the host through, or no clone, is no pass', () => {
+  const g = (f) => { const ev = GOOD['install-git-submodule'](); f(ev); return evaluateCase('install-git-submodule', ev); };
+  assert.match(g((ev) => { ev.trace.exec.push(fail({ path: '/tmp/isk-ext-1' })); }).detail, /^got through: a submodule's ext:: transport ran/, 'even an attempt to run it');
+  assert.match(g((ev) => { ev.egress.push({ host: 'evil.example', port: 443, allowed: true, up: 1, down: 1, ms: 1 }); }).detail, /^got through: the proxy let evil\.example through/);
+  assert.match(g((ev) => { ev.stage.git.cloned = false; }).detail, /^not shown to work: the superproject did not clone/);
+  assert.equal(g((ev) => { ev.egress = []; }).logged, false, 'the outside host must reach the proxy\'s log');
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  for (const u of ['url = ext::{marker} %S', 'url = file://{src}', 'url = https://evil.example/isk-{nonce}.git', 'url = https://evil.example/isk-{nonce}.git/info/lfs', 'git+https://evil.example/isk-npm-{nonce}.git']) assert.ok(py.includes(u), u);
+  assert.ok(!/https?:\/\/(?!evil\.example|git-lfs\.github\.com\/spec)[a-z0-9.-]+\.[a-z]/i.test(py.slice(py.indexOf('def case_install_git_submodule'), py.indexOf('# background:'))), 'outside hosts are reserved names only');
+});
+
+test('R-CASE-23 R-CASE-27 the later stage\'s grow and exists commands', () => {
+  const d = mkdtempSync(join(tmpdir(), 'stage-'));
+  const a = join(d, 'a'); const b = join(d, 'b');
+  wf(a, 'x'); wf(b, 'x');
+  // Something else keeps writing a (a process of its own: spawnSync blocks this one).
+  const writer = spawn('sh', ['-c', 'while true; do printf y >> "$1"; sleep 0.05; done', 'sh', a], { stdio: 'ignore' });
+  const stage = new URL('../selftest/stage.mjs', import.meta.url).pathname;
+  const r = spawnSync(process.execPath, [stage, 'grow', '400', a, b, join(d, 'none')], { encoding: 'utf8' });
+  writer.kill('SIGKILL');
+  const grow = JSON.parse(r.stdout).grow;
+  assert.ok(grow[0].after > grow[0].before && grow[1].after === grow[1].before && grow[2].before === -1, r.stdout);
+  const e = JSON.parse(spawnSync(process.execPath, [stage, 'exists', a, join(d, 'none')], { encoding: 'utf8' }).stdout).exists;
+  assert.deepEqual(e, { [a]: true, [join(d, 'none')]: false });
 });

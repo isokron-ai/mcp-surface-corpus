@@ -136,10 +136,11 @@ test('R-SBX-23 install-runsc.sh puts Docker\'s volumes on a filesystem of their 
   const at = (x) => { const i = body.indexOf(x); assert.ok(i >= 0, x); return i; };
   assert.ok(at('docker volume ls -q') < at('if ! mountpoint -q "$volumes_dir"'), 'no volume may exist yet');
   assert.ok(at('stop_docker\n  make_fs "$install_dir/volume-fs.img" "$volume_fs_mb" "$volume_fs_inodes"') < at('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'mounted while the daemon is stopped, and nodiscard: seen on GitHub, the inner ext4 discarded what it freed');
-  assert.ok(at('fallocate -l "${2}M" "$1"') < at('mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -N "$3" "$1"'), 'reserved up front, and nodiscard: a discard would punch holes through the reservation (seen on GitHub: the runner lost 2 GB as the bomb filled the volume)');
+  const mk = sh.slice(sh.indexOf('make_fs() {'));
+  assert.ok(mk.indexOf('fallocate -l "${2}M" "$1"') >= 0 && mk.indexOf('fallocate -l "${2}M" "$1"') < mk.indexOf('mkfs.ext4 -q -F -m 0 -E nodiscard,lazy_itable_init=0,lazy_journal_init=0 -N "$3" "$1"'), 'reserved up front, and nodiscard: a discard would punch holes through the reservation (seen on GitHub: the runner lost 2 GB as the bomb filled the volume)');
   assert.ok(at('mountpoint -q "$volumes_dir" || fail') < at('systemctl restart docker'), 'checked before the daemon comes back');
   assert.ok(at('systemctl disable --now fstrim.timer') < at('systemctl restart docker'), 'fstrim would punch the same holes later');
-  assert.match(body, /lazy_itable_init=0,lazy_journal_init=0/, 'seen on GitHub: the lazy init zeroed 512 MB of inode tables later, which the loop device turned into holes');
+  assert.match(sh, /lazy_itable_init=0,lazy_journal_init=0/, 'seen on GitHub: the lazy init zeroed 512 MB of inode tables later, which the loop device turned into holes');
   assert.ok(!/mount -o loop[^"]*(?:noexec|discard)[^"]*" "\$install_dir\/(?:volume|docker)-fs\.img"/.test(sh), 'targets run programs from their work volume and images, and no online discard');
   assert.ok(!/discard/.test(sh.replace(/nodiscard/g, '').replace(/^\s*#.*$/gm, '')), 'no discard anywhere but nodiscard');
 });
@@ -160,4 +161,20 @@ test('R-SBX-26 install-runsc.sh makes the pinned log limits the daemon\'s defaul
   assert.match(sh, /c\["log-driver"\] = process\.env\.LOG_DRIVER;\n\s+c\["log-opts"\] = \{ "max-size": process\.env\.LOG_MAX_SIZE, "max-file": process\.env\.LOG_MAX_FILE \};/);
   assert.match(sh, /LOG_DRIVER="\$log_driver" LOG_MAX_SIZE="\$log_max_size" LOG_MAX_FILE="\$log_max_file"/);
   assert.match(sh, /\[\[ "\$log_driver" = local && "\$log_max_size" =~/);
+});
+
+test('R-SBX-31 install-runsc.sh checks the runner has room for every reservation, plus a margin, before making any, and logs df before and after', () => {
+  const sh = readFileSync(join(root, 'scripts/install-runsc.sh'), 'utf8');
+  const h = sh.slice(sh.indexOf('headroom() {'), sh.indexOf('\n}\n', sh.indexOf('headroom() {')));
+  for (const x of ['mountpoint -q "$log_dir" || need=$((need + trace_fs_mb))', 'mountpoint -q "$docker_root" || need=$((need + docker_fs_mb))', 'mountpoint -q "$docker_root/volumes" || need=$((need + volume_fs_mb))', 'df -B1M --output=avail "$install_dir"', '[ "$avail" -ge $((need + MARGIN_MB)) ] || fail "the runner\'s disk has ${avail} MB free; the trace, Docker data and volume filesystems need ${need} MB reserved up front']) assert.ok(h.includes(x), x);
+  assert.ok(sh.indexOf('|| headroom') < sh.indexOf('make_fs "$install_dir/trace-fs.img"'), 'before the first reservation');
+  assert.ok(sh.indexOf('echo "runner disk after the reservations:') > sh.indexOf('make_fs "$install_dir/volume-fs.img"'));
+  assert.match(sh, /^MARGIN_MB=4096$/m);
+});
+
+test('R-SBX-32 the trace filesystem is made like the others: reserved, eager inode tables, nodiscard', () => {
+  const sh = readFileSync(join(root, 'scripts/install-runsc.sh'), 'utf8');
+  assert.match(sh, /make_fs "\$install_dir\/trace-fs\.img" "\$trace_fs_mb" "\$TRACE_FS_INODES"\n\s+mount -o loop,nosuid,nodev,noexec,nodiscard "\$install_dir\/trace-fs\.img" "\$log_dir"/);
+  assert.ok(sh.indexOf('make_fs() {') < sh.indexOf('make_fs "$install_dir/trace-fs.img"'), 'defined before use');
+  assert.ok(!/mkfs\.ext4 -q -F -m 0 "\$img"/.test(sh), 'no mkfs of its own any more');
 });

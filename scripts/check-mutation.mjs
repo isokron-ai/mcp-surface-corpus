@@ -45,6 +45,16 @@ export const EXPECT = {
   // A work volume on the runner's own disk: the bomb's allocation costs the runner its disk.
   // Docker's default for a container's output (json-file, no limit): the flood is kept whole.
   'log-cap': { case: 'output-flood', why: /got through: Docker kept \d+ MB of the case's output, past its cap/, blocked: false },
+  // GIT_CONFIG_* allowing every transport: ext:: runs, file:// is followed.
+  'git-env': { case: 'install-git-submodule', why: /got through: (?:a submodule's ext:: transport ran|a file:\/\/ submodule was followed)/, blocked: false },
+  // TERM only: the daemons ignore it and beat on after the stage.
+  'soft-teardown': { case: 'background', why: /^got through: a process of the case kept running after its stage was torn down/, blocked: false, logged: true },
+  // runc: /proc and /sys are the host kernel's, and the target prints its facts.
+  'runc-proc': { case: 'proc-sys', why: /got through: the target's output holds host facts/, blocked: false },
+  // No --ulimit nofile: the sockets go past the limit.
+  nofile: { case: 'fd-exhaustion', why: /^got through: \d+ descriptors opened, past the limit of 4096/, blocked: false },
+  // The target's claimed time as the harness's: the telemetry holds it.
+  'target-time': { case: 'clock-tamper', why: /^got through: a time the target claimed reached the telemetry/, blocked: false, logged: true },
   'volume-cap': { case: 'install-archive-bomb', why: /^got through: (?:the runner's disk lost \d+ MB|the work volume's filesystem holds)/, blocked: false },
 };
 

@@ -4,7 +4,8 @@
 #   - the hostile self test: selftest/hostile.py in the real sandbox, once per escape attempt (direct
 #     IP, DNS over HTTPS by IP, raw socket, IPv6, ICMP, the Docker host, cloud metadata, a token in
 #     the environment, a write outside the work volume, a fork bomb, forged output, planted links,
-#     unix sockets, a stdout flood, and on the install network the proxy cases and an archive bomb), passing only
+#     unix sockets, a stdout flood, background daemons, /proc and /sys, descriptors, the clock, and on
+#     the install network the proxy cases, an archive bomb and git submodules), passing only
 #     when scripts/check-selftest.mjs recomputes every case as blocked and logged from the telemetry
 #     alone (docs/TELEMETRY.md). The sandbox is the one every corpus target gets: gVisor (runsc)
 #     installed and registered exactly as gvisor.json pins it, user 65534, no capabilities, a

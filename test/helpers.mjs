@@ -104,6 +104,7 @@ export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, fs = {} 
     ...fs,
     data: mk('docker-fs.img', cfg.docker_fs_mb, cfg.docker_fs_inodes, fs.data),
     volumes: mk('volume-fs.img', cfg.volume_fs_mb, cfg.volume_fs_inodes, fs.volumes),
+    trace: mk('trace-fs.img', cfg.trace_fs_mb, 65536, fs.trace),
   };
   const loops = { loop8: F.data, loop9: F.volumes };
   const mountinfo = [
@@ -123,7 +124,7 @@ export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, fs = {} 
       return { status: 1, stdout: '' };
     }
     if (cmd === 'stat' && argv[0] === '-c') {
-      const l = Object.values(loops).find((x) => x.backing === argv[2]);
+      const l = [...Object.values(loops), F.trace].find((x) => x.backing === argv[2]);
       return l ? { status: 0, stdout: `${l.blocks} 512 ${l.sectors * 512}\n` } : { status: 1, stdout: '' };
     }
     if (cmd === 'sudo' && argv[1] === 'stat' && argv[2] === '-f') {

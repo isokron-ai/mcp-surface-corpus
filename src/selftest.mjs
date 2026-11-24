@@ -27,8 +27,8 @@ import { loadRunscConfig } from './runsc.mjs';
  * which allows registry.npmjs.org on 443 and nothing else). That network is the most permissive
  * one: the proxy is its only door, and these cases try every other way through it and around it.
  */
-export const INSTALL_CASES = ['install-proxy-host', 'install-proxy-ip', 'install-proxy-port', 'install-direct', 'install-metadata', 'install-host', 'install-archive-bomb'];
-export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', 'output-flood', ...INSTALL_CASES];
+export const INSTALL_CASES = ['install-proxy-host', 'install-proxy-ip', 'install-proxy-port', 'install-direct', 'install-metadata', 'install-host', 'install-archive-bomb', 'install-git-submodule'];
+export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', 'output-flood', 'background', 'proc-sys', 'fd-exhaustion', 'clock-tamper', ...INSTALL_CASES];
 /** The sandbox network a case runs on: 'install' for the install cases, else 'run'. */
 export const caseNet = (name) => (INSTALL_CASES.includes(name) ? 'install' : 'run');
 /** What the install cases ask the proxy for, which it must refuse (the proxy-allowlist mutation lets these through). */
@@ -334,14 +334,16 @@ const RULES = {
     // writable), and the case ran to its end (so the allocation past the cap was tried).
     const filled = !!d && Number(d.work_used_mb) >= BOMB_LANDED_MB;
     const ran = !!ev.container && ev.container.exit === 0 && ev.container.timed_out === false;
-    const blocked = hostOk && capOk && climbs.length >= 3 && !landed.length && !said && filled && ran;
+    const intact = !!d && d.reservation_intact === true;
+    const blocked = hostOk && capOk && climbs.length >= 3 && !landed.length && !said && filled && ran && intact;
     const logged = climbs.length >= 3 && !!d && drop !== null;
     const detail = blocked ? `the work volume's own filesystem (${Number(d.work_fs_mb)} MB, ${Number(d.work_fs_inodes)} inodes) held the bomb, the runner's disk did not move, and nothing climbed out`
       : !d ? 'not measured: no measurement of the work volume after the case'
         : drop === null ? 'not measured: the runner\'s free disk could not be read'
           : !hostOk ? `got through: the runner's disk lost ${drop} MB while the case ran (at most ${HOST_DROP_MB} MB allowed)`
           : !capOk ? `got through: the work volume's filesystem holds ${Number(d.work_fs_mb)} MB and ${Number(d.work_fs_inodes)} inodes, past its cap of ${VOLUME_CAP.mb} MB and ${VOLUME_CAP.inodes}`
-            : landed.length ? `got through: an archive entry was written outside the work folder (${String(landed[0].path).slice(0, 80)})`
+            : !intact ? 'got through: the volume filesystem\'s image file has holes after the bomb: the runner\'s disk pays for what the volume holds'
+              : landed.length ? `got through: an archive entry was written outside the work folder (${String(landed[0].path).slice(0, 80)})`
               : said ? 'got through: the target reports an allocation past the cap'
                 : !filled ? `not shown to work: only ${Number(d.work_used_mb)} MB landed in the work volume (at least ${BOMB_LANDED_MB} expected), so the bomb never filled it`
                   : !ran ? `not shown to work: the case did not run to its end (exit ${ev.container ? ev.container.exit : 'unknown'}${ev.container && ev.container.timed_out ? ', time limit' : ''})`
@@ -368,6 +370,98 @@ const RULES = {
           : !hostOk ? `got through: the runner's disk lost ${drop} MB while the case ran (at most ${HOST_DROP_MB} MB allowed)`
             : `nothing was tried: Docker kept ${mb(bytes)} MB of the case's output, less than one log file (${mb(file)} MB)`;
     return verdict(blocked, logged, [`output: Docker kept ${bytes} bytes (cap ${LOGS.maxBytes})`, drop !== null ? `host: the runner's disk lost ${drop} MB while the case ran` : 'host: not measured'], detail);
+  },
+  // A daemon (double fork, setsid) and a nohup-style child, both ignoring TERM, beating into the work
+  // volume. While the case runs they must beat (the positive control); once its stage is torn down
+  // nothing may beat on, and no process of it may be left on the host.
+  background: (ev) => {
+    const st = stageOf(ev);
+    const before = list(st.grow_before).filter((g) => g && typeof g === 'object');
+    const after = list(st.grow).filter((g) => g && typeof g === 'object');
+    const beats = (g) => Number(g.after) > Number(g.before);
+    const control = before.length >= 2 && before.every(beats);
+    const grew = after.filter(beats);
+    const procs = Number.isInteger(st.host_procs) ? st.host_procs : null;
+    const clones = Number((ev.trace && ev.trace.process && ev.trace.process.clones) || 0);
+    const blocked = control && after.length >= 2 && !grew.length && procs === 0;
+    const logged = control && after.length >= 2 && clones >= 3;
+    const detail = blocked ? 'nothing the case started outlived its stage: both heartbeats stopped when it was torn down'
+      : grew.length ? `got through: a process of the case kept running after its stage was torn down (${String(grew[0].path).slice(0, 80)} grew ${Number(grew[0].after) - Number(grew[0].before)} bytes)`
+        : procs !== null && procs > 0 ? `got through: ${procs} process(es) of the case outlived it on the host`
+          : !control ? 'not shown to work: the heartbeats did not grow while the case ran, so their stopping proves nothing'
+            : 'not measured: the later stage did not run';
+    return verdict(blocked, logged, [`trace: ${clones} clone calls`, ...before.map((g) => `while it ran: ${String(g.path).slice(0, 70)} ${g.before} -> ${g.after} bytes`), ...after.map((g) => `after teardown: ${String(g.path).slice(0, 70)} ${g.before} -> ${g.after} bytes`), `host: ${procs ?? '?'} process(es) of the case`], detail);
+  },
+  // What /proc and /sys tell a target about the machine: none of the host's facts (its kernel, boot
+  // id, machine id, host name, addresses, Docker's data-root) may show in what the target printed.
+  'proc-sys': (ev) => {
+    const hf = stageOf(ev).host_facts && typeof stageOf(ev).host_facts === 'object' ? stageOf(ev).host_facts : null;
+    const checked = hf ? list(hf.checked) : [];
+    const seen = hf ? list(hf.seen) : [];
+    const reads = list(ev.trace && ev.trace.opens_outside).filter((o) => o.op === 'read' && /^\/(?:proc|sys)\//.test(String(o.path)));
+    const bytes = ev.output ? Number(ev.output.bytes) || 0 : 0;
+    const blocked = !!hf && checked.length >= 3 && !seen.length && bytes >= 2000;
+    const logged = !!hf && reads.length >= 5;
+    const detail = blocked ? `the target read /proc and /sys and printed ${bytes} bytes, with none of the ${checked.length} host facts in them`
+      : seen.length ? `got through: the target's output holds host facts (${seen.join(', ').slice(0, 120)})`
+        : !hf ? 'not measured: the harness did not look for host facts'
+          : checked.length < 3 ? `not measured: only ${checked.length} host fact(s) could be read on the host`
+            : `nothing was tried: the target printed ${bytes} bytes`;
+    return verdict(blocked, logged, [`host: looked for ${checked.join(', ').slice(0, 150)}`, `output: ${bytes} bytes`, ...reads.slice(0, 8).map((o) => `trace: read ${String(o.path).slice(0, 80)}${o.failed ? ` failed ${o.failed}/${o.n}` : ''}`)], detail);
+  },
+  // Descriptors until refused: the process meets EMFILE at --ulimit nofile, and cannot raise it past.
+  'fd-exhaustion': (ev) => {
+    const s = net(ev.trace).sockets.find((x) => x.family === 'AF_UNIX' && /SOCK_DGRAM/.test(String(x.type)));
+    const limit = Number(LIMITS.nofile);
+    const worked = s ? s.n - s.failed : 0;
+    const said = Number(resultOf(ev.report).opened) || 0;
+    const blocked = !!s && s.failed >= 1 && s.errno === 24 && worked <= limit && said <= limit;
+    const logged = !!s && s.n >= 100;
+    const detail = blocked ? `the descriptor limit (${limit}) refused the ${worked + 1}th socket with EMFILE`
+      : s && (worked > limit || said > limit) ? `got through: ${Math.max(worked, said)} descriptors opened, past the limit of ${limit}`
+        : !s ? 'nothing was tried: no socket calls traced'
+          : `not shown: the sockets stopped at ${worked} without EMFILE (errno ${s.errno})`;
+    return verdict(blocked, logged, [s ? `trace: socket AF_UNIX SOCK_DGRAM ${s.n} calls, ${s.failed} refused (errno ${s.errno})` : 'trace: no socket calls', `limit: nofile ${limit}`], detail);
+  },
+  // Setting the clock is refused, the host's clock does not jump, and a time the target claims
+  // (its measured_at, forged records) never becomes the harness's time in the telemetry.
+  'clock-tamper': (ev) => {
+    const priv = list(ev.trace && ev.trace.privileged).filter((p) => p.name === 'settimeofday' || p.name === 'clock_settime');
+    const c = stageOf(ev).clock && typeof stageOf(ev).clock === 'object' ? stageOf(ev).clock : null;
+    const set = priv.filter((p) => p.failed < p.n);
+    const drift = c && Number.isFinite(Number(c.drift_ms)) ? Math.abs(Number(c.drift_ms)) : null;
+    const blocked = priv.length >= 2 && !set.length && !!c && c.forged_in_telemetry === false && drift !== null && drift < 2000;
+    const logged = priv.length >= 2 && !!c;
+    const detail = blocked ? 'the clock could not be set, the host\'s clock held, and no time the target claimed reached the telemetry'
+      : set.length ? `got through: ${set[0].name} worked`
+        : c && c.forged_in_telemetry === true ? 'got through: a time the target claimed reached the telemetry'
+          : drift !== null && drift >= 2000 ? `got through: the host's clock moved ${drift} ms against its monotonic clock while the case ran`
+            : !c ? 'not measured: the harness did not check the clock'
+              : `nothing was tried: ${priv.length} clock call(s) traced, at least 2 expected`;
+    return verdict(blocked, logged, [...priv.map((p) => `trace: ${p.name} failed ${p.failed}/${p.n} (errno ${p.errno})`), c ? `host: clock drift ${drift} ms; forged time in telemetry: ${c.forged_in_telemetry ? 'YES' : 'no'}` : 'host: not checked'], detail);
+  },
+  // Submodules over ext:: (would run a command), file:// and an outside host, LFS pointing outside,
+  // an npm git dependency: ext:: never runs, file:// is not followed, the outside host is refused
+  // by the proxy, and the superproject itself clones (the positive control).
+  'install-git-submodule': (ev) => {
+    const ex = stageOf(ev).git && typeof stageOf(ev).git === 'object' ? stageOf(ev).git : null;
+    const execs = list(ev.trace && ev.trace.exec);
+    const marker = execs.filter((e) => /^\/tmp\/isk-ext-/.test(String(e.path)));
+    const extRan = marker.length > 0 || (ex && ex.ext_ran === true);
+    const fileFollowed = !!ex && ex.file_followed === true;
+    const cloned = !!ex && ex.cloned === true;
+    const through = letThrough(ev);
+    const refused = egressOf(ev).filter((e) => e.allowed === false && /(?:^|\.)evil\.example$/.test(String(e.host)));
+    const gitRan = execs.some((e) => /\/git$/.test(String(e.path)) && e.failed < e.n);
+    const blocked = cloned && !extRan && !fileFollowed && !through.length;
+    const logged = refused.length >= 1 && gitRan && !!ex;
+    const detail = blocked ? 'the superproject cloned; ext:: never ran, file:// was not followed, and the proxy refused the outside host'
+      : extRan ? 'got through: a submodule\'s ext:: transport ran'
+        : fileFollowed ? 'got through: a file:// submodule was followed'
+          : through.length ? `got through: the proxy let ${through[0].host} through`
+            : !ex ? 'not measured: the later stage did not run'
+              : 'not shown to work: the superproject did not clone, so nothing of its submodules was tried';
+    return verdict(blocked, logged, [ex ? `later stage: cloned ${ex.cloned}, file:// followed ${ex.file_followed}, ext:: ran ${ex.ext_ran}` : 'later stage: none', ...marker.map((e) => `trace: exec ${String(e.path).slice(0, 60)}`), ...refused.slice(0, 3).map((e) => `proxy: ${e.host}:${e.port ?? '?'} refused (${e.error ?? '?'})`), `trace: git ${gitRan ? 'ran' : 'did not run'}`], detail);
   },
   'output-forgery': (ev) => {
     const forged = list(ev.trace && ev.trace.opens_outside).filter((o) => o.op === 'write' && String(o.path).startsWith('/opt/surface/'));

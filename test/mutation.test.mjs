@@ -6,6 +6,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MUTATIONS, STAGE_MS, mutateCaseArgs, mutateHost, parseArgs } from '../bin/sandbox-selftest.mjs';
+import { readFileSync } from 'node:fs';
+import { LIMITS } from '../src/docker.mjs';
 import { EXPECT, checkMutation } from '../scripts/check-mutation.mjs';
 import { sandboxRunArgs } from '../src/docker.mjs';
 import { Telemetry } from '../src/telemetry.mjs';
@@ -37,7 +39,7 @@ test('each container mutation takes out exactly its one protection', () => {
   const e = mutateCaseArgs(a, 'env-filter', can);
   assert.ok(e.includes('GITHUB_TOKEN=isk-canary-1'));
   assert.ok(e.indexOf('GITHUB_TOKEN=isk-canary-1') < e.indexOf(IMG), 'before the image, so docker reads it as an option');
-  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net', 'proxy-allowlist', 'proxy-allowlist-empty', 'readout-follows-links', 'no-teardown', 'volume-cap']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
+  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net', 'proxy-allowlist', 'proxy-allowlist-empty', 'readout-follows-links', 'no-teardown', 'volume-cap', 'soft-teardown', 'target-time']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
   assert.deepEqual(a, caseArgs(), 'the original arguments are not changed');
 });
 
@@ -180,4 +182,47 @@ test('R-MUT-06 log-cap: a container that keeps its output as Docker does by defa
   assert.equal(checkMutation(mutated('log-cap', { ev: GOOD['output-flood']() }), 'log-cap').ok, false, 'a flood kept within the cap is not the mutation shown');
   const disk = GOOD['output-flood'](); disk.stage.disk.host_free_drop_mb = 900;
   assert.match(checkMutation(mutated('log-cap', { ev: disk }), 'log-cap').lines.join('\n'), /another reason/);
+});
+
+test('R-MUT-07 git-env: GIT_CONFIG_* allowing every transport is caught by install-git-submodule (ext:: runs, file:// is followed)', () => {
+  const b = mutateCaseArgs(caseArgs(), 'git-env', {});
+  assert.ok(b.includes('GIT_CONFIG_KEY_1=protocol.ext.allow') && b.indexOf('GIT_CONFIG_COUNT=3') < b.indexOf(IMG));
+  for (const f of [(ev) => { ev.stage.git.ext_ran = true; }, (ev) => { ev.stage.git.file_followed = true; }]) {
+    const ev = GOOD['install-git-submodule'](); f(ev); ev.inspect.mismatches = ['environment has GIT_CONFIG_COUNT'];
+    const r = checkMutation(mutated('git-env', { ev }), 'git-env');
+    assert.equal(r.ok, true, r.lines.join('\n'));
+  }
+  assert.equal(checkMutation(mutated('git-env', { ev: GOOD['install-git-submodule']() }), 'git-env').ok, false);
+});
+
+test('R-MUT-08 soft-teardown: a stage torn down with TERM only is caught by background\'s heartbeats', () => {
+  const ev = GOOD.background(); ev.stage.grow[0].after = 80;
+  assert.equal(checkMutation(mutated('soft-teardown', { ev }), 'soft-teardown').ok, true);
+  assert.equal(checkMutation(mutated('soft-teardown', { ev: GOOD.background() }), 'soft-teardown').ok, false);
+  assert.match(MUTATIONS['soft-teardown'], /--signal TERM/);
+  assert.equal(STAGE_MS.background > 0 && STAGE_MS.background <= 60_000, true);
+});
+
+test('R-MUT-09 runc-proc: proc-sys under runc is caught by the host facts in its output, not by the runtime alone', () => {
+  assert.equal(mutateCaseArgs(caseArgs(), 'runc-proc', {})[caseArgs().indexOf('--runtime') + 1], 'runc');
+  const ev = GOOD['proc-sys'](); ev.inspect.runtime = 'runc'; ev.stage.host_facts.seen = ['kernel'];
+  assert.equal(checkMutation(mutated('runc-proc', { ev }), 'runc-proc').ok, true);
+  const bare = GOOD['proc-sys'](); bare.inspect.runtime = 'runc';
+  assert.match(checkMutation(mutated('runc-proc', { ev: bare }), 'runc-proc').lines.join('\n'), /another reason/, 'not run under gVisor is not enough: a host fact must show');
+});
+
+test('R-MUT-10 nofile: a container without the descriptor limit is caught by fd-exhaustion', () => {
+  const b = mutateCaseArgs(caseArgs(), 'nofile', {});
+  assert.ok(!b.includes(`nofile=${LIMITS.nofile}:${LIMITS.nofile}`) && caseArgs().length - b.length === 2);
+  const ev = GOOD['fd-exhaustion'](); ev.trace.network.sockets[0] = { ...ev.trace.network.sockets[0], n: 20000, failed: 0, errno: null };
+  assert.equal(checkMutation(mutated('nofile', { ev }), 'nofile').ok, true);
+  assert.equal(checkMutation(mutated('nofile', { ev: GOOD['fd-exhaustion']() }), 'nofile').ok, false);
+});
+
+test('R-MUT-11 target-time: a harness that takes the target\'s claimed time is caught by clock-tamper', () => {
+  const ev = GOOD['clock-tamper'](); ev.stage.clock.forged_in_telemetry = true;
+  assert.equal(checkMutation(mutated('target-time', { ev }), 'target-time').ok, true);
+  assert.equal(checkMutation(mutated('target-time', { ev: GOOD['clock-tamper']() }), 'target-time').ok, false);
+  const st = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
+  assert.ok(st.indexOf('if (Number.isFinite(claimed)) tel.clock') < st.indexOf("tel.write('target_output', { stream: 'stdout'") && st.indexOf("tel.write('target_output', { stream: 'stderr'") < st.indexOf('tel.clock = ownClock;'), 'only the output records, and the clock put back');
 });
