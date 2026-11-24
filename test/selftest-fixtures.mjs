@@ -83,9 +83,10 @@ export const GOOD = {
       connects: ['/var/run/docker.sock', '/run/containerd/containerd.sock', '/run/runsc/runsc.sock', '/run/dbus/system_bus_socket', '/dev/log', '\u0000/containerd-shim/moby/isk/shim.sock', '\u0000isk-absent'].map((addr) => fail({ family: 'AF_UNIX', addr, port: null, errno: 2 })),
       binds: [ok({ family: 'AF_UNIX', addr: '/work/isk-1.sock', port: null }), ok({ family: 'AF_UNIX', addr: '\u0000isk-listen-1', port: null }), ok({ family: 'AF_INET', addr: '0.0.0.0', port: CASE_LISTEN_PORT })],
     } }),
-    stage: { reach: [{ to: `tcp ${NETS.run.target}:${CASE_LISTEN_PORT}`, ok: false, code: 'EHOSTUNREACH', bytes: 0 }, { to: 'unix /work/isk-1.sock', ok: false, code: 'ECONNREFUSED', bytes: 0 }, { to: 'abstract @isk-listen-1', ok: false, code: 'ECONNREFUSED', bytes: 0 }] },
+    stage: { reach_before: [{ to: `tcp ${NETS.run.target}:${CASE_LISTEN_PORT}`, ok: true, code: 'answered', bytes: 27 }, { to: 'unix /work/isk-1.sock', ok: false, code: 'ENOENT', bytes: 0 }, { to: 'abstract @isk-listen-1', ok: false, code: 'ECONNREFUSED', bytes: 0 }], reach: [{ to: `tcp ${NETS.run.target}:${CASE_LISTEN_PORT}`, ok: false, code: 'EHOSTUNREACH', bytes: 0 }, { to: 'unix /work/isk-1.sock', ok: false, code: 'ECONNREFUSED', bytes: 0 }, { to: 'abstract @isk-listen-1', ok: false, code: 'ECONNREFUSED', bytes: 0 }] },
     container: { exit: 137, timed_out: true, oom_killed: false },
   }),
+  'output-flood': () => base({ trace: trace(), output: { bytes: 30 * 1024 * 1024 }, stage: { disk: { host_free_drop_mb: 4 } } }),
   'install-archive-bomb': () => base({
     trace: trace({ opens_outside: ['/etc/isk-1-dotdot', '/etc/isk-1-abs', '/opt/surface/isk-1-abs', '/isk-1-root'].map((path) => fail({ path, op: 'write', call: 'openat', errno: 30 })) }),
     stage: { disk: { work_fs_mb: VOLUME_CAP.mb - 150, work_fs_inodes: VOLUME_CAP.inodes, work_used_mb: VOLUME_CAP.mb - 150, work_files: 40050, host_free_drop_mb: 3 } },

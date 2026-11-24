@@ -367,7 +367,7 @@ async function runTarget(t, list, ctx, dk) {
       const plan = launchPlan(t.launch);
       const inst = { kind: t.launch.kind, steps: [], ok: false, egress: [], image: null, resolved_version: null };
       rec.install = inst;
-      let work = null; let entry = null; let image = null;
+      let work = null; let entry = null; let image = null; const instIds = [];
       try {
         if (plan.targetImage) {
           image = checkPinned(plan.targetImage, 'target');
@@ -419,6 +419,7 @@ async function runTarget(t, list, ctx, dk) {
               const argv = sandboxRunArgs({ name, image, network: inNet, ip: NETS.install.target, resolv: 'install', cidfile, labels: lbl, cpus: ctx.cpus, workdir: P.work, mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: installEnv(ctx, step.env || {}), cmd: step.cmd });
               writeSettings(ctx, argv, { subject: id, role: 'install' });
               const r = await tdk.d(argv, { deadline: left(), keepStdout: !!step.out, logStdout: !step.out, cap: 1024 * 1024, onTimeout: () => dk.kill(name) });
+              instIds.push(readCid(cidfile));
               await recordContainer(ctx, { id: readCid(cidfile), t0: s1, exit: r.exit, signal: r.signal, timedOut: r.timed_out, meta: { subject: id, role: 'install' } });
               const s = { name: step.name, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - s1 };
               if (step.out) { const j = safeParse(r.stdout); if (step.name === 'entry') entry = j && typeof j.script === 'string' && j.script.startsWith(`${P.work}/pkg/`) && !/[\u0000\n]/.test(j.script) ? j : null; s.result = j; }
@@ -441,6 +442,10 @@ async function runTarget(t, list, ctx, dk) {
           inst.ok = okAll;
           // Lock files, read out through a helper with no network (target-written: data only, size-capped;
           // a link anywhere in the path is refused, never followed: src/sandbox-run.mjs workReadCmd).
+          // Resolving a path and then reading it is safe only while nothing can change the volume: it
+          // is mounted read-only, and no install container may still be running.
+          const still = await tdk.anyRunning(instIds);
+          if (still.length) throw new HarnessError(`an install container is still running (${still.length}): the work volume is not read`);
           for (const lk of plan.locks) {
             const r = await helper({ mounts: [{ src: work, dst: P.work, ro: true }], cmd: workReadCmd(lk.path, 16 * 1024 * 1024) }, { keepStdout: true, logStdout: false, cap: LOCK_CAP, deadline: left(STEP_MS) });
             if (r.exit === 0 && r.stdout.length) {

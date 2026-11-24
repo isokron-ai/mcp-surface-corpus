@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { CASES, READOUT_PATHS, VOLUME_CAP, evaluateCase } from '../src/selftest.mjs';
+import { BOMB_LANDED_MB, CASES, READOUT_PATHS, VOLUME_CAP, evaluateCase } from '../src/selftest.mjs';
+import { LOGS } from '../src/docker.mjs';
 import { GOOD, base, trace, ok } from './selftest-fixtures.mjs';
 
 test('every case of the hostile target has a verdict, and the two lists agree', () => {
@@ -235,6 +236,18 @@ test('R-CASE-20 unix-socket fails on a socket that connected, a reply, or a list
   assert.equal(g((ev) => { ev.trace.network.binds = []; }).logged, false, 'the listeners must show in the trace');
 });
 
+test('R-CASE-20 unix-socket has a positive control: its TCP listener must answer the later stage while the case runs, and only listeners really bound count', () => {
+  const g = (f) => { const ev = GOOD['unix-socket'](); f(ev); return evaluateCase('unix-socket', ev); };
+  const none = g((ev) => { ev.stage.reach_before[0] = { to: 'tcp 10.213.53.3:47124', ok: false, code: 'timeout', bytes: 0 }; });
+  assert.deepEqual([none.blocked, none.logged], [false, false]);
+  assert.match(none.detail, /^not shown to work: the later stage reached nothing while the case still ran/);
+  assert.equal(g((ev) => { delete ev.stage.reach_before; }).pass, false, 'no control run, no pass');
+  assert.equal(g((ev) => { ev.stage.reach_before[1].ok = true; ev.stage.reach_before[0].ok = false; }).pass, false, 'the control is the TCP listener');
+  const unbound = g((ev) => { for (const b of ev.trace.network.binds) { b.failed = 1; b.errno = 13; } });
+  assert.equal(unbound.logged, false, 'binds that failed (an unwritable /work, say) are not listeners');
+  assert.match(unbound.detail, /^nothing was tried: \d+ unix socket connect\(s\) and 0 listener\(s\)/);
+});
+
 test('R-CASE-21 install-archive-bomb fails on a volume past its cap, the runner\'s disk falling, an entry outside, or no measurement; the bomb is bigger than the cap', () => {
   const g = (f) => { const ev = GOOD['install-archive-bomb'](); f(ev); return evaluateCase('install-archive-bomb', ev); };
   assert.match(g((ev) => { ev.stage.disk.work_fs_mb = 72000; }).detail, /^got through: the work volume's filesystem holds 72000 MB/);
@@ -245,8 +258,39 @@ test('R-CASE-21 install-archive-bomb fails on a volume past its cap, the runner\
   assert.match(g((ev) => { ev.report.result.fallocate = { ok: true, bytes: 7 << 30 }; }).detail, /^got through: the target reports an allocation past the cap/);
   assert.match(g((ev) => { ev.stage = null; }).detail, /^not measured: no measurement/);
   assert.match(g((ev) => { ev.trace.opens_outside = []; }).detail, /^nothing was tried/);
+  assert.match(g((ev) => { ev.stage.disk.work_used_mb = 3; }).detail, /^not shown to work: only 3 MB landed in the work volume/, 'an unwritable /work proves nothing');
+  assert.match(g((ev) => { ev.container = { exit: 137, timed_out: true, oom_killed: false }; }).detail, /^not shown to work: the case did not run to its end \(exit 137, time limit\)/, 'killed before the allocation');
+  assert.match(g((ev) => { ev.container = { exit: 1, timed_out: false, oom_killed: false }; }).detail, /^not shown to work: the case did not run to its end/);
+  assert.equal(g((ev) => { ev.stage.disk.work_used_mb = BOMB_LANDED_MB; }).pass, true);
   const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  const budget = JSON.parse(/^BOMB_BUDGET = (\{.*\})$/m.exec(py)[1]);
+  const sum = Object.values(budget).reduce((a, b) => a + b, 0);
+  const caseMs = Number(/^const CASE_MS = ([\d_]+);$/m.exec(readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8'))[1].replace(/_/g, ''));
+  assert.ok(sum + 10 <= caseMs / 1000, `the bomb's worst case (${sum} s of budgets, and about 10 s to start) fits the case's time limit (${caseMs / 1000} s)`);
   const gib = Number(/^BOMB_GIB = (\d+)$/m.exec(py)[1]);
   assert.ok(gib * 1024 > VOLUME_CAP.mb, `the allocation (${gib} GiB) is past the cap (${VOLUME_CAP.mb} MB)`);
   assert.ok(gib * 1024 < 12 * 1024, 'and small enough for a runner\'s disk when the cap is off (the volume-cap mutation)');
+});
+
+caseTest('R-CASE-22 output-flood: Docker keeps at most its log cap of a container that prints without end, on its own filesystem; the runner\'s disk does not move', 'output-flood', (ev) => { ev.output.bytes = 3 * 1024 ** 3; });
+
+test('R-CASE-22 output-flood fails past the cap or with the runner\'s disk falling, and proves nothing without a whole log file kept; the flood fits the case\'s time', () => {
+  const g = (f) => { const ev = GOOD['output-flood'](); f(ev); return evaluateCase('output-flood', ev); };
+  assert.match(g((ev) => { ev.output.bytes = 900 * 1024 * 1024; }).detail, /^got through: Docker kept 900 MB of the case's output, past its cap of 32 MB/);
+  assert.match(g((ev) => { ev.stage.disk.host_free_drop_mb = 700; }).detail, /^got through: the runner's disk lost 700 MB/);
+  assert.match(g((ev) => { ev.output.bytes = 1000; }).detail, /^nothing was tried: Docker kept 0 MB/);
+  assert.match(g((ev) => { ev.stage = {}; }).detail, /^not measured/);
+  assert.equal(g((ev) => { ev.output.bytes = LOGS.maxBytes; }).pass, true, 'the cap itself');
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.ok(Number(/^FLOOD_SECONDS = ([\d.]+)$/m.exec(py)[1]) + 15 <= 120, 'the flood ends well inside the case\'s time limit');
+  assert.ok(Number(/^FLOOD_BYTES = 2 << 30$/m.test(py)) && 2 * 2 ** 30 > LOGS.maxBytes * 10, 'and is far bigger than the cap');
+});
+
+test('R-CASE-19 symlink-escape links to the very host folder where the harness keeps its canary: the harness passes it to the target', () => {
+  const sh = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
+  assert.match(sh, /hostile\.py`, name, nonce, NET\.gateway, String\(CANARY_PORT\), \.\.\.\(hostCanary \? \[hostCanary\.dir\] : \[\]\)\]/);
+  assert.ok(sh.indexOf('hostCanary = plantHostCanary(out, nonce)') < sh.indexOf('hostile.py`, name, nonce'), 'planted before the case starts');
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.match(py, /targets = LINK_TARGETS \+ \(\[host_canary, f"\{host_canary\}\/canary"\] if host_canary else \[\]\)/);
+  assert.ok(!/_temp\/selftest\/host-canary/.test(py), 'no guessed runner path');
 });

@@ -62,7 +62,7 @@ function mutated(protection, { preflight = null, ev = null, ended = true, harnes
     const c = name ?? EXPECT[protection].case;
     const meta = { subject: `case:${c}`, role: 'case' };
     tel.write('container', { runtime: ev.inspect.runtime, exit: 0, signal: null, timed_out: false, oom_killed: false, ms: 1 }, meta);
-    tel.write('target_output', { stream: 'stdout', bytes: 10, sha256: 'b'.repeat(64), untrusted: true }, meta);
+    tel.write('target_output', { stream: 'stdout', bytes: ev.output.bytes, sha256: 'b'.repeat(64), untrusted: true }, meta);
     if (ev.trace) tel.write('trace_summary', { summary: ev.trace }, { ...meta, source: 'runsc' });
     for (const d of ev.dns) tel.write('dns_query', d, { ...meta, source: 'netlog' });
     for (const x of ev.conns) tel.write('connection', x, { ...meta, source: 'netlog' });
@@ -166,4 +166,18 @@ test('R-MUT-05 volume-cap: a work volume on the runner\'s own disk is caught by 
   assert.equal(checkMutation(mutated('volume-cap', { ev: big }), 'volume-cap').ok, true, 'the volume past its cap shows it too');
   assert.equal(checkMutation(mutated('volume-cap', { ev: GOOD['install-archive-bomb']() }), 'volume-cap').ok, false);
   assert.match(MUTATIONS['volume-cap'], /runner's own disk/);
+});
+
+test('R-MUT-06 log-cap: a container that keeps its output as Docker does by default is caught by output-flood from what Docker kept', () => {
+  const a = caseArgs();
+  const b = mutateCaseArgs(a, 'log-cap', {});
+  assert.equal(b[b.indexOf('--log-driver') + 1], 'json-file');
+  assert.ok(!b.includes('--log-opt'), 'no size limit');
+  assert.equal(a.length - b.length, 4);
+  const ev = GOOD['output-flood'](); ev.output.bytes = 2 * 1024 ** 3; ev.inspect.mismatches = ['no log limit declared'];
+  const r = checkMutation(mutated('log-cap', { ev }), 'log-cap');
+  assert.equal(r.ok, true, r.lines.join('\n'));
+  assert.equal(checkMutation(mutated('log-cap', { ev: GOOD['output-flood']() }), 'log-cap').ok, false, 'a flood kept within the cap is not the mutation shown');
+  const disk = GOOD['output-flood'](); disk.stage.disk.host_free_drop_mb = 900;
+  assert.match(checkMutation(mutated('log-cap', { ev: disk }), 'log-cap').lines.join('\n'), /another reason/);
 });

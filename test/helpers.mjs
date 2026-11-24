@@ -77,17 +77,12 @@ export function row(i, o = {}) {
 }
 
 /**
- * The host as install-runsc.sh and net-guard.sh leave it, for the strict preflight: `iptables -S` /
- * `ip6tables -S` of our chains and jumps (as iptables prints them) and `runsc --version`. `drop`
- * removes rules: { 'iptables INPUT': [rule, ...] } or a whole chain with true. `top` puts rules first:
- * { 'iptables DOCKER-USER': [rule, ...] }.
- */
-/**
  * The host as install-runsc.sh and net-guard.sh leave it, for preflight tests: runsc --version, the
- * iptables chains, and the volume filesystem (`docker info` root folder, the mount table, the loop
- * device in /sys). `volumes` changes the last: { fstype, source, sectors, backing, root, mounted }.
+ * iptables chains, and Docker's data and volume filesystems (`docker info`, daemon.json, the mount
+ * table, the loop devices in /sys, the image files, the inode counts). `fs` changes the last:
+ * { info, daemonJson, data: {...}, volumes: {...} } with { fstype, sectors, backing, mounted, blocks, inodes }.
  */
-export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, volumes = {} } = {}) {
+export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, fs = {} } = {}) {
   const v4 = {
     'ISK-SBX': ['-A ISK-SBX -s 10.213.53.0/24 -d 10.213.53.0/24 -j RETURN', '-A ISK-SBX -s 10.213.54.0/24 -d 10.213.54.0/24 -j RETURN', '-A ISK-SBX -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-fwd: " --log-level 4', '-A ISK-SBX -j DROP'],
     'ISK-SBX-IN': ['-A ISK-SBX-IN -m limit --limit 20/sec --limit-burst 200 -j LOG --log-prefix "isk-sbx-in: "', '-A ISK-SBX-IN -j DROP'],
@@ -101,20 +96,39 @@ export function fakeHostRun(cfg, { drop = {}, top = {}, version = null, volumes 
     INPUT: ['-A INPUT -i br-+ -j ISK-SBX6-IN', '-A INPUT -i docker0 -j ISK-SBX6-IN'],
     FORWARD: ['-A FORWARD -o br-+ -j ISK-SBX6', '-A FORWARD -i br-+ -j ISK-SBX6', '-A FORWARD -o docker0 -j ISK-SBX6', '-A FORWARD -i docker0 -j ISK-SBX6'],
   };
-  const vol = { fstype: 'ext4', source: '/dev/loop9', sectors: cfg.volume_fs_mb * 2048, backing: `${cfg.install_dir}/volume-fs.img`, root: '/var/lib/docker', mounted: true, ...volumes };
+  const lg = cfg.container_logs;
+  const mk = (img, mb, inodes, o = {}) => ({ fstype: 'ext4', sectors: mb * 2048, backing: `${cfg.install_dir}/${img}`, mounted: true, blocks: mb * 2048, inodes: inodes + 512, ...o });
+  const F = {
+    info: `${cfg.docker_root} overlay2 ${lg.driver}`,
+    daemonJson: JSON.stringify({ runtimes: { runsc: {} }, 'data-root': cfg.docker_root, 'log-driver': lg.driver, 'log-opts': { 'max-size': `${lg.max_size_mb}m`, 'max-file': String(lg.max_file) } }),
+    ...fs,
+    data: mk('docker-fs.img', cfg.docker_fs_mb, cfg.docker_fs_inodes, fs.data),
+    volumes: mk('volume-fs.img', cfg.volume_fs_mb, cfg.volume_fs_inodes, fs.volumes),
+  };
+  const loops = { loop8: F.data, loop9: F.volumes };
   const mountinfo = [
     '24 1 8:1 / / rw,relatime shared:1 - ext4 /dev/root rw,discard',
-    `130 24 7:8 / ${cfg.log_dir} rw,nosuid,nodev,noexec,relatime shared:70 - ext4 /dev/loop8 rw`,
-    ...(vol.mounted ? [`131 24 7:9 / ${vol.root}/volumes rw,nosuid,nodev,relatime shared:71 - ${vol.fstype} ${vol.source} rw`] : []),
+    `130 24 7:7 / ${cfg.log_dir} rw,nosuid,nodev,noexec,relatime shared:70 - ext4 /dev/loop7 rw`,
+    ...(F.data.mounted ? [`131 24 7:8 / ${cfg.docker_root} rw,relatime shared:71 - ${F.data.fstype} /dev/loop8 rw`] : []),
+    ...(F.volumes.mounted ? [`132 131 7:9 / ${cfg.docker_root}/volumes rw,nosuid,nodev,relatime shared:72 - ${F.volumes.fstype} /dev/loop9 rw`] : []),
   ].join('\n');
   return (cmd, argv) => {
     if (String(cmd).endsWith('/runsc')) return { status: 0, stdout: `runsc version ${version ?? `release-${cfg.release}`}\nspec: 1.1.0\n` };
-    if (cmd === 'docker' && argv[0] === 'info') return { status: 0, stdout: `${vol.root}\n` };
+    if (cmd === 'docker' && argv[0] === 'info') return { status: 0, stdout: `${F.info}\n` };
     if (cmd === 'cat') {
       if (argv[0] === '/proc/self/mountinfo') return { status: 0, stdout: `${mountinfo}\n` };
-      if (argv[0] === '/sys/block/loop9/size') return { status: 0, stdout: `${vol.sectors}\n` };
-      if (argv[0] === '/sys/block/loop9/loop/backing_file') return { status: 0, stdout: `${vol.backing}\n` };
+      if (argv[0] === '/etc/docker/daemon.json') return { status: 0, stdout: F.daemonJson };
+      const m = /^\/sys\/block\/(loop[89])\/(size|loop\/backing_file)$/.exec(argv[0]);
+      if (m) return { status: 0, stdout: `${m[2] === 'size' ? loops[m[1]].sectors : loops[m[1]].backing}\n` };
       return { status: 1, stdout: '' };
+    }
+    if (cmd === 'stat' && argv[0] === '-c') {
+      const l = Object.values(loops).find((x) => x.backing === argv[2]);
+      return l ? { status: 0, stdout: `${l.blocks} 512 ${l.sectors * 512}\n` } : { status: 1, stdout: '' };
+    }
+    if (cmd === 'sudo' && argv[1] === 'stat' && argv[2] === '-f') {
+      const l = argv[5] === cfg.docker_root ? F.data : argv[5] === `${cfg.docker_root}/volumes` ? F.volumes : null;
+      return l ? { status: 0, stdout: `${l.inodes}\n` } : { status: 1, stdout: '' };
     }
     const [tool, a] = cmd === 'sudo' ? [argv[1], argv.slice(2)] : [cmd, argv];
     const t = tool === 'iptables' ? v4 : tool === 'ip6tables' ? v6 : null;

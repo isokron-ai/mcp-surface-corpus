@@ -27,6 +27,11 @@ export function validateRunscConfig(c) {
   for (const k of ['install_dir', 'log_dir']) if (!/^\/[A-Za-z0-9/_.-]+$/.test(String(c[k])) || String(c[k]).includes('..')) bad(`${k} is not an absolute path`);
   if (!(Number.isInteger(c.trace_fs_mb) && c.trace_fs_mb >= 256 && c.trace_fs_mb <= 16384)) bad('trace_fs_mb must be 256 to 16384');
   if (!(Number.isInteger(c.trace_max_mb) && c.trace_max_mb >= 16 && c.trace_max_mb * 2 <= c.trace_fs_mb)) bad('trace_max_mb must be at least 16 and at most half of trace_fs_mb');
+  if (!/^\/var\/lib\/[a-z0-9-]{1,40}$/.test(String(c.docker_root))) bad('docker_root must be a folder of /var/lib');
+  if (!(Number.isInteger(c.docker_fs_mb) && c.docker_fs_mb >= 4096 && c.docker_fs_mb <= 131072)) bad('docker_fs_mb must be 4096 to 131072');
+  if (!(Number.isInteger(c.docker_fs_inodes) && c.docker_fs_inodes >= 262144 && c.docker_fs_inodes <= 33554432)) bad('docker_fs_inodes must be 262144 to 33554432');
+  const lg = c.container_logs || {};
+  if (lg.driver !== 'local' || !(Number.isInteger(lg.max_size_mb) && lg.max_size_mb >= 1 && lg.max_size_mb <= 256) || !(Number.isInteger(lg.max_file) && lg.max_file >= 1 && lg.max_file <= 10)) bad('container_logs must be the local driver with max_size_mb 1 to 256 and max_file 1 to 10');
   if (!(Number.isInteger(c.volume_fs_mb) && c.volume_fs_mb >= 1024 && c.volume_fs_mb <= 65536)) bad('volume_fs_mb must be 1024 to 65536');
   if (!(Number.isInteger(c.volume_fs_inodes) && c.volume_fs_inodes >= 65536 && c.volume_fs_inodes <= 16777216)) bad('volume_fs_inodes must be 65536 to 16777216');
   const f = c.flags || {};

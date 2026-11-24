@@ -18,7 +18,7 @@
 //              ended or was torn down (bin/sandbox-selftest.mjs STAGES): the result readout over
 //              planted links, connections to what the case left listening, the work volume's size
 import { NETS } from './sandbox-net.mjs';
-import { LIMITS } from './docker.mjs';
+import { LIMITS, LOGS } from './docker.mjs';
 import { loadRunscConfig } from './runsc.mjs';
 
 /**
@@ -28,7 +28,7 @@ import { loadRunscConfig } from './runsc.mjs';
  * one: the proxy is its only door, and these cases try every other way through it and around it.
  */
 export const INSTALL_CASES = ['install-proxy-host', 'install-proxy-ip', 'install-proxy-port', 'install-direct', 'install-metadata', 'install-host', 'install-archive-bomb'];
-export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', ...INSTALL_CASES];
+export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', 'output-flood', ...INSTALL_CASES];
 /** The sandbox network a case runs on: 'install' for the install cases, else 'run'. */
 export const caseNet = (name) => (INSTALL_CASES.includes(name) ? 'install' : 'run');
 /** What the install cases ask the proxy for, which it must refuse (the proxy-allowlist mutation lets these through). */
@@ -48,6 +48,8 @@ export const READOUT_PATHS = ['/work/lock/freeze.txt', '/work/lock/go-version-m.
 const RUNSC = loadRunscConfig();
 export const VOLUME_CAP = { mb: RUNSC.volume_fs_mb, inodes: RUNSC.volume_fs_inodes };
 export const HOST_DROP_MB = 512;
+/** What install-archive-bomb must have landed in its work volume: its gibibyte of zeros, at least. */
+export const BOMB_LANDED_MB = 1024;
 const EINPROGRESS = new Set([114, 115]);
 
 const NET = NETS.run;
@@ -295,20 +297,25 @@ const RULES = {
   'unix-socket': (ev) => {
     const n = net(ev.trace);
     const socks = n.connects.filter((c) => c.family === 'AF_UNIX');
-    const binds = n.binds.filter((b) => b.family === 'AF_UNIX' || (b.family === 'AF_INET' && b.port === CASE_LISTEN_PORT));
+    // Only listeners that were really bound count, and the TCP one must answer while the case still
+    // runs (the positive control): a later stage that reaches nothing proves nothing otherwise.
+    const binds = n.binds.filter((b) => (b.family === 'AF_UNIX' || (b.family === 'AF_INET' && b.port === CASE_LISTEN_PORT)) && b.failed < b.n);
     const reach = list(stageOf(ev).reach).filter((r) => r && typeof r === 'object');
+    const before = list(stageOf(ev).reach_before).filter((r) => r && typeof r === 'object');
+    const control = before.some((r) => r.ok === true && /^tcp /.test(String(r.to)));
     const reached = reach.filter((r) => r.ok === true);
     const opened = socks.filter((e) => e.failed < e.n);
-    const blocked = socks.length >= 6 && !opened.length && reach.length >= 3 && !reached.length && ev.canaryHits === 0 && !reportGotThrough(ev.report);
-    const logged = socks.length >= 6 && binds.length >= 2 && reach.length >= 3;
-    const detail = blocked ? 'no host or abstract socket answered, and nothing the case left listening outlived it'
+    const blocked = socks.length >= 6 && !opened.length && reach.length >= 3 && !reached.length && ev.canaryHits === 0 && !reportGotThrough(ev.report) && control && binds.length >= 2;
+    const logged = socks.length >= 6 && binds.length >= 2 && reach.length >= 3 && control;
+    const detail = blocked ? 'no host or abstract socket answered, and nothing the case left listening outlived it (its TCP listener answered while it ran)'
       : reached.length ? `got through: a later stage reached what the case left listening (${String(reached[0].to).slice(0, 80)})`
         : opened.length ? `got through: a unix socket connected (${fmt(opened[0])})`
           : ev.canaryHits !== 0 ? `got through: ${ev.canaryHits ?? 'an unknown number of'} connection(s) reached the host listener`
             : reportGotThrough(ev.report) ? 'got through: the target reports a reply on a socket'
               : reach.length < 3 ? 'not measured: the later stage did not run'
-                : `nothing was tried: ${socks.length} unix socket connect(s) traced, at least 6 expected`;
-    return verdict(blocked, logged, [...socks.slice(0, 10).map((e) => `trace: ${fmt(e)}`), ...binds.slice(0, 4).map((b) => `trace: bind ${fmt(b)}`), ...reach.map((r) => `later stage: ${String(r.to).slice(0, 80)} ${r.ok ? `ANSWERED (${Number(r.bytes) || 0} bytes)` : `no (${String(r.code ?? '?').slice(0, 20)})`}`)], detail);
+                : !control ? 'not shown to work: the later stage reached nothing while the case still ran, so reaching nothing after it proves nothing'
+                  : `nothing was tried: ${socks.length} unix socket connect(s) and ${binds.length} listener(s) traced, at least 6 and 2 expected`;
+    return verdict(blocked, logged, [...socks.slice(0, 8).map((e) => `trace: ${fmt(e)}`), ...binds.slice(0, 4).map((b) => `trace: bind ${fmt(b)}`), ...before.slice(0, 1).map((r) => `while it ran: ${String(r.to).slice(0, 80)} ${r.ok ? 'answered' : `no (${String(r.code ?? '?').slice(0, 20)})`}`), ...reach.map((r) => `later stage: ${String(r.to).slice(0, 80)} ${r.ok ? `ANSWERED (${Number(r.bytes) || 0} bytes)` : `no (${String(r.code ?? '?').slice(0, 20)})`}`)], detail);
   },
   // An archive that expands to more than the work volume may hold, with thousands of entries, deep
   // folders, and entries that climb out: unpacked entry by entry with every entry trusted, then one
@@ -323,7 +330,11 @@ const RULES = {
     const r = resultOf(ev.report);
     const said = !!(r.fallocate && r.fallocate.ok === true);
     const landed = climbs.filter((o) => o.failed < o.n);
-    const blocked = hostOk && capOk && climbs.length >= 3 && !landed.length && !said;
+    // The positive control: the bomb really landed (its gibibyte of zeros at least, so /work was
+    // writable), and the case ran to its end (so the allocation past the cap was tried).
+    const filled = !!d && Number(d.work_used_mb) >= BOMB_LANDED_MB;
+    const ran = !!ev.container && ev.container.exit === 0 && ev.container.timed_out === false;
+    const blocked = hostOk && capOk && climbs.length >= 3 && !landed.length && !said && filled && ran;
     const logged = climbs.length >= 3 && !!d && drop !== null;
     const detail = blocked ? `the work volume's own filesystem (${Number(d.work_fs_mb)} MB, ${Number(d.work_fs_inodes)} inodes) held the bomb, the runner's disk did not move, and nothing climbed out`
       : !d ? 'not measured: no measurement of the work volume after the case'
@@ -332,8 +343,31 @@ const RULES = {
           : !capOk ? `got through: the work volume's filesystem holds ${Number(d.work_fs_mb)} MB and ${Number(d.work_fs_inodes)} inodes, past its cap of ${VOLUME_CAP.mb} MB and ${VOLUME_CAP.inodes}`
             : landed.length ? `got through: an archive entry was written outside the work folder (${String(landed[0].path).slice(0, 80)})`
               : said ? 'got through: the target reports an allocation past the cap'
+                : !filled ? `not shown to work: only ${Number(d.work_used_mb)} MB landed in the work volume (at least ${BOMB_LANDED_MB} expected), so the bomb never filled it`
+                  : !ran ? `not shown to work: the case did not run to its end (exit ${ev.container ? ev.container.exit : 'unknown'}${ev.container && ev.container.timed_out ? ', time limit' : ''})`
                 : `nothing was tried: ${climbs.length} write(s) outside the work folder traced, at least 3 expected`;
     return verdict(blocked, logged, [d ? `later stage: the work volume's filesystem is ${Number(d.work_fs_mb)} MB, ${Number(d.work_fs_inodes)} inodes; ${Number(d.work_used_mb)} MB in use` : 'later stage: no measurement', drop !== null ? `host: the runner's disk lost ${drop} MB while the case ran` : 'host: not measured', ...climbs.slice(0, 8).map((o) => `trace: write ${String(o.path).slice(0, 80)} failed ${o.failed}/${o.n} (errno ${o.errno})`), r.fallocate ? `target: allocation ${r.fallocate.ok ? 'worked' : `refused (${String(r.fallocate.error ?? '?').slice(0, 20)})`}` : 'target: no allocation reported'], detail);
+  },
+  // stdout without end: Docker keeps at most container_logs of it (gvisor.json), on its own
+  // filesystem, and the runner's disk does not move. At least one whole log file must have been
+  // kept (the flood happened).
+  'output-flood': (ev) => {
+    const bytes = ev.output ? Number(ev.output.bytes) || 0 : 0;
+    const d = stageOf(ev).disk && typeof stageOf(ev).disk === 'object' ? stageOf(ev).disk : null;
+    const drop = d && Number.isInteger(d.host_free_drop_mb) ? d.host_free_drop_mb : null;
+    const file = LOGS.maxBytes / Number(LOGS.maxFile);
+    const tried = bytes >= file;
+    const capOk = bytes <= LOGS.maxBytes * 1.1;
+    const hostOk = drop !== null && drop < HOST_DROP_MB;
+    const blocked = tried && capOk && hostOk;
+    const logged = tried && drop !== null && ev.outputRecorded === true;
+    const mb = (b) => Math.round(b / 1048576);
+    const detail = blocked ? `Docker kept ${mb(bytes)} MB of the flood (its cap ${mb(LOGS.maxBytes)} MB), and the runner's disk did not move`
+      : !capOk ? `got through: Docker kept ${mb(bytes)} MB of the case's output, past its cap of ${mb(LOGS.maxBytes)} MB`
+        : drop === null ? 'not measured: the runner\'s free disk could not be read'
+          : !hostOk ? `got through: the runner's disk lost ${drop} MB while the case ran (at most ${HOST_DROP_MB} MB allowed)`
+            : `nothing was tried: Docker kept ${mb(bytes)} MB of the case's output, less than one log file (${mb(file)} MB)`;
+    return verdict(blocked, logged, [`output: Docker kept ${bytes} bytes (cap ${LOGS.maxBytes})`, drop !== null ? `host: the runner's disk lost ${drop} MB while the case ran` : 'host: not measured'], detail);
   },
   'output-forgery': (ev) => {
     const forged = list(ev.trace && ev.trace.opens_outside).filter((o) => o.op === 'write' && String(o.path).startsWith('/opt/surface/'));

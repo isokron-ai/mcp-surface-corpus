@@ -68,6 +68,7 @@ export const MUTATIONS = {
   'readout-follows-links': 'the result readout reads a path as it is, links and all (head -c, no check that the path resolves to itself)',
   'no-teardown': 'a server-like case is not torn down when its stage ends: its container keeps running',
   'volume-cap': 'the case\'s work volume is a folder on the runner\'s own disk (a bind volume under --out), not on the volume filesystem install-runsc.sh makes',
+  'log-cap': 'the case container keeps its output in Docker\'s json-file driver with no size limit (no --log-opt), as Docker does by default',
 };
 
 /**
@@ -119,6 +120,10 @@ export function mutateCaseArgs(argv, disable, canaries) {
   else if (disable === 'cap-drop') drop('--cap-drop', 'ALL');
   else if (disable === 'read-only') drop('--read-only');
   else if (disable === 'env-filter') a.splice(image, 0, ...Object.entries(canaries).flatMap(([k, v]) => ['--env', `${k}=${v}`]));
+  else if (disable === 'log-cap') {
+    a[a.indexOf('--log-driver') + 1] = 'json-file';
+    while (a.includes('--log-opt')) drop('--log-opt', a[a.indexOf('--log-opt') + 1]);
+  }
   return a;
 }
 
@@ -233,6 +238,17 @@ async function uncappedVolume(dk, name, target, out) {
 }
 
 const lastLine = (buf) => lastJson(String(buf));
+
+/** Waits until a case has printed its report (its last line, with its nonce), at most `ms`. */
+async function waitForReport(dk, id, { name, nonce, ms }) {
+  for (const until = Date.now() + ms; Date.now() < until;) {
+    const r = await dk.d(['logs', id], { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 10_000 });
+    const o = lastJson(String(r.stdout));
+    if (o && o.case === name && o.nonce === nonce) return true;
+    await sleep(500);
+  }
+  return false;
+}
 const clip = (v, n = 120) => String(v ?? '').slice(0, n);
 
 /**
@@ -241,7 +257,9 @@ const clip = (v, n = 120) => String(v ?? '').slice(0, n);
  */
 const STAGES = {
   // The result readout over the paths the corpus reads out of a work volume, where the case planted links.
-  'symlink-escape': async (ctx, { work, lbl, name }) => {
+  // As in the corpus, only once the target's container is no longer running.
+  'symlink-escape': async (ctx, { work, lbl, name, id }) => {
+    if ((await ctx.dk.anyRunning([id])).length) throw new HarnessError('the case container is still running: its work volume is not read');
     const readout = [];
     for (const path of READOUT_PATHS) {
       const cmd = ctx.disable === 'readout-follows-links' ? ['sh', '-c', 'exec head -c "$2" -- "$1"', 'sh', path, String(1024 * 1024)] : workReadCmd(path, 1024 * 1024);
@@ -257,6 +275,8 @@ const STAGES = {
     const reach = o && Array.isArray(o.reach) ? o.reach.slice(0, 8).map((x) => ({ to: clip(x && x.to), ok: !!(x && x.ok === true), code: clip(x && x.code, 40), bytes: Number.isInteger(x && x.bytes) ? x.bytes : 0 })) : [];
     return { reach, exit: r.exit };
   },
+  // What Docker kept of the flood is the case's target_output record; the harness adds how far the runner's disk fell.
+  'output-flood': async () => ({ disk: {} }),
   // The filesystem the work volume lives on, as a helper sees it, and how far the runner's disk fell.
   'install-archive-bomb': async (ctx, { work, lbl, name }) => {
     const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'measure'), image: ctx.images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, 'measure', P.work] }), { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 120_000 });
@@ -309,8 +329,9 @@ async function runCase(name, ctx) {
     canary = await listenCanary(NET.gateway, CANARY_PORT);
     extra.canary_bound = canary.bound;
     if (name === 'symlink-escape') hostCanary = plantHostCanary(out, nonce);
-    // install-archive-bomb: the runner's own disk (Docker's root folder, and --out), watched while it runs.
-    if (name === 'install-archive-bomb') disk = watchFree([ctx.dockerRoot ?? out, out]);
+    // install-archive-bomb, output-flood: the runner's own disk (its root, and --out), watched while
+    // they run. Docker's data-root and volumes are filesystems of their own, reserved up front.
+    if (name === 'install-archive-bomb' || name === 'output-flood') disk = watchFree(['/', out]);
 
     const cname = dk.name(name, 'case');
     // An install case runs as an npm install with scripts runs: in the node24-build image, at .4 of
@@ -318,7 +339,7 @@ async function runCase(name, ctx) {
     let argv = sandboxRunArgs({
       name: cname, image: netName === 'install' ? images['node24-build'] : images.python, network, ip: NET.target, resolv: netName, detach: true, labels: lbl, workdir: P.work,
       mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: netName === 'install' ? INSTALL_CASE_ENV : CASE_ENV,
-      cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NET.gateway, String(CANARY_PORT)],
+      cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NET.gateway, String(CANARY_PORT), ...(hostCanary ? [hostCanary.dir] : [])],
       hostEnv: process.env,
     });
     if (ctx.disable) argv = mutateCaseArgs(argv, ctx.disable, canaries);
@@ -331,11 +352,18 @@ async function runCase(name, ctx) {
     const started = await dk.d(argv, { env: { ...dockerEnvFrom(process.env), ...canaries }, keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 120_000 });
     const id = started.stdout.toString().trim();
     if (started.exit !== 0 || !/^[0-9a-f]{64}$/.test(id)) throw new HarnessError(`the case container did not start (exit ${started.exit})`);
-    // A server-like case's stage ends after STAGE_MS: it is torn down then (unless the no-teardown
-    // mutation leaves it running), as the corpus tears a server down when its probe is done.
+    // A server-like case runs until its stage ends: once it has reported (at most STAGE_MS), the later
+    // stage tries what it left listening while it still runs, which must answer (the positive
+    // control), and the case is torn down (unless the no-teardown mutation leaves it running), as
+    // the corpus tears a server down when its probe is done. The later stage then tries again.
     const linger = STAGE_MS[name] ?? null;
-    const teardown = () => (linger !== null && ctx.disable === 'no-teardown' ? null : dk.d(['kill', id], { deadline: Date.now() + 30_000 }));
-    const w = await dk.d(['wait', id], { keepStdout: true, logStdout: false, cap: 64, deadline: Date.now() + (linger ?? CASE_MS), onTimeout: teardown });
+    let before = null;
+    if (linger !== null) {
+      await waitForReport(dk, id, { name, nonce, ms: linger });
+      before = await STAGES[name](ctx, { work, lbl, name, network, nonce, id });
+      if (ctx.disable !== 'no-teardown') await dk.d(['kill', id], { deadline: Date.now() + 30_000 });
+    }
+    const w = await dk.d(['wait', id], { keepStdout: true, logStdout: false, cap: 64, deadline: Date.now() + (linger !== null ? 15_000 : CASE_MS), onTimeout: () => (linger !== null ? null : dk.d(['kill', id], { deadline: Date.now() + 30_000 })) });
     const ins = await inspectOne(dk, id);
     const exit = ins && ins.State && Number.isInteger(ins.State.ExitCode) ? ins.State.ExitCode : null;
     const runtime = String((ins && ins.HostConfig && ins.HostConfig.Runtime) || 'unknown').slice(0, 20);
@@ -363,7 +391,8 @@ async function runCase(name, ctx) {
 
     // The later stage, if the case has one: what a stage after it would meet of what it left behind.
     if (STAGES[name]) {
-      ev.stage = await STAGES[name](ctx, { work, lbl, name, network, nonce });
+      ev.stage = await STAGES[name](ctx, { work, lbl, name, network, nonce, id });
+      if (before) ev.stage.reach_before = before.reach;
       if (hostCanary) { ev.stage.host = checkHostCanary(hostCanary, out, nonce); hostCanary = null; }
       if (disk) { const drop = disk.stop(); disk = null; if (ev.stage.disk) ev.stage.disk.host_free_drop_mb = drop; }
     }
@@ -473,9 +502,7 @@ export async function main(argv = process.argv.slice(2), { readLog = readHostLog
       results.skipped = { reason: pf.reason, detail: pf.detail };
       say(`selftest: skipped (${pf.reason}): ${pf.detail}`);
     } else {
-      const root = await dk.d(['info', '--format', '{{.DockerRootDir}}'], { keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 30_000 });
-      const dockerRoot = String(root.stdout).trim();
-      const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images), dockerRoot: /^\/[A-Za-z0-9/_.-]+$/.test(dockerRoot) ? dockerRoot : null, cleanup: [] };
+      const ctx = { dk, tel, cfg, images, out, readLog, disable: o.disable, toolsVol: await toolsVolume(dk, images), cleanup: [] };
       if (install) {
         // The proxy's network with egress, and the registry's addresses resolved on the host, as for a shard.
         ctx.outNet = await dk.network(`surface-${runId}-out`, false);

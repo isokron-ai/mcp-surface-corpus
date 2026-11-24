@@ -43,6 +43,8 @@ export const EXPECT = {
   // A server-like case left running after its stage: the later stage reaches its listener.
   'no-teardown': { case: 'unix-socket', why: /^got through: a later stage reached what the case left listening \(tcp /, blocked: false, logged: true },
   // A work volume on the runner's own disk: the bomb's allocation costs the runner its disk.
+  // Docker's default for a container's output (json-file, no limit): the flood is kept whole.
+  'log-cap': { case: 'output-flood', why: /got through: Docker kept \d+ MB of the case's output, past its cap/, blocked: false },
   'volume-cap': { case: 'install-archive-bomb', why: /^got through: (?:the runner's disk lost \d+ MB|the work volume's filesystem holds)/, blocked: false },
 };
 

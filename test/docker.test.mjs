@@ -194,3 +194,16 @@ test('R-CI-04 the host pids limit stays above what nproc lets a target make (gVi
   assert.ok(Number(LIMITS.pids) >= 2 * Number(LIMITS.nproc) + 512, `${LIMITS.pids} vs ${LIMITS.nproc}`);
   assert.equal(pair(sb(), '--pids-limit'), LIMITS.pids);
 });
+
+test('R-SBX-27 anyRunning names the containers still running; an unreadable answer counts them all as running', async () => {
+  const id = (c) => c.repeat(64);
+  const fake = (exit, stdout) => Object.assign(new Docker({ runId: 'r' }), { d: async () => ({ exit, stdout: Buffer.from(stdout) }) });
+  assert.deepEqual(await fake(0, `${id('a')}\n${id('b')}\n`).anyRunning([id('a'), id('c')]), [id('a')]);
+  assert.deepEqual(await fake(0, '').anyRunning([id('a')]), []);
+  assert.deepEqual(await fake(1, '').anyRunning([id('a'), 'not-an-id']), [id('a')]);
+  assert.deepEqual(await fake(0, id('a')).anyRunning([]), []);
+  const shard = readFileSync(new URL('../bin/run-shard.mjs', import.meta.url), 'utf8');
+  assert.ok(shard.indexOf('await tdk.anyRunning(instIds)') < shard.indexOf('cmd: workReadCmd(lk.path'), 'the corpus reads lock files only once no install container runs');
+  const st = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
+  assert.match(st, /'symlink-escape': async \(ctx, \{ work, lbl, name, id \}\) => \{\n\s+if \(\(await ctx\.dk\.anyRunning\(\[id\]\)\)\.length\) throw/);
+});

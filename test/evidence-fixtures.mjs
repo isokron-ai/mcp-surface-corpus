@@ -59,11 +59,12 @@ export function mutationTelemetry(file, protection) {
     if (protection === 'proxy-allowlist-empty') ev.egress = [...ev.egress.filter((e) => e.allowed !== true), { host: 'registry.npmjs.org', port: 443, allowed: false, error: 'host not on the allowlist' }];
     if (protection === 'readout-follows-links') ev.stage.readout = ev.stage.readout.map((r) => ({ ...r, exit: 0, bytes: 512 }));
     if (protection === 'no-teardown') ev.stage.reach[0] = { to: 'tcp 10.213.53.3:47124', ok: true, code: 'answered', bytes: 22 };
+    if (protection === 'log-cap') { ev.output.bytes = 2 * 1024 ** 3; ev.inspect.mismatches = ['no log limit declared']; }
     if (protection === 'volume-cap') Object.assign(ev.stage.disk, { host_free_drop_mb: 8200, work_fs_mb: 73000, work_fs_inodes: 9000000 });
     if (protection === 'proxy-allowlist') ev.egress = [...ev.egress.filter((e) => e.host !== 'example.com' || e.port !== 443), { host: 'example.com', port: 443, allowed: true, up: 0, down: 0, ms: 3, error: 'EAI_AGAIN' }];
     const meta = { subject: `case:${exp.case}`, role: 'case' };
     tel.write('container', { runtime: ev.inspect.runtime, exit: 0, signal: null, timed_out: false, oom_killed: false, ms: 1 }, meta);
-    tel.write('target_output', { stream: 'stdout', bytes: 10, sha256: hex('b'), untrusted: true }, meta);
+    tel.write('target_output', { stream: 'stdout', bytes: ev.output.bytes, sha256: hex('b'), untrusted: true }, meta);
     if (ev.trace) tel.write('trace_summary', { summary: ev.trace }, { ...meta, source: 'runsc' });
     for (const d of ev.dns) tel.write('dns_query', d, { ...meta, source: 'netlog' });
     for (const x of ev.conns) tel.write('connection', x, { ...meta, source: 'netlog' });

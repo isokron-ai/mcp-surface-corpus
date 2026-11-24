@@ -9,7 +9,7 @@ import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
 import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
 import { fakeHostRun } from './helpers.mjs';
-import { preflight, installProblem, volumeFsProblem, workReadCmd, WORK_READ_SCRIPT, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
+import { preflight, installProblem, dockerFsProblem, workReadCmd, WORK_READ_SCRIPT, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem } from '../src/sandbox-run.mjs';
 
 const IMG = `docker.io/library/python:3.13-slim-bookworm@sha256:${'a'.repeat(64)}`;
 const ID = 'c'.repeat(64);
@@ -262,15 +262,36 @@ test('R-SBX-04 limits that cut evidence short are reported: firewall rate limit,
 
 test('R-SBX-23 the strict preflight refuses a Docker volumes folder that is not its own ext4 of the pinned size, from install-runsc.sh\'s image', async () => {
   const cfg = loadRunscConfig();
-  assert.equal(volumeFsProblem(cfg, fakeHostRun(cfg)), null);
-  for (const [v, why] of [[{ mounted: false }, /is not a filesystem of its own of 6144 MB/], [{ fstype: 'tmpfs', source: 'tmpfs' }, /not a filesystem of its own/], [{ sectors: 70 * 1024 * 1024 * 2 }, /not a filesystem of its own/], [{ backing: '/tmp/other.img' }, /not a filesystem of its own/], [{ root: '../x' }, /root folder could not be read/]]) {
-    assert.match(String(volumeFsProblem(cfg, fakeHostRun(cfg, { volumes: v }))), why, JSON.stringify(v));
+  assert.equal(dockerFsProblem(cfg, fakeHostRun(cfg)), null);
+  for (const [v, why] of [[{ mounted: false }, /volumes folder \/var\/lib\/isokron-docker\/volumes is not a filesystem of its own of 6144 MB/], [{ fstype: 'tmpfs' }, /not a filesystem of its own/], [{ sectors: 70 * 1024 * 1024 * 2 }, /not a filesystem of its own/], [{ backing: '/tmp/other.img' }, /not a filesystem of its own/]]) {
+    assert.match(String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs: { volumes: v } }))), why, JSON.stringify(v));
   }
   const own = (c) => () => ({ bsize: 4096, blocks: c.trace_fs_mb * 256, bavail: c.trace_fs_mb * 256 });
   const t = setup();
-  const x = await preflight(t.dk, { ...t.opts, strict: true, statfs: own(t.cfg), run: fakeHostRun(t.cfg, { volumes: { mounted: false } }) });
+  const x = await preflight(t.dk, { ...t.opts, strict: true, statfs: own(t.cfg), run: fakeHostRun(t.cfg, { fs: { volumes: { mounted: false } } }) });
   assert.deepEqual([x.ok, x.reason], [false, 'sandbox_setup_missing']);
-  assert.match(x.detail, /Docker volumes folder \/var\/lib\/docker\/volumes is not a filesystem of its own/);
+  assert.match(x.detail, /Docker volumes folder \/var\/lib\/isokron-docker\/volumes is not a filesystem of its own/);
+});
+
+test('R-SBX-25 the strict preflight refuses Docker data off its own capped filesystem: data-root, overlay2, a reservation with holes, the inode count', () => {
+  const cfg = loadRunscConfig();
+  const why = (fs) => String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs })));
+  assert.match(why({ info: '/var/lib/docker overlay2 local' }), /does not keep its data on \/var\/lib\/isokron-docker/, 'the default data-root');
+  assert.match(why({ info: `${cfg.docker_root} overlayfs local` }), /with overlay2/, 'containerd\'s image store keeps images off the data-root');
+  assert.match(why({ data: { mounted: false } }), /Docker data-root \/var\/lib\/isokron-docker is not a filesystem of its own of 20480 MB/);
+  assert.match(why({ data: { blocks: 1024 } }), /docker-fs\.img has holes/, 'a discard or a trim gave its blocks back');
+  assert.match(why({ volumes: { blocks: 2048 } }), /volume-fs\.img has holes/);
+  assert.match(why({ volumes: { inodes: 19529728 } }), /it has 19529728 inodes/);
+  assert.match(why({ data: { inodes: 1000 } }), /it has 1000 inodes/);
+});
+
+test('R-SBX-26 the strict preflight refuses a daemon whose containers keep their output without the pinned limits', () => {
+  const cfg = loadRunscConfig();
+  const why = (fs) => String(dockerFsProblem(cfg, fakeHostRun(cfg, { fs })));
+  assert.match(why({ info: `${cfg.docker_root} overlay2 json-file` }), /the local log driver/);
+  assert.match(why({ daemonJson: JSON.stringify({ 'log-driver': 'local' }) }), /log limits are not the pinned ones/);
+  assert.match(why({ daemonJson: JSON.stringify({ 'log-driver': 'local', 'log-opts': { 'max-size': '1g', 'max-file': '2' } }) }), /log limits are not the pinned ones/);
+  assert.match(why({ daemonJson: 'not json' }), /log limits are not the pinned ones/);
 });
 
 test('R-SBX-24 the work readout refuses a link anywhere in the path, the last part or a folder above it, and reads a plain file', { skip: process.platform !== 'linux' && 'needs GNU realpath -e (runs on the Linux CI)' }, () => {

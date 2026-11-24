@@ -93,14 +93,22 @@ Every container that runs target code (install and server):
   process and thread per sandboxed process) as a backstop; under gVisor it does not count the
   processes inside the sandbox, and at 512 a fork bomb crashed the sandbox at about 240 processes;
 - named Docker volumes only: never a host path, the workspace, `RUNNER_TEMP`, `_actions` or the
-  Docker socket (the one bind mount is net-guard.sh's resolv.conf, read-only). Docker's volumes
-  folder is a filesystem of its own (`install-runsc.sh`: an ext4 file of `volume_fs_mb` with
-  `volume_fs_inodes` inodes, reserved up front, loop-mounted before any volume exists, and checked
-  by the strict preflight), so an install or server that writes without end, an archive bomb say,
-  meets ENOSPC there instead of filling the runner's disk or running it out of inodes;
+  Docker socket (the one bind mount is net-guard.sh's resolv.conf, read-only). Docker's data-root
+  (`docker_root`: images, containers, their logs) and its volumes folder are each a filesystem of
+  their own (`install-runsc.sh`: ext4 files of `docker_fs_mb` and `volume_fs_mb` with their pinned
+  inode counts, reserved up front and formatted without discard, fstrim's timer stopped, mounted
+  before any volume exists; overlay2, not containerd's image store, so images stay on the
+  data-root). The strict preflight checks all of it, the reservations included. So a huge image
+  layer, or an install or server that writes without end, an archive bomb say, meets ENOSPC there
+  instead of filling the runner's disk or running it out of inodes;
+- every container we start keeps at most `container_logs` of its output (`--log-driver local`,
+  `max-size`, `max-file`, checked against `docker inspect`), and that is the daemon's default too
+  (`daemon.json`, checked by the strict preflight): a target that prints without end, or a flood of
+  DNS queries or CONNECTs at the logger or the proxy, cannot fill a disk with logs;
 - what the harness reads back out of a work volume (lock files) is read by a helper of ours with
-  the volume read-only and no target running, and only when the path resolves to itself inside
-  `/work`: a link anywhere in it, the last part or a folder above, is refused, never followed;
+  the volume read-only, only once no target container of it is running (checked, not assumed), and
+  only when the path resolves to itself inside `/work`: a link anywhere in it, the last part or a
+  folder above, is refused, never followed;
 - an environment of the names the harness sets only: runner, Actions, token and loader names are
   refused whatever the value, and so is any value the host keeps under a secret name
   (`src/sandbox-env.mjs`). The settings are read back from the exact `docker run` arguments and
@@ -146,7 +154,8 @@ Self test: `sandbox-selftest.yml` runs `selftest/hostile.py` in this sandbox onc
 (direct IP, DNS over HTTPS by IP, raw socket, IPv6, ICMP, the Docker host, cloud metadata, a token in
 the environment, a write outside the work volume, a fork bomb, forged output, links planted to
 outside the work folder with the result readout run over them, unix sockets of the host and abstract
-ones with listeners a later stage then tries), and on the install network, the most permissive one, the way an install with scripts runs (the `node24-build` image,
+ones with listeners a later stage tries while the case runs and again once it is torn down, a stdout
+flood), and on the install network, the most permissive one, the way an install with scripts runs (the `node24-build` image,
 `HTTPS_PROXY` to the egress proxy): a CONNECT to a host not on the allowlist and plain HTTP (with a
 positive control: the proxy's own log must also show a working tunnel to the registry, so a proxy
 that refused everything would not pass), to IP
