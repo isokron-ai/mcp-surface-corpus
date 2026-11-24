@@ -57,6 +57,7 @@ export const MUTATIONS = {
   'firewall-forward': "net-guard.sh's ISK-SBX chain is flushed and DOCKER-USER no longer jumps to it",
   'firewall-input': "net-guard.sh's INPUT jumps to ISK-SBX-IN are removed",
   'firewall-order': 'an ACCEPT for the sandbox range is put above net-guard.sh\'s jumps in DOCKER-USER',
+  'firewall-order-goto': 'a goto (-g) for the sandbox range, to a chain that accepts, is put above net-guard.sh\'s jumps in DOCKER-USER',
   'cap-drop': 'the case container keeps Docker\'s default capabilities (no --cap-drop ALL)',
   'env-filter': "the runner's tokens (the canaries) reach the case container's environment",
   'read-only': 'the case container has a writable root filesystem',
@@ -114,7 +115,8 @@ export function mutateHost(disable, run = spawnSync) {
   const cmds = disable === 'firewall-forward'
     ? [['iptables', '-F', 'ISK-SBX'], ['iptables', '-D', 'DOCKER-USER', '-s', '10.213.52.0/22', '-j', 'ISK-SBX'], ['iptables', '-D', 'DOCKER-USER', '-d', '10.213.52.0/22', '-j', 'ISK-SBX']]
     : disable === 'firewall-input' ? [['iptables', '-D', 'INPUT', '-i', 'docker0', '-j', 'ISK-SBX-IN'], ['iptables', '-D', 'INPUT', '-i', 'br-+', '-j', 'ISK-SBX-IN']]
-      : disable === 'firewall-order' ? [['iptables', '-I', 'DOCKER-USER', '1', '-s', '10.213.52.0/22', '-j', 'ACCEPT']] : [];
+      : disable === 'firewall-order' ? [['iptables', '-I', 'DOCKER-USER', '1', '-s', '10.213.52.0/22', '-j', 'ACCEPT']]
+        : disable === 'firewall-order-goto' ? [['iptables', '-N', 'ISK-MUT-GOTO'], ['iptables', '-A', 'ISK-MUT-GOTO', '-j', 'ACCEPT'], ['iptables', '-I', 'DOCKER-USER', '1', '-s', '10.213.52.0/22', '-g', 'ISK-MUT-GOTO']] : [];
   return cmds.every((c) => run('sudo', ['-n', ...c], { encoding: 'utf8', timeout: 30_000 }).status === 0);
 }
 

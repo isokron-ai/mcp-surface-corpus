@@ -37,7 +37,7 @@ test('each container mutation takes out exactly its one protection', () => {
   const e = mutateCaseArgs(a, 'env-filter', can);
   assert.ok(e.includes('GITHUB_TOKEN=isk-canary-1'));
   assert.ok(e.indexOf('GITHUB_TOKEN=isk-canary-1') < e.indexOf(IMG), 'before the image, so docker reads it as an option');
-  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'internal-net']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
+  for (const m of ['firewall-forward', 'firewall-input', 'firewall-order', 'firewall-order-goto', 'internal-net']) assert.deepEqual(mutateCaseArgs(a, m, can), a, `${m} changes the host or network, not the container`);
   assert.deepEqual(a, caseArgs(), 'the original arguments are not changed');
 });
 
@@ -105,4 +105,14 @@ test('R-MUT-00 a mutated run counts only when it failed for the reason its prote
   assert.match(checkMutation(mutated('firewall-input', { preflight: 'runsc --version does not say release-20261116.0' }), 'firewall-input').lines.join('\n'), /did not refuse for this reason/);
   assert.match(checkMutation(mutated('cap-drop', { ev: caps }), 'read-only').lines.join('\n'), /not a self test run with this protection off/);
   assert.equal(Object.keys(EXPECT).length, Object.keys(MUTATIONS).length);
+});
+
+test('R-SBX-12 the firewall-order-goto mutation puts a goto above our jumps, and only the preflight refusing for it counts', () => {
+  const seen = [];
+  assert.equal(mutateHost('firewall-order-goto', (cmd, argv) => { seen.push([cmd, ...argv].join(' ')); return { status: 0 }; }), true);
+  assert.deepEqual(seen, ['sudo -n iptables -N ISK-MUT-GOTO', 'sudo -n iptables -A ISK-MUT-GOTO -j ACCEPT', 'sudo -n iptables -I DOCKER-USER 1 -s 10.213.52.0/22 -g ISK-MUT-GOTO']);
+  const why = 'the firewall is not the one net-guard.sh makes: iptables DOCKER-USER: -A DOCKER-USER -d 10.213.52.0/22 -j ISK-SBX comes after -A DOCKER-USER -s 10.213.52.0/22 -g ISK-MUT-GOTO';
+  assert.equal(checkMutation(mutated('firewall-order-goto', { preflight: why }), 'firewall-order-goto').ok, true);
+  const accept = 'the firewall is not the one net-guard.sh makes: iptables DOCKER-USER: -A DOCKER-USER -s 10.213.52.0/22 -j ISK-SBX comes after -A DOCKER-USER -s 10.213.52.0/22 -j ACCEPT';
+  assert.equal(checkMutation(mutated('firewall-order-goto', { preflight: accept }), 'firewall-order-goto').ok, false, 'the ACCEPT reason is not the goto reason');
 });

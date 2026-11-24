@@ -1,0 +1,9 @@
+{
+  "about": "The one record of the actions every workflow and sandbox-guard/action.yml pins: a full commit SHA and the release it is. test/workflows.test.mjs fails if a uses: line differs from this file. pin-drift.yml proposes updates here (its token cannot change workflow files); node scripts/pin-drift.mjs --sync-workflows then rewrites the uses: lines to match.",
+  "actions": {
+    "actions/checkout": { "sha": "3d3c42e5aac5ba805825da76410c181273ba90b1", "version": "v7.0.1" },
+    "actions/setup-node": { "sha": "949feb2413d6458794dcd2491c4babbbce0c15c1", "version": "v7.1.0" },
+    "actions/upload-artifact": { "sha": "cf430e030ddbb5b0abf93d22962f4752f3646cd9", "version": "v7.0.2" },
+    "actions/download-artifact": { "sha": "9000827ccba6bdab643e8b6fd33ac0654aef8333", "version": "v8.0.2" }
+  }
+}

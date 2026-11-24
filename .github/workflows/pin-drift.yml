@@ -1,0 +1,44 @@
+# Pin drift, weekly: scripts/pin-drift.mjs compares the pinned gVisor release (gvisor.json), age
+# (scripts/install-age.sh) and actions (pins/actions.json) with their newest releases, checks the
+# new hashes, and opens a pull request with the new pins through the API.
+#
+# The job token has contents: write and pull-requests: write and nothing else. By GitHub's design
+# that token cannot change workflow files and a pull request it opens starts no workflow, so the
+# pull request says what a person does before merging: for action pins, run
+# `node scripts/pin-drift.mjs --sync-workflows` on the branch and push (which also starts ci and
+# sandbox-selftest); otherwise close and reopen it to start the checks. No secret, no environment.
+# Like conformance-nightly.yml it is a guard, so it does not wait on the loop's switches.
+
+name: pin-drift
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pin-drift
+  cancel-in-progress: false
+
+jobs:
+  drift:
+    if: github.repository == 'isokron-ai/mcp-surface-corpus' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Propose newer pins
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/pin-drift.mjs --open-pr

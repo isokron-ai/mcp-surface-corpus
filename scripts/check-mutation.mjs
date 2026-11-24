@@ -25,6 +25,7 @@ export const EXPECT = {
   'firewall-forward': { preflight: /the firewall is not the one net-guard\.sh makes: .*ISK-SBX/ },
   'firewall-input': { preflight: /the firewall is not the one net-guard\.sh makes: .*INPUT lacks/ },
   'firewall-order': { preflight: /the firewall is not the one net-guard\.sh makes: .*DOCKER-USER: -A DOCKER-USER -[sd] 10\.213\.52\.0\/22 -j ISK-SBX comes after -A DOCKER-USER -s 10\.213\.52\.0\/22 -j ACCEPT/ },
+  'firewall-order-goto': { preflight: /the firewall is not the one net-guard\.sh makes: .*DOCKER-USER: -A DOCKER-USER -[sd] 10\.213\.52\.0\/22 -j ISK-SBX comes after -A DOCKER-USER -s 10\.213\.52\.0\/22 -g ISK-MUT-GOTO/ },
   // Shown twice: by docker inspect (the settings) and by the target's own capability report, which
   // only the harness's verdict holds (a report can fail a case, never pass it).
   'cap-drop': { case: 'raw-socket', why: /capabilities are not all dropped/, blocked: false, harness: /target: CapEff [0-9a-f]+ CapBnd 0*[1-9a-f]/ },

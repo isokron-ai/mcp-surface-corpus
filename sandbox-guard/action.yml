@@ -1,0 +1,111 @@
+# The sandbox guard, as steps that run on the caller's own runner: install the pinned gVisor
+# (runsc), put up net-guard.sh's firewall, run the hostile self test in the real sandbox, and pass
+# only when scripts/check-selftest.mjs recomputes a pass from the telemetry alone. A job that runs
+# third-party code uses this after its checkout and node setup and before any target runs, on the
+# same runner, so the target meets the sandbox that was just proven:
+#
+#   - uses: actions/setup-node@<sha> # v7.x
+#     with: { node-version: 22 }
+#   - id: sandbox
+#     uses: isokron-ai/mcp-surface-corpus/sandbox-guard@<full sha> # the sandbox commit you pin
+#   - ... targets, through bin/run-shard.mjs of that same commit ...
+#
+# The reusable workflow sandbox-conformance.yml runs these same steps on a runner of its own: it
+# proves the pinned sandbox on today's runner image, but it cannot vouch for another runner.
+#
+# The step fails (and so does the job) unless the verdict is pass. It needs no token and no secret.
+# What the hostile target printed stays in <out>/untrusted/; never upload that folder.
+name: IsoKron sandbox guard
+description: Installs gVisor and the network guard on this runner, runs the hostile sandbox self test, and passes only on a pass recomputed from its telemetry.
+inputs:
+  out:
+    description: Folder for telemetry.jsonl, results.json and environment.json; an absolute plain path. Default $RUNNER_TEMP/sandbox-selftest.
+    required: false
+    default: ''
+outputs:
+  verdict:
+    description: pass when check-selftest recomputed a pass from the telemetry, otherwise fail (the step has then failed).
+    value: ${{ steps.check.outputs.verdict }}
+  out:
+    description: The folder the telemetry and results were written to.
+    value: ${{ steps.setup.outputs.out }}
+  checked-at:
+    description: When the telemetry check ran, UTC (YYYY-MM-DDTHH:MM:SSZ).
+    value: ${{ steps.check.outputs.checked-at }}
+  runner-image:
+    description: The runner image, ImageOS/ImageVersion (for example ubuntu24/20261117.1), or unknown.
+    value: ${{ steps.facts.outputs.runner-image }}
+  kernel:
+    description: uname -r of the runner.
+    value: ${{ steps.facts.outputs.kernel }}
+  docker:
+    description: The Docker server version.
+    value: ${{ steps.facts.outputs.docker }}
+  gvisor-release:
+    description: The gVisor release gvisor.json pins.
+    value: ${{ steps.facts.outputs.gvisor-release }}
+  runsc-version:
+    description: What the installed runsc reports (runsc --version).
+    value: ${{ steps.facts.outputs.runsc-version }}
+runs:
+  using: composite
+  steps:
+    - id: setup
+      name: Check the runner and name the output folder
+      shell: bash
+      env:
+        OUT_IN: ${{ inputs.out }}
+      run: |
+        set -euo pipefail
+        root="$(cd "$GITHUB_ACTION_PATH/.." && pwd)"
+        [ "${RUNNER_OS:-}" = Linux ] || { echo "::error::the sandbox runs on Linux runners only"; exit 1; }
+        command -v node >/dev/null || { echo "::error::node 22 or later must be on PATH (actions/setup-node before this action)"; exit 1; }
+        major="$(node -p 'process.versions.node.split(".")[0]')"
+        [[ "$major" =~ ^[0-9]+$ ]] && [ "$major" -ge 22 ] || { echo "::error::node 22 or later is needed, found $major"; exit 1; }
+        out="${OUT_IN:-$RUNNER_TEMP/sandbox-selftest}"
+        [[ "$out" =~ ^/[A-Za-z0-9/_.-]+$ ]] && [[ "$out" != *..* ]] || { echo "::error::out must be an absolute plain path"; exit 1; }
+        mkdir -p "$out"
+        {
+          echo "root=$root"
+          echo "out=$out"
+        } >>"$GITHUB_OUTPUT"
+    # Before net-guard.sh: registering runsc restarts the Docker daemon.
+    - name: Install gVisor
+      shell: bash
+      env:
+        ROOT: ${{ steps.setup.outputs.root }}
+      run: sudo bash "$ROOT/scripts/install-runsc.sh" "$(command -v node)"
+    - name: Guard the container networks
+      shell: bash
+      env:
+        ROOT: ${{ steps.setup.outputs.root }}
+      run: sudo bash "$ROOT/scripts/net-guard.sh"
+    - id: facts
+      name: Record the runner image, kernel, Docker and gVisor
+      shell: bash
+      env:
+        ROOT: ${{ steps.setup.outputs.root }}
+        OUT: ${{ steps.setup.outputs.out }}
+      run: node "$ROOT/scripts/runner-facts.mjs" --out "$OUT/environment.json" --github-output "$GITHUB_OUTPUT"
+    # The harness's exit status does not decide: the telemetry check below recomputes every verdict
+    # from the raw records and is the pass or fail of this action.
+    - name: Run the self test
+      shell: bash
+      env:
+        ROOT: ${{ steps.setup.outputs.root }}
+        OUT: ${{ steps.setup.outputs.out }}
+      run: node "$ROOT/bin/sandbox-selftest.mjs" --out "$OUT" --lane ci || echo "::warning::the harness reported a failure; the telemetry check decides"
+    - id: check
+      name: Check the telemetry
+      shell: bash
+      env:
+        ROOT: ${{ steps.setup.outputs.root }}
+        OUT: ${{ steps.setup.outputs.out }}
+      run: |
+        set -uo pipefail
+        if node "$ROOT/scripts/check-selftest.mjs" "$OUT/telemetry.jsonl"; then verdict=pass; else verdict=fail; fi
+        {
+          echo "verdict=$verdict"
+          echo "checked-at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        } >>"$GITHUB_OUTPUT"
+        [ "$verdict" = pass ] || { echo "::error::the sandbox self test did not pass: run no target on this runner"; exit 1; }

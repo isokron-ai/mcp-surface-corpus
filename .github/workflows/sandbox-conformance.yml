@@ -1,0 +1,286 @@
+# Sandbox conformance, as a reusable workflow (on: workflow_call). Every repository that runs
+# third-party servers calls it at a pinned commit, and so do sandbox-selftest.yml (pull requests,
+# by hand) and conformance-nightly.yml (every night) here:
+#
+#   jobs:
+#     sandbox:
+#       permissions:
+#         contents: read
+#       uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@<full sha> # <date>
+#       with:
+#         mutations: false
+#         artifact-prefix: sandbox-conformance
+#     shard:
+#       needs: sandbox
+#       ...
+#
+# It checks out this repository at the very commit the caller pinned (job.workflow_repository and
+# job.workflow_sha, which name the file that defines the job, not the caller), then:
+#
+#   selftest   the sandbox guard (sandbox-guard/action.yml): gVisor, net-guard.sh, the hostile self
+#              test, and a pass only when scripts/check-selftest.mjs recomputes one from the
+#              telemetry. Uploads telemetry.jsonl, results.json and environment.json, never what the
+#              hostile target printed.
+#   mutation   with mutations: true, each protection off in turn (bin/sandbox-selftest.mjs
+#              --disable); each run must fail, for the reason that protection explains
+#              (scripts/check-mutation.mjs). Proof that the self test can still fail.
+#   verdict    the outputs below, from the results of the two jobs above. It never fails itself: the
+#              call fails when selftest or a mutation failed.
+#
+# Its jobs run on runners of their own, so a pass says the pinned sandbox works on today's runner
+# image, kernel and Docker. It does not vouch for the caller's runner: a job that runs targets still
+# runs the sandbox guard itself, on its own runner, before any target (see the action's header).
+#
+# No secret, no environment; the caller grants contents: read (the checkout of this public
+# repository) and nothing else is used. Inputs pass through env only.
+
+name: sandbox-conformance
+
+on:
+  workflow_call:
+    inputs:
+      mutations:
+        description: Also run the mutation matrix (each protection off in turn; about nine more jobs).
+        type: boolean
+        required: false
+        default: false
+      artifact-prefix:
+        description: Prefix of the artifact names (lowercase letters, digits and dashes, at most 40). The self test's artifact is <prefix>-selftest; each mutation's is <prefix>-mutation-<protection>.
+        type: string
+        required: false
+        default: sandbox-conformance
+    outputs:
+      verdict:
+        description: pass when the self test passed (and, with mutations, every mutation was shown); otherwise fail.
+        value: ${{ jobs.verdict.outputs.verdict }}
+      selftest:
+        description: pass or fail, recomputed by scripts/check-selftest.mjs from the telemetry.
+        value: ${{ jobs.verdict.outputs.selftest }}
+      mutations:
+        description: pass, fail, or skipped when mutations was false.
+        value: ${{ jobs.verdict.outputs.mutations }}
+      telemetry-artifact:
+        description: Name of the artifact with telemetry.jsonl, results.json and environment.json.
+        value: ${{ jobs.verdict.outputs.telemetry-artifact }}
+      sandbox-sha:
+        description: The commit of this repository that was tested (the one the caller pinned).
+        value: ${{ jobs.selftest.outputs.sandbox-sha }}
+      checked-at:
+        description: When the telemetry check ran, UTC (YYYY-MM-DDTHH:MM:SSZ); empty if it never ran.
+        value: ${{ jobs.selftest.outputs.checked-at }}
+      runner-image:
+        description: The runner image the self test ran on (ImageOS/ImageVersion), or unknown.
+        value: ${{ jobs.selftest.outputs.runner-image }}
+      kernel:
+        description: The runner's kernel (uname -r).
+        value: ${{ jobs.selftest.outputs.kernel }}
+      docker:
+        description: The runner's Docker server version.
+        value: ${{ jobs.selftest.outputs.docker }}
+      gvisor-release:
+        description: The gVisor release gvisor.json pins.
+        value: ${{ jobs.selftest.outputs.gvisor-release }}
+      runsc-version:
+        description: What the installed runsc reported.
+        value: ${{ jobs.selftest.outputs.runsc-version }}
+
+permissions: {}
+
+jobs:
+  selftest:
+    name: sandbox-selftest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    # Eleven cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
+    timeout-minutes: 45
+    outputs:
+      sandbox-sha: ${{ steps.which.outputs.sha }}
+      artifact: ${{ steps.which.outputs.artifact }}
+      verdict: ${{ steps.guard.outputs.verdict }}
+      checked-at: ${{ steps.guard.outputs.checked-at }}
+      runner-image: ${{ steps.guard.outputs.runner-image }}
+      kernel: ${{ steps.guard.outputs.kernel }}
+      docker: ${{ steps.guard.outputs.docker }}
+      gvisor-release: ${{ steps.guard.outputs.gvisor-release }}
+      runsc-version: ${{ steps.guard.outputs.runsc-version }}
+    steps:
+      # The sandbox code to test is the commit that holds this workflow file, whoever calls it.
+      - id: which
+        name: Name the sandbox commit and the artifact
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+          PREFIX: ${{ inputs.artifact-prefix }}
+        run: |
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::job.workflow_repository is missing or odd: cannot tell which sandbox to test"; exit 1; }
+          [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is missing or not a full commit: cannot tell which sandbox to test"; exit 1; }
+          [[ "$PREFIX" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || { echo "::error::artifact-prefix must be lowercase letters, digits and dashes, at most 40"; exit 1; }
+          {
+            echo "repo=$WF_REPO"
+            echo "sha=$WF_SHA"
+            echo "artifact=$PREFIX-selftest"
+          } >>"$GITHUB_OUTPUT"
+          echo "sandbox: $WF_REPO at $WF_SHA"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.which.outputs.repo }}
+          ref: ${{ steps.which.outputs.sha }}
+          path: .isk-sandbox
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - id: guard
+        uses: ./.isk-sandbox/sandbox-guard
+        with:
+          out: ${{ runner.temp }}/selftest
+      - name: Upload the telemetry and results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.which.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/selftest/telemetry.jsonl
+            ${{ runner.temp }}/selftest/results.json
+            ${{ runner.temp }}/selftest/environment.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Proof that the self test can fail: each protection off in turn (bin/sandbox-selftest.mjs
+  # --disable, refused on every lane but selftest-mutation). Each run must fail, its telemetry check
+  # must fail, and scripts/check-mutation.mjs must find the reason that protection explains: the
+  # preflight refusing, or the named case failing on its evidence. A crash does not count. Only the
+  # cases that show the protection run, to keep it short.
+  mutation:
+    if: inputs.mutations
+    name: selftest-mutation (${{ matrix.disable }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - disable: runtime-runc
+            cases: direct-ip
+          - disable: firewall-forward
+            cases: direct-ip
+          - disable: firewall-input
+            cases: docker-host
+          - disable: firewall-order
+            cases: direct-ip
+          - disable: firewall-order-goto
+            cases: direct-ip
+          - disable: cap-drop
+            cases: raw-socket
+          - disable: env-filter
+            cases: env-token
+          - disable: read-only
+            cases: write-outside
+          - disable: internal-net
+            cases: direct-ip
+    steps:
+      - id: which
+        name: Name the sandbox commit and the artifact
+        env:
+          WF_REPO: ${{ job.workflow_repository }}
+          WF_SHA: ${{ job.workflow_sha }}
+          PREFIX: ${{ inputs.artifact-prefix }}
+          DISABLE: ${{ matrix.disable }}
+        run: |
+          [[ "$WF_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::job.workflow_repository is missing or odd: cannot tell which sandbox to test"; exit 1; }
+          [[ "$WF_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::job.workflow_sha is missing or not a full commit: cannot tell which sandbox to test"; exit 1; }
+          [[ "$PREFIX" =~ ^[a-z0-9][a-z0-9-]{0,39}$ ]] || { echo "::error::artifact-prefix must be lowercase letters, digits and dashes, at most 40"; exit 1; }
+          {
+            echo "repo=$WF_REPO"
+            echo "sha=$WF_SHA"
+            echo "artifact=$PREFIX-mutation-$DISABLE"
+          } >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ steps.which.outputs.repo }}
+          ref: ${{ steps.which.outputs.sha }}
+          path: .isk-sandbox
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install gVisor
+        run: sudo bash .isk-sandbox/scripts/install-runsc.sh "$(command -v node)"
+      - name: Guard the container networks
+        run: sudo bash .isk-sandbox/scripts/net-guard.sh
+      - name: Run the self test with one protection off
+        env:
+          DISABLE: ${{ matrix.disable }}
+          CASES: ${{ matrix.cases }}
+        run: |
+          if node .isk-sandbox/bin/sandbox-selftest.mjs --out "$RUNNER_TEMP/selftest" --lane selftest-mutation --disable "$DISABLE" --cases "$CASES"; then
+            echo "::error::the self test passed with $DISABLE off"
+            exit 1
+          fi
+      - name: The telemetry check fails too
+        env:
+          CASES: ${{ matrix.cases }}
+        run: |
+          if node .isk-sandbox/scripts/check-selftest.mjs "$RUNNER_TEMP/selftest/telemetry.jsonl" --cases "$CASES"; then
+            echo "::error::check-selftest passed with a protection off"
+            exit 1
+          fi
+      - name: It failed for the reason the protection explains
+        env:
+          DISABLE: ${{ matrix.disable }}
+        run: node .isk-sandbox/scripts/check-mutation.mjs "$RUNNER_TEMP/selftest/telemetry.jsonl" "$DISABLE"
+      - name: Upload the telemetry
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.which.outputs.artifact }}
+          path: |
+            ${{ runner.temp }}/selftest/telemetry.jsonl
+            ${{ runner.temp }}/selftest/results.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The outputs, from the jobs' results: a job that failed, was cancelled or never ran is a fail.
+  verdict:
+    needs: [selftest, mutation]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions: {}
+    timeout-minutes: 2
+    outputs:
+      verdict: ${{ steps.v.outputs.verdict }}
+      selftest: ${{ steps.v.outputs.selftest }}
+      mutations: ${{ steps.v.outputs.mutations }}
+      telemetry-artifact: ${{ steps.v.outputs.artifact }}
+    steps:
+      - id: v
+        name: Verdict
+        env:
+          SELFTEST_RESULT: ${{ needs.selftest.result }}
+          SELFTEST_VERDICT: ${{ needs.selftest.outputs.verdict }}
+          MUTATION_RESULT: ${{ needs.mutation.result }}
+          WANT_MUTATIONS: ${{ inputs.mutations }}
+          ARTIFACT: ${{ needs.selftest.outputs.artifact }}
+        run: |
+          selftest=fail
+          if [ "$SELFTEST_RESULT" = success ] && [ "$SELFTEST_VERDICT" = pass ]; then selftest=pass; fi
+          mutations=skipped
+          if [ "$WANT_MUTATIONS" = true ]; then
+            mutations=fail
+            if [ "$MUTATION_RESULT" = success ]; then mutations=pass; fi
+          fi
+          verdict=fail
+          if [ "$selftest" = pass ] && [ "$mutations" != fail ]; then verdict=pass; fi
+          [[ "$ARTIFACT" =~ ^[a-z0-9][a-z0-9-]{0,60}$ ]] || ARTIFACT=''
+          {
+            echo "verdict=$verdict"
+            echo "selftest=$selftest"
+            echo "mutations=$mutations"
+            echo "artifact=$ARTIFACT"
+          } >>"$GITHUB_OUTPUT"
+          echo "sandbox conformance: $verdict (self test $selftest, mutations $mutations)"
