@@ -442,9 +442,10 @@ const RULES = {
               : `nothing was tried: ${calls} clock call(s) traced, at least 2 expected`;
     return verdict(blocked, logged, [...priv.map((p) => `trace: ${p.name} failed ${p.failed}/${p.n} (errno ${p.errno})`), c ? `host: clock drift ${drift} ms; forged time in telemetry: ${c.forged_in_telemetry ? 'YES' : 'no'}` : 'host: not checked'], detail);
   },
-  // Submodules over ext:: (would run a command), file:// and an outside host, LFS pointing outside,
-  // an npm git dependency: ext:: never runs, file:// is not followed, the outside host is refused
-  // by the proxy, and the superproject itself clones (the positive control).
+  // Submodules over ext:: (would run a command), file:// and an outside host, and an npm git
+  // dependency on another: ext:: never runs and file:// is not followed (git's own defaults, which
+  // our refusal of GIT_ names in a target's environment keeps in force), the proxy refuses both
+  // outside hosts, and the superproject itself clones (the positive control).
   'install-git-submodule': (ev) => {
     const ex = stageOf(ev).git && typeof stageOf(ev).git === 'object' ? stageOf(ev).git : null;
     const execs = list(ev.trace && ev.trace.exec);
@@ -453,20 +454,20 @@ const RULES = {
     const fileFollowed = !!ex && ex.file_followed === true;
     const cloned = !!ex && ex.cloned === true;
     const through = letThrough(ev);
-    // The submodules were really tried: the proxy refused the http submodule's own host (the npm
-    // dependency and LFS have hosts of their own), which only a submodule update asks for.
+    // The submodules and the npm dependency were really tried: the proxy refused each one's own host
+    // (sub.evil.example only a submodule update asks for, npm.evil.example only npm).
     const refused = egressOf(ev).filter((e) => e.allowed === false && /(?:^|\.)evil\.example$/.test(String(e.host)));
-    const tried = refused.some((e) => e.host === 'sub.evil.example');
+    const tried = refused.some((e) => e.host === 'sub.evil.example') && refused.some((e) => e.host === 'npm.evil.example');
     const gitRan = execs.some((e) => /\/git$/.test(String(e.path)) && e.failed < e.n);
     const blocked = cloned && tried && !extRan && !fileFollowed && !through.length;
     const logged = refused.length >= 1 && gitRan && !!ex;
-    const detail = blocked ? 'the superproject cloned; ext:: never ran, file:// was not followed, and the proxy refused the outside host'
+    const detail = blocked ? 'the superproject cloned; ext:: never ran, file:// was not followed, and the proxy refused both outside hosts'
       : extRan ? 'got through: a submodule\'s ext:: transport ran'
         : fileFollowed ? 'got through: a file:// submodule was followed'
           : through.length ? `got through: the proxy let ${through[0].host} through`
             : !ex ? 'not measured: the later stage did not run'
               : !cloned ? 'not shown to work: the superproject did not clone, so nothing of its submodules was tried'
-                : 'not shown to work: the proxy never saw the http submodule\'s host (sub.evil.example), so the submodules were not tried';
+                : 'not shown to work: the proxy did not refuse both outside hosts (sub.evil.example for the submodule, npm.evil.example for npm), so not everything was tried';
     return verdict(blocked, logged, [ex ? `later stage: cloned ${ex.cloned}, file:// followed ${ex.file_followed}, ext:: ran ${ex.ext_ran}` : 'later stage: none', ...marker.map((e) => `trace: exec ${String(e.path).slice(0, 60)}`), ...refused.slice(0, 3).map((e) => `proxy: ${e.host}:${e.port ?? '?'} refused (${e.error ?? '?'})`), `trace: git ${gitRan ? 'ran' : 'did not run'}`], detail);
   },
   'output-forgery': (ev) => {

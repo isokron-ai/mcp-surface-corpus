@@ -9,7 +9,7 @@ import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
 import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
 import { fakeHostRun } from './helpers.mjs';
-import { preflight, installProblem, dockerFsProblem, workReadCmd, WORK_READ_SCRIPT, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem, imageHoles } from '../src/sandbox-run.mjs';
+import { preflight, installProblem, dockerFsProblem, workReadCmd, WORK_READ_SCRIPT, limitsHit, runtimeStatus, takeTrace, sweepTraces, startNetlogOn, stopNetlog, writeNetlog, hostDropsFor, rolesOn, resolvProblem, watchTraces, traceFsProblem, diskProblem, imageHoles, PROXY_LOG_CAP } from '../src/sandbox-run.mjs';
 
 const IMG = `docker.io/library/python:3.13-slim-bookworm@sha256:${'a'.repeat(64)}`;
 const ID = 'c'.repeat(64);
@@ -358,4 +358,29 @@ test('R-SBX-33 Docker lists no volume lost+found: the folder mkfs makes in the v
   const sh = readFileSync(new URL('../scripts/install-runsc.sh', import.meta.url), 'utf8');
   assert.ok(sh.indexOf('rmdir "$volumes_dir/lost+found"') > sh.indexOf('mount -o loop,nosuid,nodev,nodiscard "$install_dir/volume-fs.img" "$volumes_dir"'), 'removed once mounted');
   assert.match(sh, /rmdir "\$docker_root\/lost\+found"/);
+});
+
+test('R-SBX-34 the harness reads all of a full proxy log: MAX_LINES refusals of the longest host names and the stopped line fit its read cap, and a cut read is a limit hit', async () => {
+  const { makeProxy, cappedLog, MAX_LINES } = await import('../sandbox/egress-proxy.mjs');
+  // Exactly what the proxy prints: its own timestamp, then the refusal makeProxy logs for a CONNECT.
+  const lines = [];
+  const capped = cappedLog((o) => lines.push(`${JSON.stringify({ t: new Date().toISOString(), ...o })}\n`));
+  const host = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`; // 253 characters, the longest a DNS name may be
+  assert.equal(host.length, 253);
+  for (let i = 0; i < MAX_LINES + 100; i++) capped.log({ host, port: 443, allowed: false, error: 'host not on the allowlist' });
+  lines.push(`${JSON.stringify({ t: new Date().toISOString(), kind: 'stopped', ...capped.stats() })}\n`);
+  const bytes = Buffer.byteLength(lines.join(''));
+  assert.ok(bytes > 4 * 1024 * 1024, `${bytes} bytes: the old 4 MiB cap cut the stopped line off`);
+  assert.ok(bytes < PROXY_LOG_CAP, `${bytes} bytes fit the read cap (${PROXY_LOG_CAP})`);
+  assert.equal(PROXY_LOG_CAP, 16 * 1024 * 1024, 'one container log file');
+  assert.match(lines[lines.length - 1], /"kind":"stopped","lines":20000,"dropped":100/);
+  assert.ok(typeof makeProxy === 'function');
+  const fw = { 'ISK-SBX': { logged: 1, dropped: 1 } };
+  assert.deepEqual(limitsHit({ fw0: fw, fw1: fw, proxyTruncated: true }), [`egress proxy: its log was cut at ${PROXY_LOG_CAP} bytes when read`]);
+  for (const f of ['../bin/run-shard.mjs', '../bin/sandbox-selftest.mjs']) {
+    const src = readFileSync(new URL(f, import.meta.url), 'utf8');
+    assert.match(src, /\['logs', proxy\], \{ keepStdout: true, logStdout: false, cap: PROXY_LOG_CAP/, `${f}: the proxy's log read with PROXY_LOG_CAP`);
+    assert.ok(!/\['logs', proxy\][^\n]*cap: 4 \* 1024 \* 1024/.test(src), `${f}: not 4 MiB`);
+    assert.match(src, /stdout_truncated/, `${f}: a cut read is noted`);
+  }
 });

@@ -365,12 +365,14 @@ test('R-CASE-27 install-git-submodule: ext:: by its trace alone, the proxy letti
   const g = (f) => { const ev = GOOD['install-git-submodule'](); f(ev); return evaluateCase('install-git-submodule', ev); };
   assert.match(g((ev) => { ev.trace.exec.push(fail({ path: '/tmp/isk-ext-1' })); }).detail, /^got through: a submodule's ext:: transport ran/, 'even an attempt to run it');
   assert.match(g((ev) => { ev.egress.push({ host: 'sub.evil.example', port: 443, allowed: true, up: 1, down: 1, ms: 1 }); }).detail, /^got through: the proxy let sub\.evil\.example through/);
-  assert.match(g((ev) => { ev.egress = ev.egress.filter((e) => e.host !== 'sub.evil.example'); }).detail, /^not shown to work: the proxy never saw the http submodule's host/, 'seen on GitHub: a superproject without its gitlinks cloned and passed');
+  assert.match(g((ev) => { ev.egress = ev.egress.filter((e) => e.host !== 'sub.evil.example'); }).detail, /^not shown to work: the proxy did not refuse both outside hosts/, 'seen on GitHub: a superproject without its gitlinks cloned and passed');
+  assert.match(g((ev) => { ev.egress = ev.egress.filter((e) => e.host !== 'npm.evil.example'); }).detail, /^not shown to work: the proxy did not refuse both outside hosts/, 'the npm git dependency must be refused too (review of pull request 12)');
   assert.match(g((ev) => { ev.stage.git.cloned = false; }).detail, /^not shown to work: the superproject did not clone/);
   assert.equal(g((ev) => { ev.egress = []; }).logged, false, 'the outside host must reach the proxy\'s log');
   const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
-  for (const u of ['url = ext::{marker} %S', 'url = file://{src}', 'url = https://sub.evil.example/isk-{nonce}.git', 'url = https://lfs.evil.example/isk-{nonce}.git/info/lfs', 'git+https://npm.evil.example/isk-npm-{nonce}.git']) assert.ok(py.includes(u), u);
-  assert.match(py, /git\(\["add", "\.gitmodules", "\.gitattributes", "\.lfsconfig", "big\.bin"\], sup\)/, 'the files by name: `git add .` takes the gitlinks out again');
+  for (const u of ['url = ext::{marker} %S', 'url = file://{src}', 'url = https://sub.evil.example/isk-{nonce}.git', 'git+https://npm.evil.example/isk-npm-{nonce}.git']) assert.ok(py.includes(u), u);
+  assert.match(py, /git\(\["add", "\.gitmodules", "README"\], sup\)/, 'the files by name: `git add .` takes the gitlinks out again');
+  assert.ok(!/lfs/i.test(py.slice(py.indexOf('def case_install_git_submodule'), py.indexOf('# background:'))), 'no LFS claimed: git-lfs is not in the build images');
   assert.ok(!/https?:\/\/(?!(?:[a-z0-9-]+\.)?evil\.example\/|git-lfs\.github\.com\/spec)[a-z0-9.-]+\.[a-z]/i.test(py.slice(py.indexOf('def case_install_git_submodule'), py.indexOf('# background:'))), 'outside hosts are reserved names only');
 });
 

@@ -220,7 +220,7 @@ test('R-SBX-28 the egress proxy prints at most MAX_LINES lines, counts the rest,
   assert.match(px, /makeProxy\(allow, capped\.log\)/);
   for (const f of ['../bin/run-shard.mjs', '../bin/sandbox-selftest.mjs']) {
     const src = readFileSync(new URL(f, import.meta.url), 'utf8');
-    assert.ok(src.indexOf("'stop', '-t', '3', proxy]") > 0 && src.indexOf("'stop', '-t', '3', proxy]") < src.indexOf("'logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024"), `${f}: stopped, then read`);
+    assert.ok(src.indexOf("'stop', '-t', '3', proxy]") > 0 && src.indexOf("'stop', '-t', '3', proxy]") < src.indexOf("'logs', proxy], { keepStdout: true, logStdout: false, cap: PROXY_LOG_CAP"), `${f}: stopped, then read`);
   }
 });
 

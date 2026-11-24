@@ -58,7 +58,7 @@ import { envNameAllowed, settingsDigest, settingsManifest } from '../src/sandbox
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { Telemetry, fromProxy } from '../src/telemetry.mjs';
-import { jsonLines, diskProblem, workReadCmd, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { jsonLines, diskProblem, workReadCmd, PROXY_LOG_CAP, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { sdkFromFile } from '../src/sdk.mjs';
 import { buildRow, buildState, RECORD_FORMAT } from '../src/record.mjs';
 import { probeStdio, listed, PROTOCOL_OFFERED } from '../sandbox/probe.mjs';
@@ -436,7 +436,8 @@ async function runTarget(t, list, ctx, dk) {
             if (proxyUp) {
               // Stopped first, so it prints how many lines its cap left out (`proxy_dropped`).
               await tdk.d(['stop', '-t', '3', proxy], { deadline: Date.now() + 30_000 });
-              const pl = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024 });
+              const pl = await tdk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: PROXY_LOG_CAP });
+              if (pl.stdout_truncated) inst.proxy_log_truncated = true;
               const plines = pl.stdout.toString('utf8').split('\n').filter(Boolean).slice(0, 25_000).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
               const stopped = plines.find((o) => o && o.kind === 'stopped');
               if (stopped && Number.isInteger(stopped.dropped)) inst.proxy_dropped = stopped.dropped;
@@ -571,7 +572,7 @@ async function runTarget(t, list, ctx, dk) {
     sweepTraces(ctx.cfg, t0);
     ctx.missing = null;
     // Where a log or rate limit cut this target's evidence short (the record keeps it).
-    if (ctx.lane === 'ci') rec.limits_hit = limitsHit({ fw0, fw1: firewallCounts(ctx.hostRun), proxyLines: rec.install && Number.isInteger(rec.install.proxy_dropped) ? [{ kind: 'stopped', dropped: rec.install.proxy_dropped }] : [] });
+    if (ctx.lane === 'ci') rec.limits_hit = limitsHit({ fw0, fw1: firewallCounts(ctx.hostRun), proxyLines: rec.install && Number.isInteger(rec.install.proxy_dropped) ? [{ kind: 'stopped', dropped: rec.install.proxy_dropped }] : [], proxyTruncated: !!(rec.install && rec.install.proxy_log_truncated) });
   }
   // Fail closed on the ci lane: a target whose sandbox evidence is incomplete is a harness error, and
   // its row stays out of the results (the record keeps why).

@@ -380,7 +380,13 @@ export function writeDrops(tel, groups, { subject = null, roles = {} } = {}) {
  * than it logged (its LOG rules are rate limited), the network logger stopped printing, the trace
  * summary was cut to fit. `fw0` and `fw1` are firewallCounts() before and after.
  */
-export function limitsHit({ fw0, fw1, netlogLines = [], proxyLines = [], trace = null }) {
+/**
+ * How much of the egress proxy's log the harness reads: one container log file's worth (16 MiB),
+ * room for its MAX_LINES lines of the longest host names (about 7 MB) and its closing `stopped` line.
+ */
+export const PROXY_LOG_CAP = 16 * 1024 * 1024;
+
+export function limitsHit({ fw0, fw1, netlogLines = [], proxyLines = [], proxyTruncated = false, trace = null }) {
   const out = [];
   if (!fw0 || !fw1) out.push('the firewall counters could not be read');
   else {
@@ -392,6 +398,7 @@ export function limitsHit({ fw0, fw1, netlogLines = [], proxyLines = [], trace =
   }
   for (const l of netlogLines) if (l && l.kind === 'stopped' && Number(l.dropped) > 0) out.push(`network logger: ${Number(l.dropped)} line(s) not printed (line limit)`);
   for (const l of proxyLines) if (l && l.kind === 'stopped' && Number(l.dropped) > 0) out.push(`egress proxy: ${Number(l.dropped)} line(s) not printed (line limit)`);
+  if (proxyTruncated) out.push(`egress proxy: its log was cut at ${PROXY_LOG_CAP} bytes when read`);
   if (trace && trace.shrunk) out.push('trace summary: lists cut to fit a record');
   return out;
 }

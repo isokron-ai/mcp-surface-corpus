@@ -36,7 +36,7 @@ import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, fromProxy, newRunId, readTelemetry } from '../src/telemetry.mjs';
 import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, caseNet, evaluateCase } from '../src/selftest.mjs';
-import { imageHoles, firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { PROXY_LOG_CAP, imageHoles, firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { lookup } from 'node:dns/promises';
 import { PROXY_PORT, PROXY_URL, loadImages, resolveRegistries } from './run-shard.mjs';
@@ -480,7 +480,8 @@ async function runCase(name, ctx) {
     if (proxy) {
       // Stopped first, so it prints how many lines its cap left out.
       await dk.d(['stop', '-t', '3', proxy], { deadline: Date.now() + 30_000 });
-      const pl = await dk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024, deadline: Date.now() + 60_000 });
+      const pl = await dk.d(['logs', proxy], { keepStdout: true, logStdout: false, cap: PROXY_LOG_CAP, deadline: Date.now() + 60_000 });
+      ev.proxyTruncated = !!pl.stdout_truncated;
       for (const l of String(pl.stdout).split('\n').filter(Boolean).slice(0, 25_000)) {
         let o = null;
         try { o = JSON.parse(l); } catch { continue; }
@@ -513,7 +514,7 @@ async function runCase(name, ctx) {
     ev.telemetryHasNonce = readFileSync(tel.file, 'utf8').includes(nonce) || back.bad.length > 0 || back.records.some((r) => r.run !== tel.run);
 
     // The evidence that is not in other records, so scripts/check-selftest.mjs can recompute the verdict.
-    const limits = limitsHit({ fw0, fw1: firewallCounts(), netlogLines: ev.netlogLines || [], proxyLines: ev.proxyLines || [], trace: ev.trace }).map((x) => x.slice(0, 200)).slice(0, 20);
+    const limits = limitsHit({ fw0, fw1: firewallCounts(), netlogLines: ev.netlogLines || [], proxyLines: ev.proxyLines || [], proxyTruncated: !!ev.proxyTruncated, trace: ev.trace }).map((x) => x.slice(0, 200)).slice(0, 20);
     tel.write('case_evidence', { case: name, limits_hit: limits, canary_hits: ev.canaryHits, inspect: { runtime: ev.inspect.runtime, mismatches: ev.inspect.mismatches.map((m) => String(m).slice(0, 200)).slice(0, 20), canary_in_env: ev.inspect.canaryInEnv }, telemetry_has_nonce: ev.telemetryHasNonce, pids_limit: ev.pidsLimit, ...(ev.stage ? { stage: ev.stage } : {}) }, meta);
     const v = evaluateCase(name, ev);
     tel.write('bypass_result', { case: name, ...v }, meta);

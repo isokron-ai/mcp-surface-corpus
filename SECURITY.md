@@ -168,7 +168,10 @@ literals, to ports other than 443, direct egress around the proxy, cloud metadat
 through the proxy), the host, and an archive bomb (a gibibyte from a megabyte, twenty thousand
 entries, deep folders, entries that climb out, then an allocation past the work volume's cap, after
 which the volume's image must still be fully reserved), and git submodules over ext::, file:// and
-an outside host, with LFS and an npm git dependency pointing outside too. A case passes only when the harness's own evidence (trace,
+an outside host, and an npm git dependency on another. Refusing ext:: and file:// in a submodule is
+git's own default; what the sandbox adds is that a target cannot change it (GIT_ names are refused
+in its environment) and that the proxy refuses both outside hosts. git-lfs is not in the build
+images, so LFS is not tested. A case passes only when the harness's own evidence (trace,
 logger, the proxy's own log, firewall log, `docker inspect`, a listener on the host) shows it was
 blocked and logged, never on what the target printed; `scripts/check-selftest.mjs`
 then checks the same from the telemetry alone. Some cases have a later stage, our code run after
