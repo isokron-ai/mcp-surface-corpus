@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { Docker, sandboxRunArgs, helperRunArgs, volumeMount, dockerEnvFrom, checkPinned, checkDockerVersion, HarnessError, SANDBOX_USER, run, tailLine, STDERR_TAIL, isPublicIp4, LIMITS } from '../src/docker.mjs';
 import { WORK_VOLUME_CMD } from '../bin/sandbox-selftest.mjs';
 import { decide, makeProxy, cappedLog, MAX_LINES } from '../sandbox/egress-proxy.mjs';
-import { connect } from 'node:net';
-import { readFileSync } from 'node:fs';
+import { connect, createServer } from 'node:net';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const IMG = `docker.io/library/node:24-bookworm-slim@sha256:${'d'.repeat(64)}`;
 const sb = (o = {}) => sandboxRunArgs({ name: 'surface-x-s001-s1', image: IMG, network: 'none', cmd: ['node', 'x.js'], ...o });
@@ -150,6 +151,43 @@ test('egress proxy: only CONNECT to an allowlisted host name on port 443', async
   assert.deepEqual(log.map((l) => l.allowed), [false, false, false]);
   assert.equal(log[0].host, 'evil.example');
   assert.equal(log[1].error, 'IP literal');
+});
+
+test('R-SBX-44 egress proxy: a server that sends its answer and closes at once is passed on whole, never reset, also when the client still sends', async () => {
+  const body = Buffer.alloc(1024 * 1024, 'x');
+  // An upstream that writes a large answer and closes as soon as it is written (as github.com does after a 302).
+  const up = createServer((sock) => { sock.on('error', () => {}); sock.end(body); });
+  await new Promise((r) => up.listen(0, '127.0.0.1', r));
+  const upPort = up.address().port;
+  const run = async (mk) => {
+    const log = [];
+    const server = mk(new Set(['up.test']), (o) => log.push(o), { connectTo: () => connect({ host: '127.0.0.1', port: upPort }) });
+    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    const got = await new Promise((res) => {
+      const s = connect(server.address().port, '127.0.0.1', () => s.write('CONNECT up.test:443 HTTP/1.1\r\nHost: up.test:443\r\n\r\n'));
+      const parts = []; let err = null;
+      // The client is slow to read the answer and still sends (a TLS close_notify, say) after the server has closed: a
+      // proxy that has already destroyed its side answers that with a reset, which throws away what the client had not read.
+      s.pause(); setTimeout(() => { if (!s.destroyed) s.write('close-notify'); }, 150); setTimeout(() => s.resume(), 500);
+      s.on('data', (c) => parts.push(c)); s.on('error', (e) => { err = e.code; }); s.on('close', () => res({ bytes: Buffer.concat(parts).length, err }));
+    });
+    server.close();
+    return got;
+  };
+  const head = 'HTTP/1.1 200 Connection Established\r\n\r\n'.length;
+  assert.deepEqual(await run(makeProxy), { bytes: head + body.length, err: null });
+  // Mutation check: with the old destroy-at-once the answer is cut short.
+  const src = readFileSync(new URL('../sandbox/egress-proxy.mjs', import.meta.url), 'utf8');
+  const from = 'for (const s of [upstream, client]) { s.end(); setTimeout(() => s.destroy(), LINGER_MS).unref(); }';
+  assert.ok(src.includes(from));
+  const file = fileURLToPath(new URL(`../sandbox/.mutant-${process.pid}-proxy.mjs`, import.meta.url));
+  writeFileSync(file, src.replace(from, 'upstream.destroy(); client.destroy();'));
+  try {
+    const M = await import(pathToFileURL(file).href);
+    const cut = await run(M.makeProxy);
+    // Linux (the runners, and gVisor's netstack) throws away a reader's unread bytes on a reset; macOS keeps them.
+    if (process.platform === 'linux') assert.ok(cut.bytes < head + body.length || cut.err === 'ECONNRESET', `without the graceful close the answer is cut (${cut.bytes} bytes)`);
+  } finally { rmSync(file, { force: true }); up.close(); }
 });
 
 test('names stay unique across a per-target view of the session (Object.create shares the counter)', () => {
