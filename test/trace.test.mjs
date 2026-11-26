@@ -200,6 +200,47 @@ test('R-CI-09 a timing table forged through a file name is flagged', () => {
   }
 });
 
+test('R-CI-09 a whole timing table forged through a file name, every line of it well formed, is flagged by the once-only rule', () => {
+  // The name closes the real line, holds a whole table, and ends in a header of its own, so the rest of
+  // the real line (")", or ") = 0x0 (1µs)") lands on a line with a header: no headerless line is left
+  // over, the forged table is taken as the one table, and only the rule that runsc writes one table
+  // per trace catches it (runsc's real one, or the copy of the name runsc prints again on the X line).
+  const name = `x)\n${TIMING.join('\n')}\nI1121 10:00:59.000000       1 strace.go:605] [   7:   7] python3 X getpid(`;
+  const forged = [L(7, 'python3', 'E', `unlink(0x7f00 ${name})`), L(7, 'python3', 'X', `unlink(0x7f00 ${name})`, '0x0 (1µs)')];
+  const cases = {
+    'runsc\'s table before the calls': [...BOOT, ...TIMING, ...FIRST, ...forged, ...TL],
+    'runsc\'s table after the forged one': [...BOOT, ...FIRST, ...forged, ...TIMING, ...TL],
+    'no table of runsc\'s': [...BOOT, ...FIRST, ...forged, ...TL],
+    'runsc\'s table before, the E line alone (a call that never returns)': [...BOOT, ...TIMING, ...FIRST, forged[0], ...TL],
+  };
+  for (const [why, order] of Object.entries(cases)) {
+    const s = summarizeTrace(order.join('\n'), cfg);
+    assert.equal(s.broken_lines, 0, `${why}: every line closes`);
+    assert.equal(s.injection_suspected, true, why);
+    assert.ok(s.headerless_lines >= TIMING_ROWS, `${why}: a second table's rows are what is flagged`);
+    assert.ok(traceProblems(s).length > 0, why);
+  }
+});
+
+test('R-CI-09 the trace file reader splits at a lone carriage return too: a table forged with them is flagged', async () => {
+  // runsc ends its lines with \n only; the file reader (readline) also breaks at a lone \r, so a name
+  // can use \r where the test above uses \n. The same once-only rule catches it.
+  const name = `x)\r${TIMING.join('\r')}\rI1121 10:00:59.000000       1 strace.go:605] [   7:   7] python3 X getpid(`;
+  const forged = [L(7, 'python3', 'E', `unlink(0x7f00 ${name})`), L(7, 'python3', 'X', `unlink(0x7f00 ${name})`, '0x0 (1µs)')];
+  const d = mkdtempSync(join(tmpdir(), 'trace-'));
+  for (const [i, order] of [[...BOOT, ...TIMING, ...FIRST, ...forged, ...TL], [...BOOT, ...FIRST, ...forged, ...TL]].entries()) {
+    writeFileSync(join(d, `${i}.log`), `${order.join('\n')}\n`);
+    const s = await summarizeTraceFile(join(d, `${i}.log`), cfg);
+    assert.equal(s.broken_lines, 0);
+    assert.equal(s.injection_suspected, true, `order ${i}`);
+    assert.ok(s.headerless_lines >= TIMING_ROWS);
+  }
+  // And runsc's own table, read from a file, after the first call: passed over.
+  writeFileSync(join(d, 'late.log'), `${[...BOOT, ...FIRST, ...TIMING, '', ...TL].join('\n')}\n`);
+  const late = await summarizeTraceFile(join(d, 'late.log'), cfg);
+  assert.deepEqual([late.injection_suspected, late.headerless_lines, late.runsc_timing_block], [false, 0, 'after_calls']);
+});
+
 test('R-CASE-19 the trace summary lists the links a target made, and where they point', () => {
   const lines = [
     L(7, 'python3', 'X', 'symlinkat(0x7f00 /etc, AT_FDCWD /work, 0x7f01 /work/links-1/l01)', '0 (0x0) (3µs)'),
