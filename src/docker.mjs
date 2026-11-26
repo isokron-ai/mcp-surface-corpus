@@ -34,6 +34,15 @@ export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', nofile: '4096'
  */
 const IMAGE_PATH = /^(?!.*(?:^|\/)\.\.?(?:\/|$))\/[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+){0,20}\/?$/;
 export const imagePath = (p) => (typeof p === 'string' && p.length <= 200 && IMAGE_PATH.test(p) ? p.replace(/\/$/, '') : null);
+/** The kernel's own folders: never a working folder or a mount point of ours, whatever an image asks (a /proc/self/fd/N WORKDIR). */
+const SYSTEM_PATH = /^\/(?:proc|sys|dev)(?:\/|$)/;
+/** An image's WORKDIR as we would run it: { workdir } when plain and not a kernel folder, else { workdir: null, refused } (cut). */
+export function imageWorkdir(raw) {
+  if (raw === undefined || raw === null || raw === '') return { workdir: null, refused: null };
+  const p = imagePath(raw);
+  return p && !SYSTEM_PATH.test(p) ? { workdir: p, refused: null } : { workdir: null, refused: String(raw).replace(/[^\x20-\x7e]/g, '?').slice(0, 120) };
+}
+const under = (p, dir) => p === dir || p.startsWith(dir + '/');
 
 /**
  * A writable, size-capped tmpfs over each path the image declares a VOLUME at (the server's data folder: /data,
@@ -41,15 +50,46 @@ export const imagePath = (p) => (typeof p === 'string' && p.length <= 200 && IMA
  * LIMITS.volTmpCount of them, LIMITS.volTmp each (256 MiB in all: tmpfs is memory and counts against LIMITS.memory),
  * never over /tmp, /proc, /sys, /dev, /etc or our own mounts (/work, /opt).
  */
-export function volumeTmpfs(paths) {
-  const out = [];
-  for (const raw of Array.isArray(paths) ? paths : []) {
+export function volumeTmpfs(paths, avoid = []) {
+  return volumePlan(paths, avoid).volumes;
+}
+
+/**
+ * The same, with what was left out and why: { volumes, dropped: [{ path, why }] }. A VOLUME equal to or holding a
+ * folder in `avoid` (the image's WORKDIR, its entrypoint's folder) is left out: a tmpfs there would hide the files the
+ * image ships in it (its code, its start script). why: not_plain | reserved | holds_code | duplicate | over_cap.
+ */
+export function volumePlan(paths, avoid = []) {
+  const out = []; const dropped = [];
+  const keep = (Array.isArray(avoid) ? avoid : []).map(imagePath).filter(Boolean);
+  for (const raw of (Array.isArray(paths) ? paths : []).slice(0, 50)) {
     const p = imagePath(raw);
-    if (!p || /^\/(?:tmp|proc|sys|dev|etc|work|opt)(?:\/|$)/.test(p) || out.includes(p)) continue;
-    out.push(p);
-    if (out.length >= LIMITS.volTmpCount) break;
+    const cut = String(raw).replace(/[^\x20-\x7e]/g, '?').slice(0, 120);
+    const why = !p ? 'not_plain' : /^\/(?:tmp|proc|sys|dev|etc|work|opt)(?:\/|$)/.test(p) ? 'reserved' : keep.some((k) => under(k, p)) ? 'holds_code' : out.includes(p) ? 'duplicate' : out.length >= LIMITS.volTmpCount ? 'over_cap' : null;
+    if (why) dropped.push({ path: cut, why }); else out.push(p);
   }
-  return out;
+  return { volumes: out, dropped };
+}
+
+/**
+ * Whether a path holds anything in the image, from the head of `docker cp <container>:<path> -` (a tar stream; data
+ * only, nothing of the image runs and nothing is extracted): empty (a folder with no entry in it), seeded (a folder
+ * with something in it, or not a folder at all: a file or a link), or unknown (no readable header). Only an empty
+ * folder may get a tmpfs.
+ */
+export function tarHead(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 512) return 'unknown';
+  const name = (b) => b.subarray(0, 100).toString('latin1').replace(/\0.*$/s, '');
+  const size = (b) => { const t = b.subarray(124, 136).toString('latin1').replace(/[\0 ]+$/g, '').trim(); return /^[0-7]{1,12}$/.test(t) ? parseInt(t, 8) : null; };
+  const h = buf.subarray(0, 512);
+  if (!name(h)) return 'unknown';
+  const type = String.fromCharCode(h[156]);
+  if (type !== '5') return 'seeded';
+  const n = size(h);
+  if (n === null) return 'unknown';
+  const next = 512 + Math.ceil(n / 512) * 512;
+  if (buf.length < next + 512) return 'empty';
+  return name(buf.subarray(next, next + 512)) ? 'seeded' : 'empty';
 }
 
 /**
@@ -99,7 +139,11 @@ export function imageConfigOf(text) {
   try { c = JSON.parse(sp > 0 ? t.slice(0, sp) : t); } catch { c = null; }
   const plat = sp > 0 ? t.slice(sp + 1) : '';
   const vols = c && c.Volumes && typeof c.Volumes === 'object' && !Array.isArray(c.Volumes) ? Object.keys(c.Volumes).slice(0, 50) : [];
-  return { workdir: c ? imagePath(c.WorkingDir) : null, volumes: vols, platform: /^[a-z0-9]{1,20}\/[a-z0-9]{1,20}$/.test(plat) ? plat : null };
+  const wd = c ? imageWorkdir(c.WorkingDir) : { workdir: null, refused: null };
+  const ep = c ? [...(Array.isArray(c.Entrypoint) ? c.Entrypoint : []), ...(Array.isArray(c.Cmd) ? c.Cmd : [])].filter((x) => typeof x === 'string').slice(0, 4) : [];
+  // The folder of an absolute entrypoint (or of an absolute script it is given): its code lives there.
+  const codeDirs = ep.filter((x) => x.startsWith('/')).map((x) => imagePath(x.replace(/\/[^/]*$/, ''))).filter(Boolean);
+  return { ok: !!c, workdir: wd.workdir, workdir_refused: wd.refused, code_dirs: [...new Set(codeDirs)].slice(0, 4), volumes: vols, platform: /^[a-z0-9]{1,20}\/[a-z0-9]{1,20}$/.test(plat) ? plat : null };
 }
 
 /** The one host file a container may see: our resolv.conf of a sandbox network, read-only (net-guard.sh writes it). */
@@ -138,7 +182,7 @@ const netArgs = ({ network, ip, resolv, cidfile }) => {
 export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, labels = {}, workdir = '/tmp', tmpfs = [], stdin = false, detach = false, cpus = LIMITS.cpus, cmd, entrypoint = null, aliases = [], ip = null, resolv = null, cidfile = null, hostEnv = process.env }) {
   checkPinned(image, 'sandbox');
   if (typeof network !== 'string' || !network || network === 'host' || network === 'bridge' || network.startsWith('container:')) throw new HarnessError('a sandbox container never uses the host, default bridge or another container\'s network');
-  if (workdir !== '/tmp' && workdir !== '/work' && !imagePath(workdir)) throw new HarnessError('the working folder is not a plain absolute path');
+  if (workdir !== '/tmp' && workdir !== '/work' && (!imagePath(workdir) || SYSTEM_PATH.test(workdir))) throw new HarnessError('the working folder is not a plain absolute path outside /proc, /sys and /dev');
   const vols = volumeTmpfs(tmpfs);
   if (vols.length !== (Array.isArray(tmpfs) ? tmpfs.length : 0)) throw new HarnessError('a tmpfs path is not one this sandbox mounts');
   const bad = targetEnvProblems(env, hostEnv);
@@ -238,7 +282,7 @@ export function tailLine(buf, max = 400) {
   return line.length > max ? `...${line.slice(-max)}` : line;
 }
 
-export function run(cmd, argv, { env, log = null, deadline = null, input = null, keepStdout = false, keepStderr = false, logStdout = true, cap = 64 * 1024 * 1024, logCap = 16 * 1024 * 1024, onTimeout = null } = {}) {
+export function run(cmd, argv, { env, log = null, deadline = null, input = null, keepStdout = false, keepStderr = false, tail = false, logStdout = true, cap = 64 * 1024 * 1024, logCap = 16 * 1024 * 1024, onTimeout = null } = {}) {
   return new Promise((done) => {
     const t0 = Date.now();
     let child;
@@ -247,21 +291,28 @@ export function run(cmd, argv, { env, log = null, deadline = null, input = null,
     const toLog = (c) => { if (!log || logged >= logCap) return; const b = c.subarray(0, logCap - logged); logged += b.length; try { appendFileSync(log, b); } catch { /* the log is best effort */ } };
     child.stdout.on('data', (c) => {
       total += c.length;
-      if (keepStdout) { if (kept + c.length <= cap) { chunks.push(c); kept += c.length; } else truncated = true; }
+      if (keepStdout) {
+        // tail: the last `cap` bytes, cut by bytes (a server's last lines say why it stopped); else the first.
+        if (tail) { chunks.push(c); kept += c.length; while (kept > cap) { const d = kept - cap; if (chunks[0].length <= d) kept -= chunks.shift().length; else { chunks[0] = chunks[0].subarray(d); kept -= d; } truncated = true; } }
+        else if (kept + c.length <= cap) { chunks.push(c); kept += c.length; } else truncated = true;
+      }
       if (logStdout) toLog(c);
     });
     let errTail = Buffer.alloc(0);
-    const errChunks = []; let errKept = 0; let errTotal = 0;
+    const errChunks = []; let errKept = 0; let errTotal = 0; let errTruncated = false;
     child.stderr.on('data', (c) => {
       errTotal += c.length;
-      if (keepStderr && errKept + c.length <= cap) { errChunks.push(c); errKept += c.length; }
+      if (keepStderr) {
+        if (tail) { errChunks.push(c); errKept += c.length; while (errKept > cap) { const d = errKept - cap; if (errChunks[0].length <= d) errKept -= errChunks.shift().length; else { errChunks[0] = errChunks[0].subarray(d); errKept -= d; } errTruncated = true; } }
+        else if (errKept + c.length <= cap) { errChunks.push(c); errKept += c.length; } else errTruncated = true;
+      }
       errTail = Buffer.concat([errTail, c]);
       if (errTail.length > STDERR_TAIL) errTail = errTail.subarray(errTail.length - STDERR_TAIL);
       toLog(c);
     });
     child.stdin.on('error', () => {});
     child.on('error', (e) => { clearTimeout(timer); done({ exit: 127, signal: null, timed_out: false, stdout: Buffer.alloc(0), stdout_bytes: 0, stdout_truncated: false, stderr_tail: errTail, ms: Date.now() - t0, spawn_error: e.message }); });
-    child.on('close', (code, signal) => { clearTimeout(timer); done({ exit: code, signal, timed_out: timedOut, stdout: Buffer.concat(chunks), stdout_bytes: total, stdout_truncated: truncated, stderr_tail: errTail, ...(keepStderr ? { stderr: Buffer.concat(errChunks), stderr_bytes: errTotal } : {}), ms: Date.now() - t0 }); });
+    child.on('close', (code, signal) => { clearTimeout(timer); done({ exit: code, signal, timed_out: timedOut, stdout: Buffer.concat(chunks), stdout_bytes: total, stdout_truncated: truncated, stderr_tail: errTail, ...(keepStderr ? { stderr: Buffer.concat(errChunks), stderr_bytes: errTotal, stderr_truncated: errTruncated } : {}), ms: Date.now() - t0 }); });
     if (deadline !== null) {
       timer = setTimeout(async () => {
         timedOut = true;
@@ -321,6 +372,28 @@ export class Docker {
     checkPinned(ref, 'target');
     const r = await this.d(['image', 'inspect', '--format', '{{json .Config}} {{.Os}}/{{.Architecture}}', ref], { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 60_000 });
     return imageConfigOf(r.exit === 0 ? r.stdout.toString('utf8') : '');
+  }
+
+  /**
+   * Which of `paths` hold content in a pulled target image: a created, never started container (no network, an
+   * entrypoint that does not exist) and the head of `docker cp` for each path. Returns { path: empty | seeded |
+   * unknown }; the container is removed.
+   */
+  async volumeContent(ref, paths, { name, labels = {} } = {}) {
+    checkPinned(ref, 'target');
+    const out = {};
+    if (!paths.length) return out;
+    if (!/^surface-[a-z0-9-]+$/.test(String(name))) throw new HarnessError('a probe container takes a surface name');
+    const c = await this.d(['create', '--name', name, ...labelArgs(labels), '--network', 'none', '--entrypoint', '/surface-never-runs', ref], { keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 60_000 });
+    try {
+      for (const p of paths) {
+        if (c.exit !== 0) { out[p] = 'unknown'; continue; }
+        const r = await this.d(['cp', `${name}:${p}`, '-'], { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 60_000 });
+        // Not in the image at all: Docker makes the mount point empty.
+        out[p] = r.exit === 0 || r.stdout.length ? tarHead(r.stdout) : /no such file|could not find the file/i.test(String(r.stderr_tail)) ? 'empty' : 'unknown';
+      }
+    } finally { await this.d(['rm', '-f', name], { deadline: Date.now() + 60_000 }); }
+    return out;
   }
 
   /** A new, empty volume; one that exists already is refused. */

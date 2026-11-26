@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HarnessError, LIMITS, SANDBOX_USER, imageConfigOf, imagePath, run, sandboxRunArgs, volumeTmpfs } from '../src/docker.mjs';
+import { HarnessError, LIMITS, SANDBOX_USER, imageConfigOf, imagePath, imageWorkdir, run, sandboxRunArgs, tarHead, volumePlan, volumeTmpfs } from '../src/docker.mjs';
 import { launchPlan, validateTarget } from '../src/targets.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -32,9 +32,11 @@ const hardened = (a) => {
 test('R-SBX-44 an OCI target runs in its image\'s own WORKDIR, read from the pulled image, never one it cannot name plainly', () => {
   // The shape `docker image inspect --format '{{json .Config}} {{.Os}}/{{.Architecture}}'` prints.
   const cfg = imageConfigOf('{"User":"","WorkingDir":"/app","Volumes":{"/data":{},"/app/logs":{}},"Entrypoint":["node","dist/index.js"]} linux/amd64\n');
-  assert.deepEqual(cfg, { workdir: '/app', volumes: ['/data', '/app/logs'], platform: 'linux/amd64' });
-  assert.deepEqual(imageConfigOf('{"WorkingDir":"","Volumes":null} linux/amd64'), { workdir: null, volumes: [], platform: 'linux/amd64' });
-  assert.deepEqual(imageConfigOf(''), { workdir: null, volumes: [], platform: null });
+  assert.deepEqual(cfg, { ok: true, workdir: '/app', workdir_refused: null, code_dirs: [], volumes: ['/data', '/app/logs'], platform: 'linux/amd64' });
+  assert.deepEqual(imageConfigOf('{"WorkingDir":"","Volumes":null} linux/amd64'), { ok: true, workdir: null, workdir_refused: null, code_dirs: [], volumes: [], platform: 'linux/amd64' });
+  assert.deepEqual(imageConfigOf(''), { ok: false, workdir: null, workdir_refused: null, code_dirs: [], volumes: [], platform: null });
+  assert.equal(imageConfigOf('{"WorkingDir":"/app"} /').ok, true, 'an empty Os/Arch is no failed inspect');
+  assert.deepEqual(imageConfigOf('{"Entrypoint":["/usr/local/bin/start.sh"],"Cmd":["/srv/app/main.py","--x"]} linux/amd64').code_dirs, ['/usr/local/bin', '/srv/app']);
   for (const bad of ['app', '/', '/app/../etc', '/a b', '/x;rm', '/./x', '//', '/a,size=9g', '/a:rw', '/a=b', '-x', '/a\n', '/a/b\n']) assert.equal(imagePath(bad), null, JSON.stringify(bad));
   const a = sb({ workdir: '/app' });
   assert.equal(pair(a, '--workdir'), '/app');
@@ -70,12 +72,17 @@ test('R-SBX-45 a size-capped tmpfs over each VOLUME the image declares, at most 
 test('R-SBX-46 a target image is pulled for linux/amd64 only, and its platform is recorded', () => {
   const src = readFileSync(join(root, 'bin', 'run-shard.mjs'), 'utf8');
   assert.match(src, /tdk\.d\(\['pull', '-q', '--platform', 'linux\/amd64', image\]/);
-  assert.match(src, /inst\.oci = \{ workdir: ic\.workdir, volumes: volumeTmpfs\(ic\.volumes\), platform: ic\.platform, \.\.\.\(ic\.platform \? \{\} : \{ inspect_failed: true \}\) \}/, 'a failed inspect is recorded, not silent');
+  assert.match(src, /\.\.\.\(ic\.ok \? \{\} : \{ inspect_failed: true \}\)/, 'a failed inspect is recorded, not silent');
   assert.equal(imageConfigOf('{} linux/arm64').platform, 'linux/arm64');
   assert.equal(imageConfigOf('{} linux/arm64;x').platform, null);
 });
 
 test('R-SBX-47 an HTTP server\'s own stderr is read back: docker logs writes it to its stderr, which is now kept', async () => {
+  // The tail of each stream, cut by bytes, with the cut flagged.
+  const big = await run(process.execPath, ['-e', 'process.stderr.write("x".repeat(5000) + "\\nError: the real reason\\n")'], { keepStdout: true, keepStderr: true, tail: true, cap: 1024, logStdout: false });
+  assert.equal(big.stderr.length, 1024);
+  assert.match(big.stderr.toString(), /Error: the real reason\n$/);
+  assert.equal(big.stderr_truncated, true);
   const r = await run(process.execPath, ['-e', 'process.stdout.write("out\\n"); process.stderr.write("Error: missing API_KEY\\n")'], { keepStdout: true, keepStderr: true, logStdout: false });
   assert.equal(r.stdout.toString(), 'out\n');
   assert.equal(r.stderr.toString(), 'Error: missing API_KEY\n');
@@ -83,8 +90,9 @@ test('R-SBX-47 an HTTP server\'s own stderr is read back: docker logs writes it 
   const r0 = await run(process.execPath, ['-e', 'process.stderr.write("x")'], {});
   assert.equal(r0.stderr, undefined, 'only when asked');
   const src = readFileSync(join(root, 'bin', 'run-shard.mjs'), 'utf8');
-  assert.match(src, /tdk\.d\(\['logs', name\], \{ keepStdout: true, keepStderr: true,/);
+  assert.match(src, /tdk\.d\(\['logs', name\], \{ keepStdout: true, keepStderr: true, tail: true, logStdout: false, cap: 2 \* 1024 \* 1024 \}\)/);
   assert.match(src, /p\.stderr = Buffer\.concat\(\[logs\.stdout, logs\.stderr \|\| Buffer\.alloc\(0\)\]\)/);
+  assert.match(src, /p\.stderr_truncated = true/);
 });
 
 test('R-SBX-48 with several bins the npm entry is the one whose name says mcp or server, unless the package\'s own name says so', () => {
@@ -118,4 +126,52 @@ test('R-SBX-49 a PyPI target may name the extras to install with it (pkg[mcp]), 
   assert.ok(p.install[1].cmd.includes('arcaeon[mcp,cli]==0.3.1'));
   assert.ok(launchPlan(t({ version: 'latest', extras: ['mcp'] }).launch).install[1].cmd.includes('arcaeon[mcp]'));
   assert.ok(launchPlan(t({}).launch).install[1].cmd.includes('arcaeon==0.3.1'), 'no extras: as before');
+});
+
+test('R-SBX-50 a WORKDIR under /proc, /sys or /dev is refused, recorded, and the server runs in /tmp instead', () => {
+  for (const raw of ['/proc/self/fd/7', '/proc', '/sys/fs/cgroup', '/dev/shm', '/dev']) {
+    const c = imageConfigOf(JSON.stringify({ WorkingDir: raw }) + ' linux/amd64');
+    assert.equal(c.workdir, null, raw);
+    assert.equal(c.workdir_refused, raw, raw);
+    assert.throws(() => sb({ workdir: raw }), HarnessError, raw);
+  }
+  assert.equal(imageWorkdir('/app\u0000x').refused, '/app?x', 'cut and printable');
+  assert.equal(imageWorkdir('/'.repeat(1) + 'a'.repeat(300)).refused.length, 120);
+  assert.deepEqual(imageWorkdir(''), { workdir: null, refused: null });
+  assert.deepEqual(imageWorkdir('/procfs/app'), { workdir: '/procfs/app', refused: null }, 'a name that only starts like it is fine');
+  const src = readFileSync(join(root, 'bin', 'run-shard.mjs'), 'utf8');
+  assert.match(src, /\.\.\.\(ic\.workdir_refused \? \{ workdir_refused: ic\.workdir_refused \} : \{\}\)/);
+});
+
+test('R-SBX-51 no tmpfs over a VOLUME that holds the image\'s code or ships content: only empty folders get one, the rest are recorded', () => {
+  // Equal to, or holding, its WORKDIR or its entrypoint's folder.
+  const vp = volumePlan(['/app', '/', '/srv', '/data', '/usr/local', '/x/../y', '/tmp/a'], ['/app', '/usr/local/bin']);
+  assert.deepEqual(vp.volumes, ['/srv', '/data']);
+  assert.deepEqual(vp.dropped.map((d) => d.why), ['holds_code', 'not_plain', 'holds_code', 'not_plain', 'reserved']);
+  // The head of `docker cp <c>:<path> -`: an empty folder, a folder with a file, a file, a link, garbage.
+  const hdr = (name, type, size = 0) => { const b = Buffer.alloc(512); b.write(name, 0, 'latin1'); b.write(size.toString(8).padStart(11, '0') + '\0', 124, 'latin1'); b[156] = type.charCodeAt(0); return b; };
+  const end = Buffer.alloc(1024);
+  assert.equal(tarHead(Buffer.concat([hdr('data/', '5'), end])), 'empty');
+  assert.equal(tarHead(Buffer.concat([hdr('config/', '5'), hdr('config/app.toml', '0', 12), Buffer.alloc(512), end])), 'seeded');
+  assert.equal(tarHead(Buffer.concat([hdr('data', '0', 3), Buffer.alloc(512), end])), 'seeded', 'not a folder');
+  assert.equal(tarHead(Buffer.concat([hdr('data', '2'), end])), 'seeded', 'a link (one to /etc would hide our resolv.conf)');
+  assert.equal(tarHead(Buffer.from('nope')), 'unknown');
+  assert.equal(tarHead(Buffer.concat([hdr('data/', '5')])), 'empty', 'nothing after the folder');
+  // The run keeps only empty ones and records why the others went.
+  const src = readFileSync(join(root, 'bin', 'run-shard.mjs'), 'utf8');
+  assert.match(src, /const vp = volumePlan\(ic\.volumes, \[ic\.workdir, \.\.\.ic\.code_dirs\]\)/);
+  assert.match(src, /const volumes = vp\.volumes\.filter\(\(v\) => seen\[v\] === 'empty'\)/);
+  assert.match(src, /volumes_dropped: dropped\.slice\(0, 20\)/);
+  assert.match(src, /volume_seeded: true/);
+  // The content probe never starts the image: create with no network and an entrypoint that does not exist, then rm.
+  const dsrc = readFileSync(join(root, 'src', 'docker.mjs'), 'utf8');
+  assert.match(dsrc, /\['create', '--name', name, \.\.\.labelArgs\(labels\), '--network', 'none', '--entrypoint', '\/surface-never-runs', ref\]/);
+  assert.match(dsrc, /finally \{ await this\.d\(\['rm', '-f', name\]/);
+  assert.ok(!/\['start'/.test(dsrc), 'nothing of ours starts a created container');
+});
+
+test('R-SBX-52 an image whose inspect names another platform than linux/amd64 is not run: platform_unsupported, our limit', () => {
+  const src = readFileSync(join(root, 'bin', 'run-shard.mjs'), 'utf8');
+  assert.match(src, /if \(ic\.platform && ic\.platform !== 'linux\/amd64'\) \{\n\s+inst\.oci\.platform_unsupported = true;\n\s+inst\.steps\.push\(\{ name: 'platform', exit: 1, timed_out: false, ms: 0 \}\);\n\s+\} else inst\.ok = true;/);
+  assert.equal(imageConfigOf('{} linux/arm64').platform, 'linux/arm64');
 });

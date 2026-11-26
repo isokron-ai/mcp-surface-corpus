@@ -101,6 +101,9 @@ export const GOOD = {
     trace: trace({ network: { sockets: [{ family: 'AF_UNIX', type: 'SOCK_DGRAM', protocol: '0', raw: false, n: 4093, failed: 1, errno: 24 }] } }),
     report: { case: 'fd-exhaustion', result: { opened: 4092, error: 'EMFILE' } },
   }),
+  'volume-tmpfs': () => base({
+    trace: trace({ exec: [fail({ path: '/isk-vol/run-1.sh', errno: 13 })] }),
+  }),
   'clock-tamper': () => base({
     trace: trace({ privileged: [fail({ name: 'clock_settime', n: 3, failed: 3, errno: 1 })] }),
     stage: { clock: { drift_ms: 3, forged_in_telemetry: false } },

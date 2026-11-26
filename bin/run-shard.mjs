@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, volumeTmpfs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, volumePlan, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
 import { lookup } from 'node:dns/promises';
 import { ID, P, idNumber, launchPlan, shardTargets, timeoutOf, validateList } from '../src/targets.mjs';
 import { githubFacts, registryEntry, sourceArchive } from '../src/sources.mjs';
@@ -383,8 +383,18 @@ async function runTarget(t, list, ctx, dk) {
           // The image's own WORKDIR and VOLUMEs: its server runs where its Dockerfile put it, with a size-capped tmpfs
           // where it declared a data folder (the root stays read-only).
           const ic = await dk.imageConfig(image);
-          inst.oci = { workdir: ic.workdir, volumes: volumeTmpfs(ic.volumes), platform: ic.platform, ...(ic.platform ? {} : { inspect_failed: true }) };
-          inst.ok = true;
+          // Never a tmpfs over the folders that hold its code (its WORKDIR, its entrypoint's), nor over one the image
+          // ships content in: a tmpfs would hide it. Only folders that are empty in the image get one.
+          const vp = volumePlan(ic.volumes, [ic.workdir, ...ic.code_dirs]);
+          const seen = vp.volumes.length ? await dk.volumeContent(image, vp.volumes, { name: dk.name(id, 'v'), labels: lbl }) : {};
+          const volumes = vp.volumes.filter((v) => seen[v] === 'empty');
+          const dropped = [...vp.dropped, ...vp.volumes.filter((v) => seen[v] !== 'empty').map((v) => ({ path: v, why: seen[v] === 'seeded' ? 'seeded' : 'unknown' }))];
+          inst.oci = { workdir: ic.workdir, volumes, platform: ic.platform, ...(ic.ok ? {} : { inspect_failed: true }), ...(ic.workdir_refused ? { workdir_refused: ic.workdir_refused } : {}), ...(dropped.length ? { volumes_dropped: dropped.slice(0, 20) } : {}), ...(dropped.some((d) => d.why === 'seeded') ? { volume_seeded: true } : {}) };
+          // linux/amd64 only (R-SBX-46): another platform the inspect names is our limit, recorded, and not run.
+          if (ic.platform && ic.platform !== 'linux/amd64') {
+            inst.oci.platform_unsupported = true;
+            inst.steps.push({ name: 'platform', exit: 1, timed_out: false, ms: 0 });
+          } else inst.ok = true;
         } else {
           image = ctx.images[plan.image];
           inst.image = image;
@@ -511,8 +521,10 @@ async function runTarget(t, list, ctx, dk) {
               p = safeParse(r.stdout) || { format: 'isokron-surface-probe/1', mode: 'http', error: 'the HTTP probe gave no result', lists: {}, transcript: [], transport: {} };
               // `docker logs` writes the container's stderr to its own stderr: keep both, or a server that printed
               // its error and exited leaves nothing to read (stdout first, then stderr).
-              const logs = await tdk.d(['logs', name], { keepStdout: true, keepStderr: true, logStdout: false, cap: 4 * 1024 * 1024 });
-              p.stderr = Buffer.concat([logs.stdout, logs.stderr || Buffer.alloc(0)]).toString('utf8').slice(0, 4 * 1024 * 1024); p.stderr_bytes = logs.stdout_bytes + (logs.stderr_bytes || 0);
+              // The last 2 MiB of each stream, cut by bytes: the lines a server prints as it stops are the ones that say why.
+              const logs = await tdk.d(['logs', name], { keepStdout: true, keepStderr: true, tail: true, logStdout: false, cap: 2 * 1024 * 1024 });
+              p.stderr = Buffer.concat([logs.stdout, logs.stderr || Buffer.alloc(0)]).toString('utf8'); p.stderr_bytes = logs.stdout_bytes + (logs.stderr_bytes || 0);
+              if (logs.stdout_truncated || logs.stderr_truncated) p.stderr_truncated = true;
               const okId = /^[0-9a-f]{64}$/.test(sid) ? sid : null;
               const ins = okId ? await inspectOne(tdk, okId) : null;
               await dk.kill(name);

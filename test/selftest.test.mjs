@@ -390,3 +390,22 @@ test('R-CASE-23 R-CASE-27 the later stage\'s grow and exists commands', () => {
   const e = JSON.parse(spawnSync(process.execPath, [stage, 'exists', a, join(d, 'none')], { encoding: 'utf8' }).stdout).exists;
   assert.deepEqual(e, { [a]: true, [join(d, 'none')]: false });
 });
+
+test('R-CASE-28 volume-tmpfs: a file run from an image VOLUME\'s tmpfs, a fill past its cap or without ENOSPC, is no pass', () => {
+  const g = (f) => { const ev = GOOD['volume-tmpfs'](); f(ev); return evaluateCase('volume-tmpfs', ev); };
+  assert.equal(g(() => {}).pass, true, 'from the trace alone: the run was refused with EACCES');
+  const rep = (fill, exec = { ok: false, errno: 13 }) => (ev) => { ev.report = { case: 'volume-tmpfs', result: { fill, planted: { ok: true }, exec } }; };
+  assert.equal(g(rep({ ok: false, errno: 28, bytes: 32 * 1024 * 1024 })).pass, true, 'the report agrees: ENOSPC at the cap');
+  assert.match(g(rep({ ok: true, bytes: 40 * 1024 * 1024 })).detail, /^got through: the volume tmpfs took 41943040 bytes/, 'the size cap did not hold');
+  assert.match(g(rep({ ok: false, errno: 5, bytes: 1024 })).detail, /^got through: the volume tmpfs took/, 'a stop that is not ENOSPC');
+  assert.match(g(rep({ ok: false, errno: 28, bytes: 1 }, { ok: true, exit: 0 })).detail, /^got through: a file written to the volume tmpfs ran/);
+  assert.match(g((ev) => { ev.trace.exec = [ok({ path: '/isk-vol/run-1.sh' })]; }).detail, /^got through: a file written to the volume tmpfs ran/);
+  assert.equal(g((ev) => { ev.trace.exec = []; }).logged, false, 'no exec traced: nothing was tried');
+  assert.equal(g((ev) => { ev.trace.exec = [fail({ path: '/isk-vol/run-1.sh', errno: 2 })]; }).pass, false, 'refused, but not by noexec');
+  // The case container gets the tmpfs exactly as a corpus run gives an image VOLUME one.
+  const sst = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
+  assert.match(sst, /\.\.\.\(name === 'volume-tmpfs' \? \{ tmpfs: \[VOLUME_CASE_PATH\] \} : \{\}\)/);
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.match(py, /VOLUME_CASE_PATH = "\/isk-vol"/);
+  assert.match(py, /for _ in range\(40\):/);
+});
