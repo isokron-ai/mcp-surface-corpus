@@ -92,7 +92,9 @@ Every container that runs target code (install and server):
   there means no tmpfs). A VOLUME that is a link in the image is never mounted over: a tmpfs through a link to `/etc`
   could hide our resolv.conf, which would cost the DNS telemetry only (the network has no egress either way). The
   image's WORKDIR is used only when it is a plain path outside `/proc`, `/sys` and `/dev`; `volume-tmpfs` in the
-  hostile self test checks the cap (ENOSPC) and noexec (EACCES) under runsc;
+  hostile self test checks the cap (ENOSPC at 32 MiB) under runsc. runsc does not enforce `noexec` on these tmpfs
+  mounts (seen in the self test, gVisor 20261116.0): a file written there can run, as one written to `/tmp` (mounted
+  `exec`) always could, so this grants no new capability; the flag stays for any runtime that honours it;
 - `--memory 2g` (no swap beyond it), at most 2 CPUs, at most 512 processes and threads:
   `--ulimit nproc=512:512`, which gVisor's kernel enforces inside the sandbox (a fork past it fails
   with EAGAIN). `--pids-limit 2048` bounds the sandbox's own host tasks (gVisor's threads and a stub

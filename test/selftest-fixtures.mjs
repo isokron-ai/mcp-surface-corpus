@@ -102,7 +102,8 @@ export const GOOD = {
     report: { case: 'fd-exhaustion', result: { opened: 4092, error: 'EMFILE' } },
   }),
   'volume-tmpfs': () => base({
-    trace: trace({ exec: [fail({ path: '/isk-vol/run-1.sh', errno: 13 })] }),
+    // As seen on GitHub (gVisor 20261116.0): the fill opened for write, and the script written there ran.
+    trace: trace({ opens_outside: [ok({ path: '/isk-vol/fill-1', op: 'write', call: 'openat', n: 2 }), ok({ path: '/isk-vol/run-1.sh', op: 'write', call: 'openat', n: 2 })], exec: [ok({ path: '/isk-vol/run-1.sh' })] }),
   }),
   'clock-tamper': () => base({
     trace: trace({ privileged: [fail({ name: 'clock_settime', n: 3, failed: 3, errno: 1 })] }),

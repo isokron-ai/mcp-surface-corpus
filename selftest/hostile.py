@@ -868,7 +868,8 @@ def case_clock_tamper(nonce, gw, canary):
 
 
 # volume-tmpfs: the tmpfs the corpus mounts over an image's VOLUME (src/docker.mjs volumeTmpfs), at VOLUME_CASE_PATH:
-# 40 MiB into its 32 MiB must stop with ENOSPC, and a script written there must not run (noexec: EACCES).
+# 40 MiB into its 32 MiB must stop with ENOSPC. A script written there is run too: runsc does not enforce noexec (as /tmp
+# is exec anyway), and the run is recorded, not judged.
 VOLUME_CASE_PATH = "/isk-vol"
 
 
