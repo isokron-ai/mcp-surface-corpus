@@ -207,7 +207,8 @@ test('R-SBX-40 a .NET tool\'s command is the one its DotnetToolSettings.xml decl
 
 test('R-SBX-40 mutation check: without the entry point\'s path check, the regular-file check or the launcher check, nuget-entry.mjs would start what it must not', () => {
   for (const [from, to, setup] of [
-    [".some((s) => s === '..' || s === '.' || s === '')", '.some(() => false)', () => toolPath('Acme.Mcp', { pkgs: [['Acme.Mcp', 'net9.0', 'any', [{ name: 'acme-mcp', entry: `a/${'../'.repeat(24)}bin/sh`, runner: 'dotnet' }]]] })],
+    // A regular file outside the package (on Linux /bin/sh is a link, which the regular-file check alone would refuse).
+    [".some((s) => s === '..' || s === '.' || s === '')", '.some(() => false)', () => { const d = toolPath('Acme.Mcp', { pkgs: [['Acme.Mcp', 'net9.0', 'any', [{ name: 'acme-mcp', entry: `a/${'../'.repeat(9)}outside.bin`, runner: 'dotnet' }]]] }); writeFileSync(join(d, 'outside.bin'), 'ELF'); return d; }],
     ['const isFile = (p) => { try { return lstatSync(p).isFile(); } catch { return false; } };', 'const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };', () => { const d = toolPath('Acme.Mcp', { files: false }); symlinkSync('/bin/sh', join(d, '.store/acme.mcp/1.2.0/acme.mcp/1.2.0/tools/net9.0/any/Acme.Mcp.dll')); return d; }],
     [' && isFile(join(root, c.name)));', ');', () => toolPath('Acme.Mcp', { shims: [] })],
   ]) {
