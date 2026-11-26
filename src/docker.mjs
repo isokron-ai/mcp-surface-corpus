@@ -39,6 +39,8 @@ const SYSTEM_PATH = /^\/(?:proc|sys|dev)(?:\/|$)/;
 /** An image's WORKDIR as we would run it: { workdir } when plain and not a kernel folder, else { workdir: null, refused } (cut). */
 export function imageWorkdir(raw) {
   if (raw === undefined || raw === null || raw === '') return { workdir: null, refused: null };
+  // The root is a WORKDIR images use (postgres:16-alpine): read-only like the rest of the root, and no kernel folder.
+  if (raw === '/') return { workdir: '/', refused: null };
   const p = imagePath(raw);
   return p && !SYSTEM_PATH.test(p) ? { workdir: p, refused: null } : { workdir: null, refused: String(raw).replace(/[^\x20-\x7e]/g, '?').slice(0, 120) };
 }
@@ -182,7 +184,7 @@ const netArgs = ({ network, ip, resolv, cidfile }) => {
 export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, labels = {}, workdir = '/tmp', tmpfs = [], stdin = false, detach = false, cpus = LIMITS.cpus, cmd, entrypoint = null, aliases = [], ip = null, resolv = null, cidfile = null, hostEnv = process.env }) {
   checkPinned(image, 'sandbox');
   if (typeof network !== 'string' || !network || network === 'host' || network === 'bridge' || network.startsWith('container:')) throw new HarnessError('a sandbox container never uses the host, default bridge or another container\'s network');
-  if (workdir !== '/tmp' && workdir !== '/work' && (!imagePath(workdir) || SYSTEM_PATH.test(workdir))) throw new HarnessError('the working folder is not a plain absolute path outside /proc, /sys and /dev');
+  if (workdir !== '/tmp' && workdir !== '/work' && workdir !== '/' && (!imagePath(workdir) || SYSTEM_PATH.test(workdir))) throw new HarnessError('the working folder is not a plain absolute path outside /proc, /sys and /dev');
   const vols = volumeTmpfs(tmpfs);
   if (vols.length !== (Array.isArray(tmpfs) ? tmpfs.length : 0)) throw new HarnessError('a tmpfs path is not one this sandbox mounts');
   const bad = targetEnvProblems(env, hostEnv);
@@ -392,7 +394,8 @@ export class Docker {
         // Not in the image at all: Docker makes the mount point empty.
         out[p] = r.exit === 0 || r.stdout.length ? tarHead(r.stdout) : /no such file|could not find the file/i.test(String(r.stderr_tail)) ? 'empty' : 'unknown';
       }
-    } finally { await this.d(['rm', '-f', name], { deadline: Date.now() + 60_000 }); }
+    // -v: the created container's anonymous volumes (one per VOLUME) go with it.
+    } finally { await this.d(['rm', '-f', '-v', name], { deadline: Date.now() + 60_000 }); }
     return out;
   }
 

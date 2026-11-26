@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { HarnessError, LIMITS, SANDBOX_USER, imageConfigOf, imagePath, imageWorkdir, run, sandboxRunArgs, tarHead, volumePlan, volumeTmpfs } from '../src/docker.mjs';
+import { Docker, HarnessError, LIMITS, SANDBOX_USER, imageConfigOf, imagePath, imageWorkdir, run, sandboxRunArgs, tarHead, volumePlan, volumeTmpfs } from '../src/docker.mjs';
 import { launchPlan, validateTarget } from '../src/targets.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -138,6 +138,11 @@ test('R-SBX-50 a WORKDIR under /proc, /sys or /dev is refused, recorded, and the
   assert.equal(imageWorkdir('/app\u0000x').refused, '/app?x', 'cut and printable');
   assert.equal(imageWorkdir('/'.repeat(1) + 'a'.repeat(300)).refused.length, 120);
   assert.deepEqual(imageWorkdir(''), { workdir: null, refused: null });
+  // WORKDIR / (postgres:16-alpine) is no kernel folder: used as is, never refused.
+  assert.deepEqual(imageWorkdir('/'), { workdir: '/', refused: null });
+  assert.equal(imageConfigOf('{"WorkingDir":"/"} linux/amd64').workdir_refused, null);
+  assert.equal(pair(sb({ workdir: '/' }), '--workdir'), '/');
+  for (const raw of ['//', '/.', '/..']) assert.notEqual(imageWorkdir(raw).refused, null, raw);
   assert.deepEqual(imageWorkdir('/procfs/app'), { workdir: '/procfs/app', refused: null }, 'a name that only starts like it is fine');
   const src = readFileSync(join(root, 'bin', 'run-shard.mjs'), 'utf8');
   assert.match(src, /\.\.\.\(ic\.workdir_refused \? \{ workdir_refused: ic\.workdir_refused \} : \{\}\)/);
@@ -166,8 +171,26 @@ test('R-SBX-51 no tmpfs over a VOLUME that holds the image\'s code or ships cont
   // The content probe never starts the image: create with no network and an entrypoint that does not exist, then rm.
   const dsrc = readFileSync(join(root, 'src', 'docker.mjs'), 'utf8');
   assert.match(dsrc, /\['create', '--name', name, \.\.\.labelArgs\(labels\), '--network', 'none', '--entrypoint', '\/surface-never-runs', ref\]/);
-  assert.match(dsrc, /finally \{ await this\.d\(\['rm', '-f', name\]/);
+  assert.match(dsrc, /finally \{ await this\.d\(\['rm', '-f', '-v', name\]/, 'with -v: no anonymous volume is left per VOLUME');
   assert.ok(!/\['start'/.test(dsrc), 'nothing of ours starts a created container');
+});
+
+test('R-SBX-51 volumeContent creates, reads and removes the probe container with its anonymous volumes (rm -f -v)', async () => {
+  const dk = new Docker({ runId: 'r1', env: {} });
+  const calls = [];
+  const hdr = (name, type) => { const b = Buffer.alloc(512); b.write(name, 0, 'latin1'); b.write('00000000000\0', 124, 'latin1'); b[156] = type.charCodeAt(0); return b; };
+  dk.d = async (argv) => {
+    calls.push(argv);
+    if (argv[0] === 'cp') return { exit: 0, stdout: argv[1].endsWith(':/data') ? Buffer.concat([hdr('data/', '5'), Buffer.alloc(1024)]) : Buffer.concat([hdr('conf/', '5'), hdr('conf/a', '0'), Buffer.alloc(1024)]), stderr_tail: Buffer.alloc(0) };
+    return { exit: 0, stdout: Buffer.from('cid\n'), stderr_tail: Buffer.alloc(0) };
+  };
+  const out = await dk.volumeContent(IMG, ['/data', '/conf'], { name: 'surface-r1-s001-v1', labels: { a: 'b' } });
+  assert.deepEqual(out, { '/data': 'empty', '/conf': 'seeded' });
+  assert.deepEqual(calls[0].slice(0, 3), ['create', '--name', 'surface-r1-s001-v1']);
+  assert.ok(calls[0].includes('--network') && calls[0][calls[0].indexOf('--network') + 1] === 'none');
+  assert.deepEqual(calls.at(-1), ['rm', '-f', '-v', 'surface-r1-s001-v1']);
+  assert.ok(!calls.some((c) => c[0] === 'start' || c[0] === 'run'));
+  await assert.rejects(dk.volumeContent(IMG, ['/x'], { name: 'evil;rm' }), HarnessError);
 });
 
 test('R-SBX-52 an image whose inspect names another platform than linux/amd64 is not run: platform_unsupported, our limit', () => {
