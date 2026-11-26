@@ -37,7 +37,7 @@ Common fields:
 
 | Field | Meaning |
 |---|---|
-| `kind` | `npm`, `pypi`, `go` or `docker`. |
+| `kind` | `npm`, `pypi`, `go`, `docker`, `cargo`, `nuget` or `mcpb`. |
 | `args` | Arguments after the server command (at most 40 strings). |
 | `env` | Names the server reads. `null` makes a dummy value (shaped by the name: `*_TOKEN`, `*_URL`, ...); a string is used as given. Never put a real credential here: the run is always credential-free. Names the harness owns (`PATH`, `HOME`, `NODE_OPTIONS`, `*_PROXY`, `GITHUB_*`, `RUNNER_*`, `SURFACE_*`, ...) are refused. |
 | `transport` | `stdio` (default) or `http`. |
@@ -51,6 +51,9 @@ Per kind:
 | `pypi` | `package`, `version` (exact or `latest`), `entry` (console script, default the package name), `constraints` (up to 10 version limits on dependencies, installed alongside the package, e.g. `"mcp<2"` for a server written against the 1.x SDK) | venv + `pip install` via `pypi.org`, `files.pythonhosted.org`; `pip freeze` kept as the lock | `<venv>/bin/<entry> <args>` |
 | `go` | `module` (package path of the main package), `version` (`vX.Y.Z`, a commit, or `latest`) | `go install` with `CGO_ENABLED=0` via `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com`; `go version -m` kept as the lock | the static binary, in the node24 image |
 | `docker` | `image` (must be `name@sha256:<digest>`), `entrypoint` | none (the image is pulled by digest) | the image, with the same sandbox flags |
+| `cargo` | `crate`, `version` (exact or `latest`) | `cargo install --locked` in the pinned Rust image (`rust-build`) via `index.crates.io`, `static.crates.io`, at most 15 minutes; the binary is the one cargo recorded (`sandbox/cargo-entry.mjs`: the only one, else the one named for the crate, else the only one named for MCP); the build's folders are removed after | the binary, in the same Rust image |
+| `nuget` | `package` (a .NET tool package id), `version` (exact or `latest`) | `dotnet tool install --tool-path` in the pinned .NET SDK image (`dotnet-sdk`) with a NuGet config that names nuget.org alone, via `api.nuget.org`, `globalcdn.nuget.org`; the command is the one the package's `DotnetToolSettings.xml` declares (`sandbox/nuget-entry.mjs`) | `dotnet <entry point>` (or the entry point itself for an executable tool) on the SDK image's runtime, `DOTNET_ROLL_FORWARD=Major` |
+| `mcpb` | `url` (a GitHub release asset), `sha256` (required), `runtime` (`node`, `python`, `binary` or `uv`), `entry` (binary: its path in the bundle), `pythonpath` (paths in the bundle), `console` and `extras` (uv), `workdir` (a folder in the bundle) | `sandbox/mcpb-fetch.mjs` in the node image via `github.com` and its release-asset hosts: at most 200 MiB, the sha256 checked, unpacked into the volume with path, link, count (50,000), size (1 GiB) and CRC checks; for `uv`, a venv and `pip install` of the pyproject's dependencies (`sandbox/pyproject-reqs.py`), or of the project when it declares a build system, via PyPI | `node <args>` (node24), `python <args>` (python, `PYTHONPATH` from `pythonpath`), `<venv>/bin/python <args>` or `<venv>/bin/<console> <args>` (uv), `/work/pkg/<entry> <args>` (binary, node24-build) |
 
 `latest` is allowed so a list can follow a fast-moving server; the version actually installed is
 recorded, and the diff against the previous run reports the change.

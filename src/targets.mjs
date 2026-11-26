@@ -7,7 +7,7 @@ export const TARGETS_FORMAT = 'isokron-surface-targets/1';
 export const ID = /^s[0-9]{3,4}$/;
 export const MAX_TIMEOUT_S = 1800;
 export const DEFAULT_TIMEOUT_S = 600;
-export const KINDS = ['npm', 'pypi', 'go', 'docker'];
+export const KINDS = ['npm', 'pypi', 'go', 'docker', 'cargo', 'nuget', 'mcpb'];
 export const TRANSPORTS = ['stdio', 'http'];
 
 export class ListError extends Error {}
@@ -23,6 +23,22 @@ const GO_MODULE = /^[a-z0-9][A-Za-z0-9.-]*\.[a-z]{2,}(?:\/[A-Za-z0-9._~-]+)+$/;
 const SEMVER = /^[0-9]+(?:\.[0-9A-Za-z-]+){0,3}(?:[-+.][0-9A-Za-z.+-]{1,60})?$/;
 const GO_VERSION = /^(?:v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]{1,80})?|[0-9a-f]{12,40})$/;
 const BIN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$/;
+// A crate name (crates.io: letters, digits, - and _, at most 64) and an exact crate version.
+export const CRATE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const CRATE_VERSION = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.+-]{1,60})?$/;
+// A NuGet package id (never starting with - or .) and an exact NuGet version (SemVer 2, or a four-part version).
+export const NUGET_ID = /^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,98}[A-Za-z0-9_])?$/;
+const NUGET_VERSION = /^[0-9]+\.[0-9]+(?:\.[0-9]+){0,2}(?:-[0-9A-Za-z.-]{1,60})?(?:\+[0-9A-Za-z.-]{1,60})?$/;
+// An MCP Bundle (.mcpb) is fetched from a GitHub release asset only: the URL as the registry lists it, on github.com,
+// which redirects to its release-asset hosts. Those three hosts are the install's whole allowlist (plus PyPI for a
+// bundle of server type uv).
+export const MCPB_URL = /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}\/releases\/download\/[A-Za-z0-9._+@-]{1,128}\/[A-Za-z0-9._+@-]{1,200}$/;
+export const MCPB_HOSTS = Object.freeze(['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com']);
+export const MCPB_RUNTIMES = ['node', 'python', 'binary', 'uv'];
+/** The most an MCP bundle may weigh as downloaded (sandbox/mcpb-fetch.mjs refuses more). */
+export const MCPB_MAX_BYTES = 200 * 1024 * 1024;
+// A path inside a bundle: relative, no . or .. segment, no backslash.
+const BUNDLE_PATH = /^(?![/.])(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._@+ /-]{1,300}$/;
 const IMAGE = /^[a-z0-9][a-z0-9./_-]{0,200}(?::[A-Za-z0-9._-]{1,120})?@sha256:[0-9a-f]{64}$/;
 // A version constraint on a dependency of a pypi target: name, optional comparison(s). No extras, markers, URLs or paths.
 const PIP_CONSTRAINT = /^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,80}[A-Za-z0-9])?(?:(?:==|!=|<=|>=|~=|<|>)[0-9][0-9A-Za-z.*+!-]{0,40})(?:,(?:==|!=|<=|>=|~=|<|>)[0-9][0-9A-Za-z.*+!-]{0,40}){0,3}$/;
@@ -76,6 +92,24 @@ export function validateLaunch(l, what) {
     only(l, [...common, 'module', 'version'], `${what}.launch`);
     if (typeof l.module !== 'string' || !GO_MODULE.test(l.module)) fail(`${what}.launch.module is not a Go package path`);
     if (!(l.version === 'latest' || (typeof l.version === 'string' && GO_VERSION.test(l.version)))) fail(`${what}.launch.version must be vX.Y.Z, a commit, or "latest"`);
+  } else if (l.kind === 'cargo') {
+    only(l, [...common, 'crate', 'version'], `${what}.launch`);
+    if (typeof l.crate !== 'string' || !CRATE.test(l.crate)) fail(`${what}.launch.crate is not a crate name`);
+    if (!(l.version === 'latest' || (typeof l.version === 'string' && CRATE_VERSION.test(l.version)))) fail(`${what}.launch.version must be an exact crate version or "latest"`);
+  } else if (l.kind === 'nuget') {
+    only(l, [...common, 'package', 'version'], `${what}.launch`);
+    if (typeof l.package !== 'string' || !NUGET_ID.test(l.package)) fail(`${what}.launch.package is not a NuGet package id`);
+    if (!(l.version === 'latest' || (typeof l.version === 'string' && NUGET_VERSION.test(l.version)))) fail(`${what}.launch.version must be an exact NuGet version or "latest"`);
+  } else if (l.kind === 'mcpb') {
+    only(l, [...common, 'url', 'sha256', 'runtime', 'entry', 'pythonpath', 'console', 'extras', 'workdir'], `${what}.launch`);
+    if (typeof l.url !== 'string' || !MCPB_URL.test(l.url)) fail(`${what}.launch.url must be a GitHub release asset (https://github.com/<owner>/<repo>/releases/download/<tag>/<file>)`);
+    if (typeof l.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(l.sha256)) fail(`${what}.launch.sha256 must be the bundle's sha256 (64 hex digits)`);
+    if (!MCPB_RUNTIMES.includes(l.runtime)) fail(`${what}.launch.runtime must be one of ${MCPB_RUNTIMES.join(', ')}`);
+    if (l.runtime === 'binary') { if (typeof l.entry !== 'string' || !BUNDLE_PATH.test(l.entry)) fail(`${what}.launch.entry must be the binary's path inside the bundle`); } else if (l.entry !== undefined) fail(`${what}.launch.entry is for a binary bundle only`);
+    if (l.pythonpath !== undefined && !(['python', 'uv'].includes(l.runtime) && Array.isArray(l.pythonpath) && l.pythonpath.length <= 8 && l.pythonpath.every((x) => x === '.' || (typeof x === 'string' && BUNDLE_PATH.test(x))))) fail(`${what}.launch.pythonpath must be at most 8 paths inside the bundle, for a python or uv bundle`);
+    if (l.console !== undefined && !(l.runtime === 'uv' && typeof l.console === 'string' && BIN.test(l.console))) fail(`${what}.launch.console is a console-script name, for a uv bundle only`);
+    if (l.extras !== undefined && !(l.runtime === 'uv' && Array.isArray(l.extras) && l.extras.length <= 8 && l.extras.every((x) => typeof x === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$/.test(x)))) fail(`${what}.launch.extras must be at most 8 extra names, for a uv bundle only`);
+    if (l.workdir !== undefined && !(l.workdir === '.' || (typeof l.workdir === 'string' && BUNDLE_PATH.test(l.workdir)))) fail(`${what}.launch.workdir must be a folder inside the bundle`);
   } else {
     only(l, [...common, 'image', 'entrypoint'], `${what}.launch`);
     if (typeof l.image !== 'string' || !IMAGE.test(l.image)) fail(`${what}.launch.image must be pinned by digest (name@sha256:...)`);
@@ -143,6 +177,63 @@ export const P = { work: '/work', tools: '/opt/surface', home: '/tmp/home', ca: 
 /** The install env of an npm target built from source: the image's own Node headers, no prebuilt downloads. */
 export const NATIVE_BUILD_ENV = Object.freeze({ npm_config_nodedir: '/usr/local', npm_config_build_from_source: 'true' });
 
+/** The longest a build step may take (a crate's `cargo install`), and any other package install step. */
+export const BUILD_CAP_MS = 15 * 60_000;
+export const INSTALL_CAP_MS = 5 * 60_000;
+
+/** A crate's build: its own folders in the work volume, crates.io's sparse index, two jobs, no colour or progress bars. */
+export const CARGO_ENV = Object.freeze({ CARGO_HOME: `${P.work}/cargo-home`, CARGO_TARGET_DIR: `${P.work}/target`, CARGO_TERM_COLOR: 'never', CARGO_TERM_PROGRESS_WHEN: 'never', CARGO_BUILD_JOBS: '2', CARGO_NET_RETRY: '2', CARGO_HTTP_TIMEOUT: '60', CARGO_REGISTRIES_CRATES_IO_PROTOCOL: 'sparse', CARGO_INCREMENTAL: '0' });
+
+/**
+ * A .NET tool install: the package cache and the CLI's home in the work volume, no telemetry or first-run work, and
+ * certificate revocation checked offline (the install network reaches NuGet's two hosts only).
+ */
+export const NUGET_ENV = Object.freeze({ NUGET_PACKAGES: `${P.work}/nuget`, DOTNET_CLI_HOME: `${P.work}/home`, DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1', DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1', DOTNET_GENERATE_ASPNET_CERTIFICATE: 'false', DOTNET_ADD_GLOBAL_TOOLS_TO_PATH: 'false', NUGET_CERT_REVOCATION_MODE: 'offline', NUGET_XMLDOC_MODE: 'skip' });
+
+/** A .NET tool's run: on the image's runtime (rolled forward from an older target framework), no telemetry, no diagnostics IPC. */
+export const DOTNET_RUN_ENV = Object.freeze({ DOTNET_ROLL_FORWARD: 'Major', DOTNET_CLI_TELEMETRY_OPTOUT: '1', DOTNET_NOLOGO: '1', DOTNET_EnableDiagnostics: '0' });
+
+const bundlePath = (rel) => (rel === '.' ? `${P.work}/pkg` : `${P.work}/pkg/${rel}`);
+
+/**
+ * An MCP Bundle (.mcpb): sandbox/mcpb-fetch.mjs, in the node image, downloads the release asset through the proxy
+ * (github.com and its two release-asset hosts only), checks its size and its sha256 (the one the list names: the
+ * registry's own, or the one the planner read), and unpacks it into /work/pkg with path, link, count and size guards.
+ * Nothing of the bundle runs at install, except for a bundle of server type uv: its pyproject's dependencies (or the
+ * project itself, when it declares a build system) are installed with pip into a venv through PyPI only, as `uv run`
+ * would. The server then runs from the read-only volume, in the image its runtime needs:
+ *   node    node <args>                    (node24)
+ *   python  python <args>                  (python), PYTHONPATH from the manifest, inside the bundle only
+ *   uv      <venv>/bin/python <args>, or <venv>/bin/<console> <args>    (python)
+ *   binary  /work/pkg/<entry> <args>       (node24-build: the full Debian image, for the libraries a binary links)
+ */
+function mcpbPlan(l, args) {
+  const fetch = { name: 'fetch', image: 'node24', capMs: INSTALL_CAP_MS, cmd: ['node', `${P.tools}/sandbox/mcpb-fetch.mjs`, l.url, l.sha256, `${P.work}/pkg`, ...(l.runtime === 'binary' ? ['--exec', l.entry] : [])], out: 'fetch.json' };
+  const pythonpath = l.pythonpath && l.pythonpath.length ? { PYTHONPATH: l.pythonpath.map(bundlePath).join(':') } : {};
+  const workdir = l.workdir ? bundlePath(l.workdir) : null;
+  const common = { locks: [{ path: `${P.work}/pkg/manifest.json`, name: 'mcpb-manifest.json' }], ...(workdir ? { workdir } : {}) };
+  if (l.runtime === 'uv') {
+    return {
+      ...common,
+      image: 'python',
+      registries: [...MCPB_HOSTS, 'pypi.org', 'files.pythonhosted.org'],
+      install: [
+        fetch,
+        { name: 'venv', cmd: ['python', '-m', 'venv', `${P.work}/venv`] },
+        { name: 'requirements', cmd: ['python', '-I', `${P.tools}/sandbox/pyproject-reqs.py`, `${P.work}/pkg`, `${P.work}/lock/requirements.txt`, ...(l.extras ?? [])], out: 'requirements.json' },
+        { name: 'install', capMs: INSTALL_CAP_MS, cmd: [`${P.work}/venv/bin/python`, '-m', 'pip', 'install', '--no-input', '--disable-pip-version-check', '--no-warn-script-location', '-r', `${P.work}/lock/requirements.txt`] },
+        { name: 'freeze', cmd: ['sh', '-c', '/work/venv/bin/python -m pip freeze --all > /work/lock/freeze.txt'] },
+      ],
+      locks: [...common.locks, { path: `${P.work}/lock/freeze.txt`, name: 'freeze.txt' }],
+      runEnv: pythonpath,
+      run: () => [l.console ? `${P.work}/venv/bin/${l.console}` : `${P.work}/venv/bin/python`, ...args],
+    };
+  }
+  if (l.runtime === 'python') return { ...common, image: 'node24', runImage: 'python', registries: [...MCPB_HOSTS], install: [fetch], runEnv: pythonpath, run: () => ['python', ...args] };
+  if (l.runtime === 'binary') return { ...common, image: 'node24', runImage: 'node24-build', registries: [...MCPB_HOSTS], install: [fetch], run: () => [bundlePath(l.entry), ...args] };
+  return { ...common, image: 'node24', runImage: 'node24', registries: [...MCPB_HOSTS], install: [fetch], run: () => ['node', ...args] };
+}
+
 /**
  * What to run for one launch block: the image key (images.json), the install steps (with egress,
  * through the allowlist proxy), the lock files to bring back, and the server command (no network).
@@ -203,6 +294,47 @@ export function launchPlan(l) {
       run: () => [`${P.work}/bin/${base}`, ...args],
     };
   }
+  if (l.kind === 'cargo') {
+    // `cargo install --locked` (the Cargo.lock the crate published, when it published one) in the pinned Rust image,
+    // through crates.io's sparse index and its download host only; `--` ends the options before the checked name. The
+    // binary is the one cargo recorded (sandbox/cargo-entry.mjs, in the node image); the build's folders (target,
+    // cargo home) are removed before the server starts, so the volume its container mounts holds the binary only. It
+    // runs in the same Rust image, which has the libraries it linked against. The build may take BUILD_CAP_MS.
+    return {
+      image: 'rust-build',
+      runImage: 'rust-build',
+      registries: ['index.crates.io', 'static.crates.io'],
+      install: [
+        { name: 'install', capMs: BUILD_CAP_MS, cmd: ['cargo', 'install', '--locked', '--root', `${P.work}/pkg`, ...(l.version === 'latest' ? [] : ['--version', l.version]), '--', l.crate], env: CARGO_ENV },
+        { name: 'entry', image: 'node24', cmd: ['node', `${P.tools}/sandbox/cargo-entry.mjs`, `${P.work}/pkg`, l.crate], out: 'entry.json' },
+        { name: 'clean', cmd: ['rm', '-rf', `${P.work}/target`, `${P.work}/cargo-home`] },
+      ],
+      locks: [{ path: `${P.work}/pkg/.crates2.json`, name: 'crates2.json' }],
+      run: (entry) => [entry.script, ...args],
+    };
+  }
+  if (l.kind === 'nuget') {
+    // A .NET tool package: `dotnet tool install --tool-path` in the pinned .NET SDK image, with a NuGet config of ours
+    // that names nuget.org alone, through api.nuget.org and globalcdn.nuget.org only. The command is the one the
+    // package's DotnetToolSettings.xml declares (sandbox/nuget-entry.mjs, in the node image); the package cache is
+    // removed before the server starts. It runs on the image's .NET runtime, rolled forward to it when the tool was
+    // built for an older one.
+    return {
+      image: 'dotnet-sdk',
+      runImage: 'dotnet-sdk',
+      registries: ['api.nuget.org', 'globalcdn.nuget.org'],
+      install: [
+        { name: 'config', cmd: ['sh', '-c', 'printf \'%s\\n\' \'<?xml version="1.0" encoding="utf-8"?>\' \'<configuration><packageSources><clear /><add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" /></packageSources></configuration>\' > /work/nuget.config'] },
+        { name: 'install', capMs: INSTALL_CAP_MS, cmd: ['dotnet', 'tool', 'install', l.package, '--tool-path', `${P.work}/pkg`, '--configfile', `${P.work}/nuget.config`, '--allow-roll-forward', ...(l.version === 'latest' ? [] : ['--version', l.version])], env: NUGET_ENV },
+        { name: 'entry', image: 'node24', cmd: ['node', `${P.tools}/sandbox/nuget-entry.mjs`, `${P.work}/pkg`, l.package], out: 'entry.json' },
+        { name: 'clean', cmd: ['rm', '-rf', `${P.work}/nuget`, `${P.work}/home/.nuget`, `${P.work}/home/.dotnet`, `${P.work}/home/.local`] },
+      ],
+      locks: [],
+      runEnv: DOTNET_RUN_ENV,
+      run: (entry) => (entry.runner === 'dotnet' ? ['dotnet', entry.script, ...args] : [entry.script, ...args]),
+    };
+  }
+  if (l.kind === 'mcpb') return mcpbPlan(l, args);
   // docker: the target's own image is the sandbox; nothing is installed.
   return { image: null, targetImage: l.image, registries: [], install: [], locks: [], run: () => [...args], entrypoint: l.entrypoint ?? null };
 }
