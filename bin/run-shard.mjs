@@ -383,7 +383,7 @@ async function runTarget(t, list, ctx, dk) {
           // The image's own WORKDIR and VOLUMEs: its server runs where its Dockerfile put it, with a size-capped tmpfs
           // where it declared a data folder (the root stays read-only).
           const ic = await dk.imageConfig(image);
-          inst.oci = { workdir: ic.workdir, volumes: volumeTmpfs(ic.volumes), platform: ic.platform };
+          inst.oci = { workdir: ic.workdir, volumes: volumeTmpfs(ic.volumes), platform: ic.platform, ...(ic.platform ? {} : { inspect_failed: true }) };
           inst.ok = true;
         } else {
           image = ctx.images[plan.image];

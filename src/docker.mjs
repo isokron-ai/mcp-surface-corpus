@@ -26,7 +26,7 @@ export const DOCKER_MIN = [26, 0, 0];
  * what `nproc` lets a target make (about two host tasks each), so a fork bomb meets EAGAIN inside
  * the sandbox instead of crashing it at the host limit.
  */
-export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', nofile: '4096', cpus: 2, tmp: '512m', volTmp: '64m', volTmpCount: 8 };
+export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', nofile: '4096', cpus: 2, tmp: '512m', volTmp: '32m', volTmpCount: 8 };
 
 /**
  * A path an OCI target's image declares (its WORKDIR, a VOLUME): absolute, plain characters, no `.` or `..` segment,
@@ -38,13 +38,14 @@ export const imagePath = (p) => (typeof p === 'string' && p.length <= 200 && IMA
 /**
  * A writable, size-capped tmpfs over each path the image declares a VOLUME at (the server's data folder: /data,
  * /config, /app/logs), where Docker would have given it a writable volume. The root stays read-only; at most
- * LIMITS.volTmpCount of them, LIMITS.volTmp each, never over /tmp, /proc, /sys, /dev or /etc.
+ * LIMITS.volTmpCount of them, LIMITS.volTmp each (256 MiB in all: tmpfs is memory and counts against LIMITS.memory),
+ * never over /tmp, /proc, /sys, /dev, /etc or our own mounts (/work, /opt).
  */
 export function volumeTmpfs(paths) {
   const out = [];
   for (const raw of Array.isArray(paths) ? paths : []) {
     const p = imagePath(raw);
-    if (!p || /^\/(?:tmp|proc|sys|dev|etc)(?:\/|$)/.test(p) || out.includes(p)) continue;
+    if (!p || /^\/(?:tmp|proc|sys|dev|etc|work|opt)(?:\/|$)/.test(p) || out.includes(p)) continue;
     out.push(p);
     if (out.length >= LIMITS.volTmpCount) break;
   }

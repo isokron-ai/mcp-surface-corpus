@@ -23,8 +23,10 @@ if (typeof j.bin === 'string') { bin = String(j.name || pkg).split('/').pop(); r
   // With several bins, the server is the one whose name says mcp or server: the bin named like the package is often
   // its CLI (return_rp ships return_rp and return_rp-mcp). The package's own name still wins when it says so too.
   const own = names.find((n) => n === String(j.name || '').split('/').pop());
-  const server = names.filter((n) => /mcp|server/i.test(n));
-  bin = want && names.includes(want) ? want : want ? null : names.length === 1 ? names[0] : (own && /mcp|server/i.test(own) ? own : server[0] ?? own ?? names[0] ?? null);
+  // Tools around a server (create-mcp-server, mcp-inspector, mcp-installer, a dev server) are never the server.
+  const server = names.filter((n) => /mcp|server/i.test(n) && !/(?:^|[-_])(?:create|init|install(?:er)?|inspector|dev)(?:[-_]|$)/i.test(n));
+  const affixed = own ? server.find((n) => n === `${own}-mcp` || n === `${own}-server` || n === `${own}-mcp-server`) : undefined;
+  bin = want && names.includes(want) ? want : want ? null : names.length === 1 ? names[0] : (own && server.includes(own) ? own : affixed ?? server[0] ?? own ?? names[0] ?? null);
   if (bin) rel = j.bin[bin];
 }
 if (!rel && !want && typeof j.main === 'string') rel = j.main;

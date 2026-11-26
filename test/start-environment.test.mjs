@@ -35,7 +35,7 @@ test('R-SBX-44 an OCI target runs in its image\'s own WORKDIR, read from the pul
   assert.deepEqual(cfg, { workdir: '/app', volumes: ['/data', '/app/logs'], platform: 'linux/amd64' });
   assert.deepEqual(imageConfigOf('{"WorkingDir":"","Volumes":null} linux/amd64'), { workdir: null, volumes: [], platform: 'linux/amd64' });
   assert.deepEqual(imageConfigOf(''), { workdir: null, volumes: [], platform: null });
-  for (const bad of ['app', '/', '/app/../etc', '/a b', '/x;rm', '/./x', '//']) assert.equal(imagePath(bad), null, bad);
+  for (const bad of ['app', '/', '/app/../etc', '/a b', '/x;rm', '/./x', '//', '/a,size=9g', '/a:rw', '/a=b', '-x', '/a\n', '/a/b\n']) assert.equal(imagePath(bad), null, JSON.stringify(bad));
   const a = sb({ workdir: '/app' });
   assert.equal(pair(a, '--workdir'), '/app');
   hardened(a);
@@ -52,13 +52,16 @@ test('R-SBX-44 an OCI target runs in its image\'s own WORKDIR, read from the pul
 test('R-SBX-45 a size-capped tmpfs over each VOLUME the image declares, at most eight, never over /tmp or the system folders', () => {
   const a = sb({ workdir: '/app', tmpfs: ['/data', '/config'] });
   const t = all(a, '--tmpfs');
-  assert.deepEqual(t, [`/tmp:rw,nosuid,nodev,exec,size=${LIMITS.tmp},mode=1777`, '/data:rw,nosuid,nodev,noexec,size=64m,mode=1777', '/config:rw,nosuid,nodev,noexec,size=64m,mode=1777']);
+  assert.deepEqual(t, [`/tmp:rw,nosuid,nodev,exec,size=${LIMITS.tmp},mode=1777`, '/data:rw,nosuid,nodev,noexec,size=32m,mode=1777', '/config:rw,nosuid,nodev,noexec,size=32m,mode=1777']);
   hardened(a);
-  assert.deepEqual(volumeTmpfs(['/data/', '/data', '/tmp', '/tmp/x', '/proc', '/etc/app', '/dev/shm', 'rel', '/a/../b', 7, '/var/log/supervisor']), ['/data', '/var/log/supervisor']);
+  assert.deepEqual(volumeTmpfs(['/data/', '/data', '/tmp', '/tmp/x', '/proc', '/etc/app', '/dev/shm', 'rel', '/a/../b', 7, '/work', '/work/x', '/opt/surface', '/var/log/supervisor']), ['/data', '/var/log/supervisor']);
   const many = Array.from({ length: 20 }, (_, i) => '/v' + i);
   assert.equal(volumeTmpfs(many).length, LIMITS.volTmpCount);
   assert.equal(LIMITS.volTmpCount, 8);
-  assert.equal(LIMITS.volTmp, '64m');
+  assert.equal(LIMITS.volTmp, '32m');
+  // tmpfs is memory: /tmp and every volume together stay at most half the memory limit.
+  const mib = (x) => Number(String(x).replace(/m$/, '')) * (String(x).endsWith('g') ? 1024 : 1) || Number(String(x).replace(/g$/, '')) * 1024;
+  assert.ok(mib(LIMITS.tmp) + LIMITS.volTmpCount * mib(LIMITS.volTmp) <= mib(LIMITS.memory) / 2);
   // sandboxRunArgs never takes a path volumeTmpfs would drop.
   for (const bad of [['/etc'], ['/tmp'], ['rel'], many]) assert.throws(() => sb({ tmpfs: bad }), HarnessError, JSON.stringify(bad).slice(0, 40));
   assert.deepEqual(all(sb(), '--tmpfs').length, 1, 'no image volumes, only /tmp');
@@ -67,7 +70,7 @@ test('R-SBX-45 a size-capped tmpfs over each VOLUME the image declares, at most 
 test('R-SBX-46 a target image is pulled for linux/amd64 only, and its platform is recorded', () => {
   const src = readFileSync(join(root, 'bin', 'run-shard.mjs'), 'utf8');
   assert.match(src, /tdk\.d\(\['pull', '-q', '--platform', 'linux\/amd64', image\]/);
-  assert.match(src, /inst\.oci = \{ workdir: ic\.workdir, volumes: volumeTmpfs\(ic\.volumes\), platform: ic\.platform \}/);
+  assert.match(src, /inst\.oci = \{ workdir: ic\.workdir, volumes: volumeTmpfs\(ic\.volumes\), platform: ic\.platform, \.\.\.\(ic\.platform \? \{\} : \{ inspect_failed: true \}\) \}/, 'a failed inspect is recorded, not silent');
   assert.equal(imageConfigOf('{} linux/arm64').platform, 'linux/arm64');
   assert.equal(imageConfigOf('{} linux/arm64;x').platform, null);
 });
@@ -97,6 +100,9 @@ test('R-SBX-48 with several bins the npm entry is the one whose name says mcp or
   // return_rp ships return_rp (its CLI) and return_rp-mcp.
   assert.equal(entry('return_rp', { return_rp: 'cli.js', 'return_rp-mcp': 'mcp.js' }), 'return_rp-mcp');
   assert.equal(entry('tool', { tool: 'cli.js', 'tool-server': 'srv.js', other: 'o.js' }), 'tool-server');
+  // Tools around a server are never it; an exact <name>-mcp wins over another match.
+  assert.equal(entry('kit', { kit: 'k.js', 'create-mcp-server': 'c.js', 'mcp-inspector': 'i.js', 'kit-mcp': 'm.js' }), 'kit-mcp');
+  assert.equal(entry('kit', { kit: 'k.js', 'mcp-installer': 'i.js', 'zz-mcp': 'z.js', 'kit-mcp': 'm.js' }), 'kit-mcp');
   // Our own control: @isokron/mcp-check ships mcp-check and mcp-check-server and runs as `mcp-check serve`.
   assert.equal(entry('@isokron/mcp-check', { 'mcp-check': 'cli.js', 'mcp-check-server': 'srv.js' }), 'mcp-check');
   assert.equal(entry('plain', { plain: 'a.js', other: 'b.js' }), 'plain', 'no server signal: the package\'s own name, as before');
