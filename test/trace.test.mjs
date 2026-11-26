@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseStraceLine, splitArgs, unquote, sockaddr, summarizeTrace, summarizeTraceFile, SUMMARY_FORMAT } from '../src/trace-summary.mjs';
 import { loadRunscConfig } from '../src/runsc.mjs';
+import { traceProblems } from '../src/selftest.mjs';
 import { buildQuery } from '../src/dns.mjs';
 
 const cfg = loadRunscConfig();
@@ -135,6 +136,68 @@ test('R-CI-06 runsc\'s own headerless block as the sandbox starts, before any ca
   assert.deepEqual([boot.injection_suspected, boot.headerless_before_calls, boot.headerless_lines], [false, 3, 0]);
   const late = summarizeTrace(`${TRACE}\n{\n}`, cfg);
   assert.equal(late.injection_suspected, true, 'after the first call it is');
+});
+
+// runsc's boot timing table as a GitHub runner's trace had it (26 Nov 2026, gVisor 20261116.0): one
+// log message, a header line, rows without headers, an end line (gVisor pkg/timing Timer.Log).
+const TIMING = readFileSync(new URL('./runsc-boot-timing.txt', import.meta.url), 'utf8').split('\n').filter(Boolean);
+const TIMING_ROWS = TIMING.length - 1; // all but the header line have no header
+const BOOT = [
+  'I1126 03:36:11.432654       1 cli.go:282] **************** gVisor ****************',
+  'I1126 03:36:11.450739       1 loader.go:1562] Process should have started...',
+  'I1126 03:36:11.450808       1 timing.go:551] Timer for runsc boot: Ended.',
+];
+const TL = TRACE.split('\n'); // the trace above, by line
+const FIRST = call(1, 'docker-init', 'clone(CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|0x11, 0x0, 0x0, 0x4bf650, 0x0)', '2 (0x2) (3.262534ms)');
+
+test('R-CI-09 runsc\'s boot timing table is runsc\'s whether it comes before or after the target\'s first calls', () => {
+  // runsc starts the kernel, then logs the table: on a busy runner the target's first calls come first.
+  const usual = summarizeTrace([...BOOT, ...TIMING, ...FIRST, ...TL].join('\n'), cfg);
+  const late = summarizeTrace([...BOOT, ...FIRST, ...TIMING, ...TL].join('\n'), cfg);
+  const mid = summarizeTrace([...BOOT, ...FIRST, ...TL.slice(0, 6), ...TIMING, '', ...TL.slice(6)].join('\n'), cfg);
+  for (const [s, where] of [[usual, 'before_calls'], [late, 'after_calls'], [mid, 'after_calls']]) {
+    assert.deepEqual([s.injection_suspected, s.headerless_lines, s.headerless_before_calls, s.broken_lines, s.runsc_timing_block], [false, 0, 0, 0, where], where);
+    assert.deepEqual(s.counts, usual.counts, 'the table holds no calls');
+  }
+  assert.deepEqual(traceProblems(late), [], 'a trace with the table after the first call can carry a verdict');
+  // Without the table's header line its rows are lines like any other: after a call, flagged (the 26 Nov failure).
+  const rowsOnly = summarizeTrace([...BOOT, ...FIRST, ...TIMING.slice(1), ...TL].join('\n'), cfg);
+  assert.deepEqual([rowsOnly.injection_suspected, rowsOnly.headerless_lines, rowsOnly.runsc_timing_block], [true, TIMING_ROWS, null]);
+});
+
+test('R-CI-09 only one whole timing table in runsc\'s form is passed over: every change to it is still flagged', () => {
+  const at = (block, extra = []) => summarizeTrace([...BOOT, ...FIRST, ...block, ...extra, ...TL].join('\n'), cfg);
+  const flagged = (s, why) => { assert.equal(s.injection_suspected, true, why); assert.ok(s.headerless_lines > 0, why); assert.ok(traceProblems(s).length > 0, why); };
+  // Mutations of the form: each part of it is load-bearing.
+  const head = TIMING[0]; const rows = TIMING.slice(1, -1); const end = TIMING[TIMING.length - 1];
+  flagged(at([head.replace('timing.go:', 'strace.go:'), ...rows, end]), 'a header line from another file');
+  flagged(at([head.replace(/^I/, 'W'), ...rows, end]), 'another log level');
+  flagged(at([`${head} `, ...rows, end]), 'anything after the header');
+  flagged(at([head, ...rows, `${end})`]), 'anything after the end line (the rest of a forged call line)');
+  flagged(at([head, ...rows]), 'no end line');
+  flagged(at([head, ...rows.slice(0, 5), 'x', ...rows.slice(5), end]), 'a line that is not a row');
+  flagged(at([head, ...rows.slice(0, 5), rows[5].replace('\t', ' '), ...rows.slice(6), end]), 'a row without its tab');
+  flagged(at([head, ...Array(1001).fill(rows[0]), end]), 'more rows than any boot has');
+  // A second table, whichever comes first: only one is runsc's.
+  const twice = at(TIMING, TIMING);
+  flagged(twice, 'a second table');
+  assert.equal(twice.headerless_lines, TIMING_ROWS, 'the second table\'s rows are counted');
+  flagged(summarizeTrace([...BOOT, ...TIMING, ...FIRST, ...TIMING, ...TL].join('\n'), cfg), 'a second table after the first call');
+  // A runsc line inside a table ends it: the table never hides one of runsc's lines, and that call is still read.
+  const split = at([head, ...rows.slice(0, 3), ...call(1, 'python3', 'connect(0x3, 0x7f00 {Family: AF_INET, Addr: 1.2.3.4, Port: 443}, 0x10)', '0x0 (1ms)'), ...rows.slice(3), end]);
+  flagged(split, 'a call inside the table');
+  assert.ok(split.network.connects.some((c) => c.addr === '1.2.3.4' && c.failed === 0), 'the call is not hidden');
+});
+
+test('R-CI-09 a timing table forged through a file name is flagged', () => {
+  // A name that closes the real line, then a whole table: the rest of the real line follows it.
+  const name = `x)\n${TIMING.join('\n')}\n`;
+  const forged = [L(7, 'python3', 'E', `unlink(0x7f00 ${name})`), L(7, 'python3', 'X', `unlink(0x7f00 ${name})`, '0x0 (1µs)')];
+  for (const order of [[...BOOT, ...TIMING, ...FIRST, ...forged, ...TL], [...BOOT, ...FIRST, ...forged, ...TIMING, ...TL]]) {
+    const s = summarizeTrace(order.join('\n'), cfg);
+    assert.equal(s.injection_suspected, true);
+    assert.ok(s.headerless_lines >= TIMING_ROWS, 'the forged table, or runsc\'s after it, counts');
+  }
 });
 
 test('R-CASE-19 the trace summary lists the links a target made, and where they point', () => {

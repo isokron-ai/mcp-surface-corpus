@@ -202,7 +202,10 @@ What the sandbox does not do:
 - runsc prints path arguments without quoting, so a target can put a line break in a file name and
   write lines into its own trace that look like runsc's, header included. The summary ignores lines
   without runsc's header, flags headerless lines after the first call and call lines that do not
-  close (`injection_suspected`), and marks every summary `target_influenced`. The self test refuses
+  close (`injection_suspected`), and marks every summary `target_influenced`. The one headerless
+  block runsc writes itself, its boot timing table, is passed over only once and only whole and
+  in runsc's exact form, wherever it sits; anything else without a header after the first call is
+  flagged. The self test refuses
   a verdict from a flagged trace. A trace is evidence a target could have shaped; structured trace
   output in place of the text log is the follow-up that removes this.
 - The network logger and the firewall log are rate limited and capped (net-guard.sh logs at most
