@@ -1,0 +1,85 @@
+I1126 03:36:11.452043       1 timing.go:952] ---- runsc boot timing information ----
+[03:36:11.426669]	                     	╭─ runsc boot                      
+[03:36:11.432455]	+5 785µs ▉▉▉▉▉▉▉▉    	├─ Go code running: 5 785µs        
+[03:36:11.432787]	  +332µs ▌           	├─ boot subcommand dispatched: 332µs
+[03:36:11.433108]	  +320µs ▍           	├─ CPUID initialized: 320µs        
+[03:36:11.433110]	    +2µs             	├─ ring0 initialized: 2µs          
+[03:36:11.433201]	   +90µs ▏           	├─ host info read: 90µs            
+[03:36:11.433862]	  +660µs ▉           	├─ spec read: 660µs                
+[03:36:11.433984]	  +122µs ▏           	├─ chroot base mounted: 122µs      
+[03:36:11.434127]	  +142µs ▏           	├─ chroot proc mounted: 142µs      
+[03:36:11.434253]	  +126µs ▏           	├─ chroot procfs set up: 126µs     
+[03:36:11.434262]	    +9µs             	├─ chroot sealed read-only: 9µs    
+[03:36:11.434365]	  +102µs ▏           	├─ chroot set up: 102µs            
+[03:36:11.434554]	  +188µs ▎           	├─ sandbox capabilities computed: 188µs
+[03:36:11.434594]	   +40µs             	├─ current capabilities read: 40µs 
+[03:36:11.435973]	+1 379µs ▉▉          	├─ bounding set trimmed on all threads: 1 379µs
+[03:36:11.436033]	   +59µs             	├─ capset applied on all threads: 59µs
+[03:36:11.436084]	   +50µs             	├─ capabilities applied: 50µs      
+[03:36:11.436121]	   +36µs             	├─ resolved mounts read: 36µs      
+[03:36:11.436135]	   +13µs             	├─ procfs self/fd opened: 13µs     
+[03:36:11.436136]	    +1µs             	├─ creating loader: 1µs            
+[03:36:11.436174]	   +37µs             	├─ RNG initialized: 37µs           
+[03:36:11.436193]	   +19µs             	├─ memory usage initialized: 19µs  
+[03:36:11.436222]	   +28µs             	├─ GOMAXPROCS set: 28µs            
+[03:36:11.436246]	   +24µs             	├─ donated FDs ingested: 24µs      
+[03:36:11.436308]	   +62µs             	├─ systrap memory file created: 62µs
+[03:36:11.436347]	   +38µs             	├─ systrap stub initialized: 38µs  
+[03:36:11.437292]	  +945µs ▉▎          	├─ systrap source process created: 945µs
+[03:36:11.437303]	   +10µs             	├─ waiting for membarrier: 10µs    
+[03:36:11.437304]	    +1µs             	├─ host membarrier probed: 1µs     
+[03:36:11.437312]	    +7µs             	├─ platform created: 7µs           
+[03:36:11.437357]	   +44µs             	├─ memory file created: 44µs       
+[03:36:11.437388]	   +30µs             	├─ VDSO prepared: 30µs             
+[03:36:11.437411]	   +23µs             	├─ timekeeper configured: 23µs     
+[03:36:11.437662]	  +251µs ▍           	├─ network stack created: 251µs    
+[03:36:11.437786]	  +124µs ▏           	├─ kernel initialized: 124µs       
+[03:36:11.437792]	    +5µs             	├─ filesystems registered: 5µs     
+[03:36:11.437843]	   +51µs             	├─ process args created: 51µs      
+[03:36:11.437845]	    +2µs             	├─ compat logs initialized: 2µs    
+[03:36:11.437846]	    +0µs             	├─ mount hints parsed: 0µs         
+[03:36:11.437847]	    +0µs             	├─ host FS mount created: 0µs      
+[03:36:11.438021]	  +174µs ▎           	├─ loader created: 174µs           
+[03:36:11.438027]	    +5µs             	├─ metrics initialized: 5µs        
+[03:36:11.438039]	   +11µs             	├─ control server started: 11µs    
+[03:36:11.446725]	+8 686µs ▉▉▉▉▉▉▉▉▉▉▉▉	├─ start signal received: 8 686µs  
+[03:36:11.446865]	  +139µs ▏           	├─ network configured: 139µs       
+[03:36:11.447098]	  +232µs ▎           	├─ open FDs validated: 232µs       
+[03:36:11.447272]	  +174µs ▎           	├─ pre-seccomp callback done: 174µs
+[03:36:11.447333]	   +61µs             	├─ precompiled seccomp program rendered: 61µs
+[03:36:11.447520]	  +187µs ▎           	├─ seccomp filters installed: 187µs
+[03:36:11.447520]	    +0µs             	├─ forked: 0µs                     	╭─ root container
+[03:36:11.447588]	   +67µs             	│ ... 67µs ...                     	├─ FD table created: 67µs
+[03:36:11.447698]	  +109µs ▏           	│ ... 177µs ...                    	├─ cgroups mounted: 109µs
+[03:36:11.447873]	  +175µs ▎           	│ ... 352µs ...                    	├─ rootfs mounted: 175µs
+[03:36:11.447881]	    +8µs             	│ ... 360µs ...                    	├─ submounts prepared: 8µs
+[03:36:11.448014]	  +132µs ▏           	│ ... 493µs ...                    	├─ mounted "/dev": 132µs
+[03:36:11.448079]	   +64µs             	│ ... 558µs ...                    	├─ mounted "/sys": 64µs
+[03:36:11.448106]	   +27µs             	│ ... 586µs ...                    	├─ mounted "/tmp": 27µs
+[03:36:11.448213]	  +106µs ▏           	│ ... 692µs ...                    	├─ mounted "/proc": 106µs
+[03:36:11.448232]	   +19µs             	│ ... 711µs ...                    	├─ mounted "/dev/pts": 19µs
+[03:36:11.448260]	   +28µs             	│ ... 740µs ...                    	├─ mounted "/dev/shm": 28µs
+[03:36:11.448359]	   +99µs ▏           	│ ... 839µs ...                    	├─ mounted "/etc/hosts": 99µs
+[03:36:11.448364]	    +4µs             	│ ... 844µs ...                    	├─ mounted "/dev/mqueue": 4µs
+[03:36:11.448429]	   +64µs             	│ ... 908µs ...                    	├─ mounted "/etc/hostname": 64µs
+[03:36:11.448535]	  +105µs ▏           	│ ... 1 014µs ...                  	├─ mounted "/sys/fs/cgroup": 105µs
+[03:36:11.448610]	   +75µs             	│ ... 1 090µs ...                  	├─ mounted "/etc/resolv.conf": 75µs
+[03:36:11.448688]	   +77µs             	│ ... 1 168µs ...                  	├─ mounted "/usr/sbin/docker-init": 77µs
+[03:36:11.448689]	    +1µs             	│ ... 1 169µs ...                  	├─ submounts mounted: 1µs
+[03:36:11.448697]	    +7µs             	│ ... 1 176µs ...                  	├─ device files created: 7µs
+[03:36:11.448700]	    +2µs             	│ ... 1 179µs ...                  	├─ executable path resolved: 2µs
+[03:36:11.448700]	    +0µs             	│ ... 1 180µs ...                  	├─ exec user home resolved: 0µs
+[03:36:11.448717]	   +16µs             	│ ... 1 196µs ...                  	├─ FS context created: 16µs
+[03:36:11.449525]	  +807µs ▉▏          	│ ... 2 004µs ...                  	├─ memory manager created: 807µs
+[03:36:11.449680]	  +155µs ▏           	│ ... 2 159µs ...                  	├─ executable loaded: 155µs
+[03:36:11.449686]	    +6µs             	│ ... 2 165µs ...                  	├─ VDSO mapped: 6µs
+[03:36:11.449688]	    +1µs             	│ ... 2 167µs ...                  	├─ stack allocated: 1µs
+[03:36:11.449715]	   +27µs             	│ ... 2 194µs ...                  	├─ stack contents loaded: 27µs
+[03:36:11.449722]	    +6µs             	│ ... 2 201µs ...                  	├─ task image loaded: 6µs
+[03:36:11.449745]	   +23µs             	│ ... 2 224µs ...                  	├─ init task created: 23µs
+[03:36:11.449761]	   +16µs             	├─ root container created: 2 241µs 	│ ... 16µs ...
+[03:36:11.450739]	  +977µs ▉▍          	├─ signal forwarding started: 977µs	│ ... 994µs ...
+[03:36:11.450806]	   +66µs             	├─ kernel started: 66µs            	│ ... 1 060µs ...
+[03:36:11.450806]	    +0µs             	│ ... 0µs ...                      	╰─ END 1 060µs, total 3 285µs
+[03:36:11.450808]	    +2µs             	╰─ END 2µs, total 24 138µs         
+---- End of runsc boot timing information ----

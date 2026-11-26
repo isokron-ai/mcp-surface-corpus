@@ -153,7 +153,7 @@ test('egress proxy: only CONNECT to an allowlisted host name on port 443', async
   assert.equal(log[1].error, 'IP literal');
 });
 
-test('R-SBX-44 egress proxy: a server that sends its answer and closes at once is passed on whole, never reset, also when the client still sends', async () => {
+test('R-SBX-53 egress proxy: a server that sends its answer and closes at once is passed on whole, never reset, also when the client still sends', async () => {
   const body = Buffer.alloc(1024 * 1024, 'x');
   // An upstream that writes a large answer and closes as soon as it is written (as github.com does after a 302).
   const up = createServer((sock) => { sock.on('error', () => {}); sock.end(body); });
@@ -264,7 +264,7 @@ test('R-SBX-28 the egress proxy prints at most MAX_LINES lines, counts the rest,
 
 test('R-SBX-29 a target\'s own image is removed once it is done, ours are kept', () => {
   const shard = readFileSync(new URL('../bin/run-shard.mjs', import.meta.url), 'utf8');
-  assert.match(shard, /pulled = image;\n\s+const pull = await tdk\.d\(\['pull', '-q', image\]/);
+  assert.match(shard, /pulled = image;\n\s+const pull = await tdk\.d\(\['pull', '-q', '--platform', 'linux\/amd64', image\]/);
   assert.match(shard, /if \(pulled && !Object\.values\(ctx\.images\)\.includes\(pulled\)\) \{ try \{ await dk\.d\(\['image', 'rm', '-f', pulled\]/);
   assert.ok(shard.indexOf("['image', 'rm', '-f', pulled]") > shard.indexOf('try { await dk.sweep(id); }'), 'after its containers are gone');
 });

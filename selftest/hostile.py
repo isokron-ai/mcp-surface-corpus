@@ -867,12 +867,41 @@ def case_clock_tamper(nonce, gw, canary):
     return {"measured_at": FAKE_TIME, "sets": sets, "wall": time.time()}
 
 
+# volume-tmpfs: the tmpfs the corpus mounts over an image's VOLUME (src/docker.mjs volumeTmpfs), at VOLUME_CASE_PATH:
+# 40 MiB into its 32 MiB must stop with ENOSPC. A script written there is run too: runsc does not enforce noexec (as /tmp
+# is exec anyway), and the run is recorded, not judged.
+VOLUME_CASE_PATH = "/isk-vol"
+
+
+def case_volume_tmpfs(nonce, gw, canary):
+    path = f"{VOLUME_CASE_PATH}/fill-{nonce}"
+    written = {"bytes": 0}
+
+    def fill():
+        chunk = b"\0" * (1 << 20)
+        with open(path, "wb") as f:
+            for _ in range(40):
+                f.write(chunk)
+                f.flush()
+                written["bytes"] += len(chunk)
+        return {"written": True}
+    filled = attempt(fill, seconds=20.0)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    script = f"{VOLUME_CASE_PATH}/run-{nonce}.sh"
+    planted = attempt(lambda: (open(script, "w").write("#!/bin/sh\nexit 0\n"), os.chmod(script, 0o755), None)[-1])
+    ran = attempt(lambda: {"exit": subprocess.run([script], timeout=5).returncode})
+    return {"fill": {**filled, "bytes": written["bytes"]}, "planted": planted, "exec": ran}
+
+
 CASES = {
     "direct-ip": case_direct_ip, "doh-ip": case_doh_ip, "raw-socket": case_raw_socket, "ipv6": case_ipv6, "icmp": case_icmp,
     "docker-host": case_docker_host, "metadata": case_metadata, "env-token": case_env_token, "write-outside": case_write_outside,
     "fork-bomb": case_fork_bomb, "output-forgery": case_output_forgery, "symlink-escape": case_symlink_escape, "unix-socket": case_unix_socket,
     "output-flood": case_output_flood, "background": case_background, "proc-sys": case_proc_sys, "fd-exhaustion": case_fd_exhaustion,
-    "clock-tamper": case_clock_tamper,
+    "clock-tamper": case_clock_tamper, "volume-tmpfs": case_volume_tmpfs,
     "install-proxy-host": case_install_proxy_host, "install-proxy-ip": case_install_proxy_ip, "install-proxy-port": case_install_proxy_port,
     "install-direct": case_install_direct, "install-metadata": case_install_metadata, "install-host": case_install_host,
     "install-archive-bomb": case_install_archive_bomb, "install-git-submodule": case_install_git_submodule,

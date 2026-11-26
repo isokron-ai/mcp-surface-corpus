@@ -7,7 +7,8 @@ requirements file. Ours, from the read-only tools volume; it runs in an install 
 A project that declares a build system is installed itself (`<bundle>[extras]`, as uv installs the project); otherwise
 its [project] dependencies and those of the extras asked for. Every requirement must be one line of PEP 508 text that
 pip cannot read as an option (no line starting with -, no " -" anywhere): a requirements file is not a place for
---index-url. Prints one line, { ok, requirements, project } and exits 0, or { error } and exits 1:
+--index-url. No direct reference (`name @ <url>`, `file:`) in them or in build-system.requires: everything comes from
+PyPI, though the install's proxy also lets GitHub's release hosts through (the bundle's own download). Prints one line, { ok, requirements, project } and exits 0, or { error } and exits 1:
     no_pyproject        the bundle has no pyproject.toml
     pyproject_unreadable  not TOML this reads, or over 1 MiB
     bad_requirement     a dependency that is not plain PEP 508 text
@@ -25,6 +26,12 @@ except ImportError:  # Python < 3.11: not our image
 
 REQ = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}(\[[A-Za-z0-9._,\s-]{0,200}\])?\s*(\([^()\n]{0,200}\))?[^\n\r\x00]{0,400}$")
 EXTRA = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,60}$")
+
+
+def direct(r):
+    """A PEP 508 direct reference or URL in the part before any marker."""
+    head = r.split(";", 1)[0]
+    return "@" in head or "://" in head or "file:" in head.lower()
 
 
 def fail(code, **kw):
@@ -67,6 +74,14 @@ def main(argv):
     for r in reqs[1 if built else 0:]:
         if not isinstance(r, str) or not REQ.match(r) or r.lstrip().startswith("-") or re.search(r"\s-", r):
             fail("bad_requirement")
+        # A direct reference (`name @ https://...`, `file:`) is fetched from wherever it names, not from PyPI: refused.
+        if direct(r):
+            fail("bad_requirement", why="direct reference")
+    # The same for what a project's build needs (pip fetches build-system.requires before it builds).
+    if built:
+        bs = doc.get("build-system", {}).get("requires") or []
+        if not isinstance(bs, list) or any(not isinstance(r, str) or direct(r) or r.lstrip().startswith("-") for r in bs):
+            fail("bad_requirement", why="build-system.requires")
     if len(reqs) > 200:
         fail("bad_requirement", why="over 200 requirements")
     os.makedirs(os.path.dirname(out), exist_ok=True)

@@ -73,7 +73,7 @@ function tunnel(proxy, host) {
 /**
  * The GET's options: over the tunnel's TLS socket when there is a proxy. No `agent` key at all: with one (even
  * `agent: false`) Node hands the request to an Agent, which ignores createConnection and opens a direct connection of
- * its own, looked up by name: past the proxy (R-SBX-45; in the sandbox the name lookup gives the network logger, which
+ * its own, looked up by name: past the proxy (R-SBX-54; in the sandbox the name lookup gives the network logger, which
  * resets it).
  */
 export function requestOptions(url, sock) {

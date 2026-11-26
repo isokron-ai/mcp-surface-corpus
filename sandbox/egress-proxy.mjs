@@ -74,6 +74,8 @@ export function makeProxy(allow, log, { connectTo = upstreamOf } = {}) {
     };
     const upstream = connectTo(d.host);
     upstream.on('connect', () => {
+      // The client may have gone (and finish run) before the upstream connection came up.
+      if (done) return;
       upstream.setTimeout(0);
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head && head.length) { up += head.length; upstream.write(head); }

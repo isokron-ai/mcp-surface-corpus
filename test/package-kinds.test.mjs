@@ -160,7 +160,7 @@ test('R-SBX-39 the crate\'s binary is the one cargo recorded from crates.io, pic
 test('R-SBX-39 mutation check: without the crates.io source check, cargo-entry.mjs would start a crate built from anywhere', () => {
   const d = crates({ 'x 1.0.0 (git+https://github.com/evil/x#abc)': { bins: ['x'] } }, ['x']);
   assert.equal(entry('cargo-entry.mjs', d, 'x').out.error, 'not_installed');
-  const m = mutant('sandbox/cargo-entry.mjs', "k.split(' ')[0] === crate && / \\(registry", "k.split(' ')[0] === crate || / \\(registry");
+  const m = mutant('sandbox/cargo-entry.mjs', "k.split(' ')[0] === crate && / \\((?:registry", "k.split(' ')[0] === crate || / \\((?:registry");
   try {
     const r = spawnSync(process.execPath, [m.file, d, 'x'], { encoding: 'utf8' });
     assert.equal(JSON.parse(r.stdout.trim()).script, join(d, 'bin', 'x'), 'without the check the git crate runs');
@@ -354,7 +354,7 @@ test('R-SBX-42 mutation check: without the host check on redirects, or the sha25
   } finally { m.done(); }
 });
 
-test('R-SBX-45 the bundle download goes over the proxy\'s tunnel only: no agent of Node\'s (which would connect by itself, past the proxy), port 443 and the Host header stated', async () => {
+test('R-SBX-54 the bundle download goes over the proxy\'s tunnel only: no agent of Node\'s (which would connect by itself, past the proxy), port 443 and the Host header stated', async () => {
   const { request } = await import('node:https');
   const { Duplex } = await import('node:stream');
   const url = new URL(URL1);
@@ -398,14 +398,15 @@ const reqs = (toml, extras = [], script = join(root, 'sandbox', 'pyproject-reqs.
   return { rc: r.status, out, file: existsSync(join(d, 'lock', 'requirements.txt')) ? readFileSync(join(d, 'lock', 'requirements.txt'), 'utf8') : null, d };
 };
 
-test('R-SBX-43 a uv bundle\'s requirements are its pyproject\'s, read as data: the project itself when it has a build system, else its dependencies and the extras asked for, never a line pip reads as an option', { skip: !PY && 'no Python with tomllib' }, () => {
+test('R-SBX-43 a uv bundle\'s requirements are its pyproject\'s, read as data: the project itself when it has a build system, else its dependencies and the extras asked for, never a line pip reads as an option, never a direct reference', { skip: !PY && 'no Python with tomllib' }, () => {
   let r = reqs('[project]\nname = "x"\ndependencies = ["mcp>=1.2", "httpx[http2]>=0.27; python_version >= \'3.10\'"]\n[project.optional-dependencies]\nmcp = ["fastmcp==2.1"]\n', ['mcp']);
   assert.deepEqual([r.rc, r.out], [0, { ok: true, requirements: 3, project: false }]);
   assert.equal(r.file, 'mcp>=1.2\nhttpx[http2]>=0.27; python_version >= \'3.10\'\nfastmcp==2.1\n');
   r = reqs('[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n[project]\nname = "x"\n', ['mcp']);
+  assert.equal(reqs('[build-system]\nrequires = ["evil @ https://github.com/evil/x/archive/x.zip"]\n[project]\nname = "x"\n').out.error, 'bad_requirement', 'nor in build-system.requires');
   assert.equal(r.out.project, true);
   assert.equal(r.file, `${r.d}[mcp]\n`);
-  for (const dep of ['--index-url=https://evil.example/simple', '-e /etc', 'x --extra-index-url https://evil.example', 'x\t-r /etc/passwd']) {
+  for (const dep of ['--index-url=https://evil.example/simple', '-e /etc', 'x --extra-index-url https://evil.example', 'x\t-r /etc/passwd', 'evil @ https://github.com/evil/x/releases/download/v1/x.whl', 'evil@git+https://github.com/evil/x', 'evil @ file:///work/pkg/x.whl']) {
     r = reqs(`[project]\nname = "x"\ndependencies = [${JSON.stringify(dep)}]\n`);
     assert.deepEqual([r.rc, r.out.error, r.file], [1, 'bad_requirement', null], dep);
   }
@@ -414,10 +415,15 @@ test('R-SBX-43 a uv bundle\'s requirements are its pyproject\'s, read as data: t
   assert.equal(reqs('[project]\nname = "x"\n', ['--index-url']).out.error, 'usage');
 });
 
-test('R-SBX-43 mutation check: without the option check a requirements line pip reads as an option is written', { skip: !PY && 'no Python with tomllib' }, () => {
+test('R-SBX-43 mutation check: without the option check a requirements line pip reads as an option is written, without the direct-reference check a URL', { skip: !PY && 'no Python with tomllib' }, () => {
   const m = mutant('sandbox/pyproject-reqs.py', 'if not isinstance(r, str) or not REQ.match(r) or r.lstrip().startswith("-") or re.search(r"\\s-", r):', 'if not isinstance(r, str):');
   try {
-    const r = reqs('[project]\nname = "x"\ndependencies = ["x --extra-index-url https://evil.example"]\n', [], m.file);
+    const r = reqs('[project]\nname = "x"\ndependencies = ["x -r /etc/passwd"]\n', [], m.file);
     assert.equal(r.rc, 0, 'without the guard the option line is written');
   } finally { m.done(); }
+  const d = mutant('sandbox/pyproject-reqs.py', '        if direct(r):\n            fail("bad_requirement", why="direct reference")', '        pass');
+  try {
+    const r = reqs('[project]\nname = "x"\ndependencies = ["evil @ https://github.com/evil/x/releases/download/v1/x.whl"]\n', [], d.file);
+    assert.equal(r.rc, 0, 'without the direct-reference check a GitHub URL would be installed');
+  } finally { d.done(); }
 });

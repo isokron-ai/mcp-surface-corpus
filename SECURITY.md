@@ -86,7 +86,15 @@ Every container that runs target code (install and server):
 
 - digest-pinned image (`images.json`, or the target's own image, which must be pinned by digest);
 - `--runtime runsc`, user `65534:65534` (nobody), `--cap-drop ALL`, `--security-opt no-new-privileges`,
-  read-only root filesystem, tmpfs `/tmp`;
+  read-only root filesystem, tmpfs `/tmp`; an OCI target also gets a tmpfs (`noexec,nosuid,nodev`, 32 MiB, at
+  most 8) over each VOLUME its image declares that is an empty folder in the image and holds neither its WORKDIR
+  nor its entrypoint's folder (a created, never started container and `docker cp` tell; a file, a link or content
+  there means no tmpfs). A VOLUME that is a link in the image is never mounted over: a tmpfs through a link to `/etc`
+  could hide our resolv.conf, which would cost the DNS telemetry only (the network has no egress either way). The
+  image's WORKDIR is used only when it is a plain path outside `/proc`, `/sys` and `/dev`; `volume-tmpfs` in the
+  hostile self test checks the cap (ENOSPC at 32 MiB) under runsc. runsc does not enforce `noexec` on these tmpfs
+  mounts (seen in the self test, gVisor 20261116.0): a file written there can run, as one written to `/tmp` (mounted
+  `exec`) always could, so this grants no new capability; the flag stays for any runtime that honours it;
 - `--memory 2g` (no swap beyond it), at most 2 CPUs, at most 512 processes and threads:
   `--ulimit nproc=512:512`, which gVisor's kernel enforces inside the sandbox (a fork past it fails
   with EAGAIN). `--pids-limit 2048` bounds the sandbox's own host tasks (gVisor's threads and a stub
@@ -202,7 +210,10 @@ What the sandbox does not do:
 - runsc prints path arguments without quoting, so a target can put a line break in a file name and
   write lines into its own trace that look like runsc's, header included. The summary ignores lines
   without runsc's header, flags headerless lines after the first call and call lines that do not
-  close (`injection_suspected`), and marks every summary `target_influenced`. The self test refuses
+  close (`injection_suspected`), and marks every summary `target_influenced`. The one headerless
+  block runsc writes itself, its boot timing table, is passed over only once and only whole and
+  in runsc's exact form, wherever it sits; anything else without a header after the first call is
+  flagged. The self test refuses
   a verdict from a flagged trace. A trace is evidence a target could have shaped; structured trace
   output in place of the text log is the follow-up that removes this.
 - The network logger and the firewall log are rate limited and capped (net-guard.sh logs at most

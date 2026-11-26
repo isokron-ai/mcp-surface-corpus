@@ -28,7 +28,9 @@ import { loadRunscConfig } from './runsc.mjs';
  * one: the proxy is its only door, and these cases try every other way through it and around it.
  */
 export const INSTALL_CASES = ['install-proxy-host', 'install-proxy-ip', 'install-proxy-port', 'install-direct', 'install-metadata', 'install-host', 'install-archive-bomb', 'install-git-submodule'];
-export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', 'output-flood', 'background', 'proc-sys', 'fd-exhaustion', 'clock-tamper', ...INSTALL_CASES];
+export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', 'output-flood', 'background', 'proc-sys', 'fd-exhaustion', 'clock-tamper', 'volume-tmpfs', ...INSTALL_CASES];
+/** Where volume-tmpfs's container gets the tmpfs an image VOLUME gets in a corpus run (selftest/hostile.py VOLUME_CASE_PATH). */
+export const VOLUME_CASE_PATH = '/isk-vol';
 /** The sandbox network a case runs on: 'install' for the install cases, else 'run'. */
 export const caseNet = (name) => (INSTALL_CASES.includes(name) ? 'install' : 'run');
 /** What the install cases ask the proxy for, which it must refuse (the proxy-allowlist mutation lets these through). */
@@ -425,6 +427,21 @@ const RULES = {
   },
   // Setting the clock is refused, the host's clock does not jump, and a time the target claims
   // (its measured_at, forged records) never becomes the harness's time in the telemetry.
+  // The tmpfs over an image's VOLUME (R-CASE-28): its size cap holds under runsc (ENOSPC at 32 MiB). runsc does not
+  // enforce the noexec option (seen on GitHub, gVisor 20261116.0: a script written there ran), as /tmp is exec anyway,
+  // so the run is recorded, not judged. The write is traced (openat under the volume); write(2) itself is not, so the
+  // case's report, when there is one, must show ENOSPC at or under the cap, and vetoes otherwise.
+  'volume-tmpfs': (ev) => {
+    const opened = list(ev.trace && ev.trace.opens_outside).filter((o) => o.op === 'write' && String(o.path).startsWith(VOLUME_CASE_PATH + '/fill-'));
+    const runs = list(ev.trace && ev.trace.exec).filter((e) => String(e.path).startsWith(VOLUME_CASE_PATH + '/'));
+    const r = ev.report ? resultOf(ev.report) : null;
+    const fill = r && r.fill && typeof r.fill === 'object' ? r.fill : null;
+    const capBytes = Number(String(LIMITS.volTmp).replace(/m$/, '')) * 1024 * 1024;
+    const overfull = !!r && (!fill || fill.ok !== false || fill.errno !== 28 || !(Number(fill.bytes) <= capBytes));
+    const blocked = opened.length >= 1 && !overfull;
+    return verdict(blocked, opened.length >= 1, [...opened.map((o) => `trace: write ${o.path} (${o.n} open${o.n === 1 ? '' : 's'})`), ...(fill ? [`report: fill ${fill.ok === false ? `stopped with errno ${fill.errno}` : 'did not stop'} after ${Number(fill.bytes) || 0} bytes (cap ${capBytes})`] : []), ...runs.map((e) => `trace: exec ${e.path} ${e.failed ? `failed ${e.failed}/${e.n} (errno ${e.errno})` : 'ran (runsc does not enforce noexec; /tmp is exec too)'}`)],
+      !opened.length ? 'nothing was tried: no write under the volume tmpfs traced' : blocked ? `the volume tmpfs stopped the write at its ${LIMITS.volTmp} cap${fill ? ' with ENOSPC' : ''}` : `got through: the volume tmpfs took ${Number(fill && fill.bytes) || 0} bytes, past its ${LIMITS.volTmp} cap or without ENOSPC`);
+  },
   'clock-tamper': (ev) => {
     const priv = list(ev.trace && ev.trace.privileged).filter((p) => p.name === 'settimeofday' || p.name === 'clock_settime');
     const c = stageOf(ev).clock && typeof stageOf(ev).clock === 'object' ? stageOf(ev).clock : null;

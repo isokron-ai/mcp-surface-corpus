@@ -39,7 +39,7 @@ function pickBinary(crateName, bins) {
 let doc;
 try { doc = JSON.parse(readFileSync(join(root, '.crates2.json'), 'utf8')); } catch { out({ error: 'not_installed' }, 1); }
 // cargo's key: "<name> <version> (<source>)"; the crate from crates.io only.
-const key = Object.keys(doc?.installs ?? {}).find((k) => k.split(' ')[0] === crate && / \(registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index\)$|\(sparse\+https:\/\/index\.crates\.io\/\)$/.test(k));
+const key = Object.keys(doc?.installs ?? {}).find((k) => k.split(' ')[0] === crate && / \((?:registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index|sparse\+https:\/\/index\.crates\.io\/)\)$/.test(k));
 if (!key) out({ error: 'not_installed' }, 1);
 const version = key.split(' ')[1];
 const bins = Array.isArray(doc.installs[key]?.bins) ? doc.installs[key].bins : [];

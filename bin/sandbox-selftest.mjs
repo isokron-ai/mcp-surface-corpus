@@ -35,7 +35,7 @@ import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, fromProxy, newRunId, readTelemetry } from '../src/telemetry.mjs';
-import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, caseNet, evaluateCase } from '../src/selftest.mjs';
+import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, VOLUME_CASE_PATH, caseNet, evaluateCase } from '../src/selftest.mjs';
 import { PROXY_LOG_CAP, imageHoles, firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { lookup } from 'node:dns/promises';
@@ -406,6 +406,8 @@ async function runCase(name, ctx) {
       name: cname, image: netName === 'install' ? images['node24-build'] : images.python, network, ip: NET.target, resolv: netName, detach: true, labels: lbl, workdir: P.work,
       mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: netName === 'install' ? INSTALL_CASE_ENV : CASE_ENV,
       cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NET.gateway, String(CANARY_PORT), ...(hostCanary ? [hostCanary.dir] : [])],
+      // volume-tmpfs: the tmpfs an OCI image's VOLUME gets in a corpus run, made the same way.
+      ...(name === 'volume-tmpfs' ? { tmpfs: [VOLUME_CASE_PATH] } : {}),
       hostEnv: process.env,
     });
     if (ctx.disable) argv = mutateCaseArgs(argv, ctx.disable, canaries);

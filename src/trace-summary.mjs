@@ -10,6 +10,14 @@
 // list does not close is counted (`broken_lines`), and either sets `injection_suspected`. Every
 // summary says `target_influenced: true`: it is evidence the target could have shaped, never the
 // only evidence that something was blocked. Structured trace output is the real fix (follow-up).
+//
+// One block of runsc's own has no headers: the boot timing table (gVisor pkg/timing Timer.Log),
+// a header line "---- runsc boot timing information ----", rows that start "[hh:mm:ss.micros]<TAB>"
+// and the line "---- End of runsc boot timing information ----". runsc logs it once, in one write,
+// just after it starts the kernel, so the target's first traced calls can come before it: on a busy
+// runner they do (R-CI-09). Exactly one such block, whole and in that form, is runsc's, wherever it
+// sits; a second one, one cut short, or one with any other line in it counts as headerless lines.
+// A runsc line has a header, so no line of runsc's can sit inside an accepted block.
 import { createReadStream } from 'node:fs';
 import { posix } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -20,6 +28,11 @@ export const SUMMARY_FORMAT = 'isokron-trace-summary/1';
 const HEAD = /^[IWEDF]\d{4} [0-9:.]+\s+\d+\s+[^\s\]]+:\d+\]\s?(.*)$/;
 const TASK = /^\[\s*([^\]]*?)\s*\]\s+(.*)$/;
 const CALL = /^(.*?) ([EX]) ([a-z0-9_]+)\(/;
+// runsc's boot timing table (see above): its header line, its rows, its last line, and at most this many rows.
+const TIMING_HEAD = /^I\d{4} [0-9:.]+\s+\d+\s+timing\.go:\d+\] ---- runsc boot timing information ----$/;
+const TIMING_ROW = /^\[ *\d{2}:\d{2}:\d{2}\.\d{6}\]\t/;
+const TIMING_END = '---- End of runsc boot timing information ----';
+const TIMING_MAX_ROWS = 1000;
 const STR_CAP = 200;
 
 /** Finds the argument list of a call: from just after "(" to its matching ")", outside quotes. */
@@ -165,6 +178,7 @@ export class TraceSummary {
     this.cfg = cfg;
     this.cred = cfg.summary.credential.map((r) => new RegExp(r));
     this.lines = 0; this.parsed = 0; this.headerless = 0; this.headerlessBefore = 0; this.broken = 0;
+    this.timing = null; this.timingBlock = null; // the open timing block, and where the one accepted sat
     this.counts = Object.fromEntries([...FAMILIES, 'other'].map((f) => [f, 0]));
     this.failed = Object.fromEntries([...FAMILIES, 'other'].map((f) => [f, 0]));
     this.pending = new Map();
@@ -176,9 +190,18 @@ export class TraceSummary {
 
   add(line) {
     this.lines++;
-    // runsc prints a block of its own without headers as the sandbox starts, before the first traced
-    // call: only a headerless line after a call can be a target's doing.
-    if (!HEAD.test(line)) { if (this.parsed || this.broken) this.headerless++; else this.headerlessBefore++; return; }
+    // runsc's boot timing table: taken whole or not at all (see the top of this file).
+    if (this.timing) {
+      if (TIMING_ROW.test(line) && this.timing.rows < TIMING_MAX_ROWS) { this.timing.rows++; return; }
+      if (line === TIMING_END) { this.timingBlock = this.timing.after ? 'after_calls' : 'before_calls'; this.timing = null; return; }
+      this.dropTiming();
+    } else if (this.timingBlock === null && TIMING_HEAD.test(line)) {
+      this.timing = { rows: 0, after: !!(this.parsed || this.broken) };
+      return;
+    }
+    // Before the first traced call nothing of the target's is in the trace yet: only a headerless
+    // line after a call can be its doing.
+    if (!HEAD.test(line)) { this.bare(1); return; }
     const r = parseStraceLine(line);
     if (!r) return;
     if (r.broken) { this.broken++; return; }
@@ -188,6 +211,12 @@ export class TraceSummary {
     this.pending.delete(key);
     this.call(r);
   }
+
+  /** Headerless lines: a target's doing after the first call, runsc's before it. */
+  bare(n) { if (this.parsed || this.broken) this.headerless += n; else this.headerlessBefore += n; }
+
+  /** A timing block that did not end as runsc ends it: its rows are headerless lines like any other. */
+  dropTiming() { const t = this.timing; this.timing = null; if (t.after) this.headerless += t.rows; else this.headerlessBefore += t.rows; }
 
   call(r) {
     const fam = syscallFamily(this.cfg, r.name);
@@ -243,12 +272,13 @@ export class TraceSummary {
   }
 
   result() {
+    if (this.timing) this.dropTiming();
     for (const r of this.pending.values()) this.call({ ...r, ret: null });
     this.pending.clear();
     const t = (x) => x.list();
     return {
       format: SUMMARY_FORMAT, target_influenced: true, lines: this.lines, syscalls: Object.values(this.counts).reduce((s, n) => s + n, 0),
-      headerless_lines: this.headerless, headerless_before_calls: this.headerlessBefore, broken_lines: this.broken, injection_suspected: this.headerless > 0 || this.broken > 0,
+      headerless_lines: this.headerless, headerless_before_calls: this.headerlessBefore, broken_lines: this.broken, runsc_timing_block: this.timingBlock, injection_suspected: this.headerless > 0 || this.broken > 0,
       counts: this.counts, failed: this.failed,
       opens_outside: t(this.opens), credential_paths: t(this.creds), exec: t(this.execs),
       process: { clones: this.clones, clone_failed: this.cloneFailed },
