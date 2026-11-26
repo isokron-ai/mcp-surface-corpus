@@ -175,8 +175,8 @@ function toolPath(id, { version = '1.2.0', pkgs = [[id, 'net9.0', 'any', [{ name
   for (const [pkg, tfm, rid, cmds] of pkgs) {
     const dir = join(d, '.store', id.toLowerCase(), version, pkg.toLowerCase(), version, 'tools', tfm, rid);
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'DotnetToolSettings.xml'), `<?xml version="1.0" encoding="utf-8"?>\n<DotNetCliTool Version="2">\n  <Commands>\n${cmds.map((c) => `    <Command Name="${c.name}" EntryPoint="${c.entry}" Runner="${c.runner}" />`).join('\n')}\n  </Commands>\n</DotNetCliTool>\n`);
-    if (files) for (const c of cmds) if (!c.entry.includes('..')) { mkdirSync(dirname(join(dir, c.entry)), { recursive: true }); writeFileSync(join(dir, c.entry), 'MZ'); }
+    writeFileSync(join(dir, 'DotnetToolSettings.xml'), `<?xml version="1.0" encoding="utf-8"?>\n<DotNetCliTool Version="2">\n  <Commands>\n${cmds.map((c) => `    <Command Name="${c.name}"${c.entry ? ` EntryPoint="${c.entry}"` : ''}${c.runner ? ` Runner="${c.runner}"` : ''} />`).join('\n')}\n  </Commands>\n</DotNetCliTool>\n`);
+    if (files) for (const c of cmds) if (c.entry && !c.entry.includes('..')) { mkdirSync(dirname(join(dir, c.entry)), { recursive: true }); writeFileSync(join(dir, c.entry), 'MZ'); }
   }
   for (const s of shims) writeFileSync(join(d, s), 'ELF');
   return d;
@@ -201,6 +201,19 @@ test('R-SBX-40 a .NET tool\'s command is the one its DotnetToolSettings.xml decl
   assert.equal(entry('nuget-entry.mjs', d, 'Acme.Mcp').out.error, 'no_command', 'a link is never the entry point');
   d = toolPath('Acme.Mcp', { pkgs: [['Acme.Mcp', 'net9.0', 'any', [{ name: 'a', entry: 'A.dll', runner: 'dotnet' }, { name: 'b', entry: 'B.dll', runner: 'dotnet' }]]], shims: ['a', 'b'] });
   assert.deepEqual(entry('nuget-entry.mjs', d, 'Acme.Mcp').out, { error: 'several_commands', commands: ['a', 'b'] });
+  // Several target frameworks: the newest the image's runtime (net10.0) runs; one built only for a newer runtime cannot run.
+  const cmd = [{ name: 'acme-mcp', entry: 'Acme.Mcp.dll', runner: 'dotnet' }];
+  d = toolPath('Acme.Mcp', { pkgs: [['Acme.Mcp', 'net8.0', 'any', cmd], ['Acme.Mcp', 'net10.0', 'any', cmd], ['Acme.Mcp', 'net11.0', 'any', cmd]] });
+  assert.equal(entry('nuget-entry.mjs', d, 'Acme.Mcp').out.tfm, 'net10.0');
+  d = toolPath('Acme.Mcp', { pkgs: [['Acme.Mcp', 'net11.0', 'any', cmd]] });
+  assert.equal(entry('nuget-entry.mjs', d, 'Acme.Mcp').out.error, 'runtime_too_new');
+  // A RID-specific tool's launcher is a link into the store: the file it points at is the one that runs.
+  d = toolPath('Acme.Mcp', { shims: [], pkgs: [['Acme.Mcp', 'any', 'any', [{ name: 'acme-mcp' }]], ['Acme.Mcp.linux-x64', 'any', 'linux-x64', [{ name: 'acme-mcp', entry: 'acme-mcp', runner: 'executable' }]]] });
+  symlinkSync('.store/acme.mcp/1.2.0/acme.mcp.linux-x64/1.2.0/tools/any/linux-x64/acme-mcp', join(d, 'acme-mcp'));
+  assert.deepEqual([entry('nuget-entry.mjs', d, 'Acme.Mcp').out.runner, entry('nuget-entry.mjs', d, 'Acme.Mcp').out.rid], ['executable', 'linux-x64']);
+  d = toolPath('Acme.Mcp', { shims: [] });
+  symlinkSync('/bin/sh', join(d, 'acme-mcp'));
+  assert.equal(entry('nuget-entry.mjs', d, 'Acme.Mcp').out.error, 'no_command', 'a launcher link out of the store counts for nothing');
   assert.equal(entry('nuget-entry.mjs', tmp(), 'Acme.Mcp').out.error, 'not_installed');
   assert.equal(entry('nuget-entry.mjs', d, '--help').out.error, 'usage');
 });
@@ -210,13 +223,14 @@ test('R-SBX-40 mutation check: without the entry point\'s path check, the regula
     // A regular file outside the package (on Linux /bin/sh is a link, which the regular-file check alone would refuse).
     [".some((s) => s === '..' || s === '.' || s === '')", '.some(() => false)', () => { const d = toolPath('Acme.Mcp', { pkgs: [['Acme.Mcp', 'net9.0', 'any', [{ name: 'acme-mcp', entry: `a/${'../'.repeat(9)}outside.bin`, runner: 'dotnet' }]]] }); writeFileSync(join(d, 'outside.bin'), 'ELF'); return d; }],
     ['const isFile = (p) => { try { return lstatSync(p).isFile(); } catch { return false; } };', 'const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };', () => { const d = toolPath('Acme.Mcp', { files: false }); symlinkSync('/bin/sh', join(d, '.store/acme.mcp/1.2.0/acme.mcp/1.2.0/tools/net9.0/any/Acme.Mcp.dll')); return d; }],
-    [' && isFile(join(root, c.name)));', ');', () => toolPath('Acme.Mcp', { shims: [] })],
+    [' && launcher(c.name));', ');', () => toolPath('Acme.Mcp', { shims: [] })],
   ]) {
     const d = setup();
     assert.ok(entry('nuget-entry.mjs', d, 'Acme.Mcp').out.error, 'refused with the guard');
     const src = readFileSync(join(root, 'sandbox/nuget-entry.mjs'), 'utf8');
     const m = mutant('sandbox/nuget-entry.mjs', from, to);
-    if (to.includes('statSync')) writeFileSync(m.file, src.replace(from, to).replace("import { lstatSync, readdirSync, readFileSync } from 'node:fs';", "import { lstatSync, readdirSync, readFileSync, statSync } from 'node:fs';"));
+    // Without the launcher check the pick below has no launcher to read either: that line follows it out too.
+    if (from.includes('launcher(c.name)')) writeFileSync(m.file, src.replace(from, to).replace('const link = launcher(names[0]);', "const link = launcher(names[0]) || { kind: 'file' };"));
     try {
       const r = spawnSync(process.execPath, [m.file, d, 'Acme.Mcp'], { encoding: 'utf8' });
       const out = JSON.parse(r.stdout.trim());
