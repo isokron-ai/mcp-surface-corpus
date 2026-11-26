@@ -49,7 +49,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, volumeTmpfs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
 import { lookup } from 'node:dns/promises';
 import { ID, P, idNumber, launchPlan, shardTargets, timeoutOf, validateList } from '../src/targets.mjs';
 import { githubFacts, registryEntry, sourceArchive } from '../src/sources.mjs';
@@ -262,9 +262,9 @@ async function withRunNet(ctx, dk, { target, subject, at3 }, fn) {
  * A stdio server at .3 of the run network, probed over the stdin and stdout of its `docker run`.
  * Its settings, container and trace records go to telemetry.
  */
-async function probeStdioIn(ctx, dk, { network, name, image, labels, mounts, env, cmd, entrypoint = null, timeoutMs, meta }) {
+async function probeStdioIn(ctx, dk, { network, name, image, labels, mounts, env, cmd, entrypoint = null, workdir = undefined, tmpfs = [], timeoutMs, meta }) {
   const cidfile = join(ctx.cidDir, `${name}.cid`);
-  const argv = sandboxRunArgs({ name, image, network, ip: NETS.run.target, resolv: 'run', cidfile, labels, stdin: true, cpus: ctx.cpus, mounts, env, cmd, entrypoint });
+  const argv = sandboxRunArgs({ name, image, network, ip: NETS.run.target, resolv: 'run', cidfile, labels, stdin: true, cpus: ctx.cpus, mounts, env, cmd, entrypoint, ...(workdir ? { workdir } : {}), tmpfs });
   writeSettings(ctx, argv, meta);
   const t0 = Date.now();
   const p = await ctx.probe(['docker', ...argv], { protocol: PROTOCOL_OFFERED, timeoutMs, env: dk.env });
@@ -374,10 +374,16 @@ async function runTarget(t, list, ctx, dk) {
           image = checkPinned(plan.targetImage, 'target');
           inst.image = image;
           const p0 = Date.now();
+          // linux/amd64 only: a digest that names a multi-platform index then gives the runner's own image, and an
+          // arm64-only image fails here instead of exiting with "Exec format error" as if the server had crashed.
           pulled = image;
-          const pull = await tdk.d(['pull', '-q', image], { deadline: left(600_000) });
+          const pull = await tdk.d(['pull', '-q', '--platform', 'linux/amd64', image], { deadline: left(600_000) });
           inst.steps.push({ name: 'pull', exit: pull.exit, timed_out: pull.timed_out, ms: Date.now() - p0 });
           if (pull.exit !== 0) throw new HarnessError('the target image could not be pulled');
+          // The image's own WORKDIR and VOLUMEs: its server runs where its Dockerfile put it, with a size-capped tmpfs
+          // where it declared a data folder (the root stays read-only).
+          const ic = await dk.imageConfig(image);
+          inst.oci = { workdir: ic.workdir, volumes: volumeTmpfs(ic.volumes), platform: ic.platform };
           inst.ok = true;
         } else {
           image = ctx.images[plan.image];
@@ -483,17 +489,19 @@ async function runTarget(t, list, ctx, dk) {
           const cmd = plan.run(entry);
           const mounts = [...(work ? [{ src: work, dst: P.work, ro: true }] : [])];
           const meta = { subject: id, role: 'server' };
+          // An OCI target runs in its image's WORKDIR (ours, /tmp, only when it sets none) with its VOLUMEs as tmpfs.
+          const oci = plan.targetImage && inst.oci ? { ...(inst.oci.workdir ? { workdir: inst.oci.workdir } : {}), tmpfs: inst.oci.volumes } : {};
           const probeOnce = async (net, env, tag) => {
             if (timedOut()) return null;
             const transport = t.launch.transport ?? 'stdio';
             let p;
             if (transport === 'stdio') {
-              p = await probeStdioIn(ctx, tdk, { network: net, name: dk.name(id, 's'), image: runImage, labels: lbl, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), meta });
+              p = await probeStdioIn(ctx, tdk, { network: net, name: dk.name(id, 's'), image: runImage, labels: lbl, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), meta });
             } else {
               // Streamable HTTP: the server at .3 and our probe at .4 of the run network. `server` is a
               // fixed host entry in the probe's container: every other name resolves to the logger.
               const name = dk.name(id, 's');
-              const argv = sandboxRunArgs({ name, image: runImage, network: net, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, cpus: ctx.cpus, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null });
+              const argv = sandboxRunArgs({ name, image: runImage, network: net, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, cpus: ctx.cpus, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci });
               writeSettings(ctx, argv, meta);
               const t1 = Date.now();
               const started = await tdk.d(argv, { deadline: left(STEP_MS), keepStdout: true, cap: 4096 });
@@ -501,8 +509,10 @@ async function runTarget(t, list, ctx, dk) {
               const ms = Math.max(1000, Math.min(PROBE_MS, deadline - Date.now()));
               const r = await helper({ network: net, ip: NETS.run.probe, resolv: 'run', hosts: [['server', NETS.run.target]], mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/sandbox/probe.mjs`, 'http', String(ms), PROTOCOL_OFFERED, `http://server:${t.launch.http.port}${t.launch.http.path}`] }, { keepStdout: true, logStdout: false, cap: OUT_CAP, deadline: Date.now() + ms + 15_000 });
               p = safeParse(r.stdout) || { format: 'isokron-surface-probe/1', mode: 'http', error: 'the HTTP probe gave no result', lists: {}, transcript: [], transport: {} };
-              const logs = await tdk.d(['logs', name], { keepStdout: true, logStdout: false, cap: 4 * 1024 * 1024 });
-              p.stderr = logs.stdout.toString('utf8').slice(0, 4 * 1024 * 1024); p.stderr_bytes = logs.stdout_bytes;
+              // `docker logs` writes the container's stderr to its own stderr: keep both, or a server that printed
+              // its error and exited leaves nothing to read (stdout first, then stderr).
+              const logs = await tdk.d(['logs', name], { keepStdout: true, keepStderr: true, logStdout: false, cap: 4 * 1024 * 1024 });
+              p.stderr = Buffer.concat([logs.stdout, logs.stderr || Buffer.alloc(0)]).toString('utf8').slice(0, 4 * 1024 * 1024); p.stderr_bytes = logs.stdout_bytes + (logs.stderr_bytes || 0);
               const okId = /^[0-9a-f]{64}$/.test(sid) ? sid : null;
               const ins = okId ? await inspectOne(tdk, okId) : null;
               await dk.kill(name);

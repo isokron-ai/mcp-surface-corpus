@@ -20,7 +20,11 @@ try { j = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')); } catch (
 let bin = null; let rel = null;
 if (typeof j.bin === 'string') { bin = String(j.name || pkg).split('/').pop(); rel = j.bin; } else if (j.bin && typeof j.bin === 'object') {
   const names = Object.keys(j.bin);
-  bin = want && names.includes(want) ? want : want ? null : names.length === 1 ? names[0] : names.find((n) => n === String(j.name || '').split('/').pop()) ?? names[0] ?? null;
+  // With several bins, the server is the one whose name says mcp or server: the bin named like the package is often
+  // its CLI (return_rp ships return_rp and return_rp-mcp). The package's own name still wins when it says so too.
+  const own = names.find((n) => n === String(j.name || '').split('/').pop());
+  const server = names.filter((n) => /mcp|server/i.test(n));
+  bin = want && names.includes(want) ? want : want ? null : names.length === 1 ? names[0] : (own && /mcp|server/i.test(own) ? own : server[0] ?? own ?? names[0] ?? null);
   if (bin) rel = j.bin[bin];
 }
 if (!rel && !want && typeof j.main === 'string') rel = j.main;

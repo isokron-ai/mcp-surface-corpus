@@ -226,7 +226,7 @@ test('R-SBX-28 the egress proxy prints at most MAX_LINES lines, counts the rest,
 
 test('R-SBX-29 a target\'s own image is removed once it is done, ours are kept', () => {
   const shard = readFileSync(new URL('../bin/run-shard.mjs', import.meta.url), 'utf8');
-  assert.match(shard, /pulled = image;\n\s+const pull = await tdk\.d\(\['pull', '-q', image\]/);
+  assert.match(shard, /pulled = image;\n\s+const pull = await tdk\.d\(\['pull', '-q', '--platform', 'linux\/amd64', image\]/);
   assert.match(shard, /if \(pulled && !Object\.values\(ctx\.images\)\.includes\(pulled\)\) \{ try \{ await dk\.d\(\['image', 'rm', '-f', pulled\]/);
   assert.ok(shard.indexOf("['image', 'rm', '-f', pulled]") > shard.indexOf('try { await dk.sweep(id); }'), 'after its containers are gone');
 });

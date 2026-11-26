@@ -26,7 +26,30 @@ export const DOCKER_MIN = [26, 0, 0];
  * what `nproc` lets a target make (about two host tasks each), so a fork bomb meets EAGAIN inside
  * the sandbox instead of crashing it at the host limit.
  */
-export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', nofile: '4096', cpus: 2, tmp: '512m' };
+export const LIMITS = { memory: '2g', pids: '2048', nproc: '512', nofile: '4096', cpus: 2, tmp: '512m', volTmp: '64m', volTmpCount: 8 };
+
+/**
+ * A path an OCI target's image declares (its WORKDIR, a VOLUME): absolute, plain characters, no `.` or `..` segment,
+ * never the root itself. Anything else is not used.
+ */
+const IMAGE_PATH = /^(?!.*(?:^|\/)\.\.?(?:\/|$))\/[A-Za-z0-9._@+-]+(?:\/[A-Za-z0-9._@+-]+){0,20}\/?$/;
+export const imagePath = (p) => (typeof p === 'string' && p.length <= 200 && IMAGE_PATH.test(p) ? p.replace(/\/$/, '') : null);
+
+/**
+ * A writable, size-capped tmpfs over each path the image declares a VOLUME at (the server's data folder: /data,
+ * /config, /app/logs), where Docker would have given it a writable volume. The root stays read-only; at most
+ * LIMITS.volTmpCount of them, LIMITS.volTmp each, never over /tmp, /proc, /sys, /dev or /etc.
+ */
+export function volumeTmpfs(paths) {
+  const out = [];
+  for (const raw of Array.isArray(paths) ? paths : []) {
+    const p = imagePath(raw);
+    if (!p || /^\/(?:tmp|proc|sys|dev|etc)(?:\/|$)/.test(p) || out.includes(p)) continue;
+    out.push(p);
+    if (out.length >= LIMITS.volTmpCount) break;
+  }
+  return out;
+}
 
 /**
  * What Docker keeps of a container's output (gvisor.json container_logs): the local driver, at most
@@ -67,6 +90,17 @@ export function volumeMount({ src, dst, ro = false }) {
   return `type=volume,src=${src},dst=${dst}${ro ? ',readonly' : ''}`;
 }
 
+/** `docker image inspect --format '{{json .Config}} {{.Os}}/{{.Architecture}}'` output, read as imageConfig returns it. */
+export function imageConfigOf(text) {
+  const t = String(text).trim();
+  const sp = t.lastIndexOf(' ');
+  let c = null;
+  try { c = JSON.parse(sp > 0 ? t.slice(0, sp) : t); } catch { c = null; }
+  const plat = sp > 0 ? t.slice(sp + 1) : '';
+  const vols = c && c.Volumes && typeof c.Volumes === 'object' && !Array.isArray(c.Volumes) ? Object.keys(c.Volumes).slice(0, 50) : [];
+  return { workdir: c ? imagePath(c.WorkingDir) : null, volumes: vols, platform: /^[a-z0-9]{1,20}\/[a-z0-9]{1,20}$/.test(plat) ? plat : null };
+}
+
 /** The one host file a container may see: our resolv.conf of a sandbox network, read-only (net-guard.sh writes it). */
 export function resolvMount(net, network) {
   if (!Object.prototype.hasOwnProperty.call(NETS, String(net))) throw new HarnessError('resolv: only a sandbox network\'s resolv.conf is mounted');
@@ -100,9 +134,12 @@ const netArgs = ({ network, ip, resolv, cidfile }) => {
  * here and unit-tested; only the image, the network (with its address and resolv.conf), the
  * volumes, the env and the command vary. The runtime is always gVisor: there is no option for it.
  */
-export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, labels = {}, workdir = '/tmp', stdin = false, detach = false, cpus = LIMITS.cpus, cmd, entrypoint = null, aliases = [], ip = null, resolv = null, cidfile = null, hostEnv = process.env }) {
+export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, labels = {}, workdir = '/tmp', tmpfs = [], stdin = false, detach = false, cpus = LIMITS.cpus, cmd, entrypoint = null, aliases = [], ip = null, resolv = null, cidfile = null, hostEnv = process.env }) {
   checkPinned(image, 'sandbox');
   if (typeof network !== 'string' || !network || network === 'host' || network === 'bridge' || network.startsWith('container:')) throw new HarnessError('a sandbox container never uses the host, default bridge or another container\'s network');
+  if (workdir !== '/tmp' && workdir !== '/work' && !imagePath(workdir)) throw new HarnessError('the working folder is not a plain absolute path');
+  const vols = volumeTmpfs(tmpfs);
+  if (vols.length !== (Array.isArray(tmpfs) ? tmpfs.length : 0)) throw new HarnessError('a tmpfs path is not one this sandbox mounts');
   const bad = targetEnvProblems(env, hostEnv);
   if (bad.length) throw new HarnessError(`the target environment is refused: ${bad.join('; ').slice(0, 300)}`);
   return [
@@ -113,6 +150,7 @@ export function sandboxRunArgs({ name, image, network, mounts = [], env = {}, la
     '--security-opt', 'no-new-privileges',
     '--read-only',
     '--tmpfs', `/tmp:rw,nosuid,nodev,exec,size=${LIMITS.tmp},mode=1777`,
+    ...vols.flatMap((v) => ['--tmpfs', `${v}:rw,nosuid,nodev,noexec,size=${LIMITS.volTmp},mode=1777`]),
     '--pids-limit', LIMITS.pids,
     '--memory', LIMITS.memory, '--memory-swap', LIMITS.memory,
     '--cpus', String(cpus),
@@ -185,7 +223,7 @@ export function helperRunArgs({ name, image, network = 'none', mounts = [], env 
 }
 
 /**
- * Runs a command with a deadline. stdout is kept (up to `cap` bytes) when keepStdout is set; stdout
+ * Runs a command with a deadline. stdout is kept (up to `cap` bytes) when keepStdout is set, stderr when keepStderr is; stdout
  * and stderr also go to `log` (bounded) unless logStdout is false. The last STDERR_TAIL bytes of
  * stderr are always kept, so a failed harness step can say why (HarnessError, Docker.must). Returns
  * { exit, signal, timed_out, stdout, stdout_bytes, stdout_truncated, stderr_tail, ms }.
@@ -199,7 +237,7 @@ export function tailLine(buf, max = 400) {
   return line.length > max ? `...${line.slice(-max)}` : line;
 }
 
-export function run(cmd, argv, { env, log = null, deadline = null, input = null, keepStdout = false, logStdout = true, cap = 64 * 1024 * 1024, logCap = 16 * 1024 * 1024, onTimeout = null } = {}) {
+export function run(cmd, argv, { env, log = null, deadline = null, input = null, keepStdout = false, keepStderr = false, logStdout = true, cap = 64 * 1024 * 1024, logCap = 16 * 1024 * 1024, onTimeout = null } = {}) {
   return new Promise((done) => {
     const t0 = Date.now();
     let child;
@@ -212,14 +250,17 @@ export function run(cmd, argv, { env, log = null, deadline = null, input = null,
       if (logStdout) toLog(c);
     });
     let errTail = Buffer.alloc(0);
+    const errChunks = []; let errKept = 0; let errTotal = 0;
     child.stderr.on('data', (c) => {
+      errTotal += c.length;
+      if (keepStderr && errKept + c.length <= cap) { errChunks.push(c); errKept += c.length; }
       errTail = Buffer.concat([errTail, c]);
       if (errTail.length > STDERR_TAIL) errTail = errTail.subarray(errTail.length - STDERR_TAIL);
       toLog(c);
     });
     child.stdin.on('error', () => {});
     child.on('error', (e) => { clearTimeout(timer); done({ exit: 127, signal: null, timed_out: false, stdout: Buffer.alloc(0), stdout_bytes: 0, stdout_truncated: false, stderr_tail: errTail, ms: Date.now() - t0, spawn_error: e.message }); });
-    child.on('close', (code, signal) => { clearTimeout(timer); done({ exit: code, signal, timed_out: timedOut, stdout: Buffer.concat(chunks), stdout_bytes: total, stdout_truncated: truncated, stderr_tail: errTail, ms: Date.now() - t0 }); });
+    child.on('close', (code, signal) => { clearTimeout(timer); done({ exit: code, signal, timed_out: timedOut, stdout: Buffer.concat(chunks), stdout_bytes: total, stdout_truncated: truncated, stderr_tail: errTail, ...(keepStderr ? { stderr: Buffer.concat(errChunks), stderr_bytes: errTotal } : {}), ms: Date.now() - t0 }); });
     if (deadline !== null) {
       timer = setTimeout(async () => {
         timedOut = true;
@@ -268,6 +309,17 @@ export class Docker {
       id = await this.must(this.d(['image', 'inspect', '--format', '{{.Id}}', ref], { keepStdout: true, logStdout: false }), `${what} inspect`);
     }
     return id.stdout.toString().trim();
+  }
+
+  /**
+   * What a pulled target image declares for its own process: { workdir, volumes, platform }. workdir is its WORKDIR
+   * when that is a plain absolute path (else null), volumes its VOLUME paths (raw: volumeTmpfs checks them), platform
+   * os/arch. Data only: nothing of the image runs. A failed inspect gives nulls.
+   */
+  async imageConfig(ref) {
+    checkPinned(ref, 'target');
+    const r = await this.d(['image', 'inspect', '--format', '{{json .Config}} {{.Os}}/{{.Architecture}}', ref], { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 60_000 });
+    return imageConfigOf(r.exit === 0 ? r.stdout.toString('utf8') : '');
   }
 
   /** A new, empty volume; one that exists already is refused. */
