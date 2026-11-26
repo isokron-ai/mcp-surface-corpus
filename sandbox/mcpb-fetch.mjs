@@ -70,11 +70,22 @@ function tunnel(proxy, host) {
   });
 }
 
+/**
+ * The GET's options: over the tunnel's TLS socket when there is a proxy. No `agent` key at all: with one (even
+ * `agent: false`) Node hands the request to an Agent, which ignores createConnection and opens a direct connection of
+ * its own, looked up by name: past the proxy (R-SBX-45; in the sandbox the name lookup gives the network logger, which
+ * resets it).
+ */
+export function requestOptions(url, sock) {
+  // Port and Host stated: with no agent Node knows no default port and would write `Host: <name>:80`.
+  return { host: url.hostname, port: 443, defaultPort: 443, path: url.pathname + url.search, method: 'GET', headers: { host: url.hostname, 'user-agent': 'isokron-surface-corpus', accept: 'application/octet-stream' }, timeout: TIMEOUT_MS, ...(sock ? { createConnection: () => sock } : {}) };
+}
+
 /** One GET: { status, location } for a redirect, else the body (at most cap bytes) and its sha256. */
 async function getOnce(url, { proxy, cap }) {
   const sock = await tunnel(proxy, url.hostname);
   return new Promise((resolve, reject) => {
-    const req = httpsRequest({ host: url.hostname, path: url.pathname + url.search, method: 'GET', headers: { 'user-agent': 'isokron-surface-corpus', accept: 'application/octet-stream' }, timeout: TIMEOUT_MS, ...(sock ? { createConnection: () => sock } : {}), agent: false });
+    const req = httpsRequest(requestOptions(url, sock));
     req.on('response', (res) => {
       const status = res.statusCode;
       if (status >= 300 && status < 400) { res.resume(); resolve({ status, location: String(res.headers.location || '') }); return; }

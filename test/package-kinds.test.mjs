@@ -354,6 +354,32 @@ test('R-SBX-42 mutation check: without the host check on redirects, or the sha25
   } finally { m.done(); }
 });
 
+test('R-SBX-45 the bundle download goes over the proxy\'s tunnel only: no agent of Node\'s (which would connect by itself, past the proxy), port 443 and the Host header stated', async () => {
+  const { request } = await import('node:https');
+  const { Duplex } = await import('node:stream');
+  const url = new URL(URL1);
+  const tryIt = (opts) => {
+    let used = false;
+    const fake = new Duplex({ read() {}, write(c, e, cb) { cb(); } });
+    const o = { ...opts, createConnection: () => { used = true; return fake; } };
+    const req = request(o);
+    req.on('error', () => {});
+    const r = { used, agent: req.agent ?? null, host: req.getHeader('host') };
+    req.destroy();
+    return r;
+  };
+  const o = F.requestOptions(url, {});
+  assert.ok(!('agent' in o), 'no agent key at all');
+  assert.deepEqual([o.port, o.headers.host], [443, 'github.com']);
+  assert.deepEqual(tryIt(o), { used: true, agent: null, host: 'github.com' });
+  // Mutation check: with agent: false (or any agent) Node ignores createConnection and would connect on its own.
+  const m = tryIt({ ...o, agent: false });
+  assert.equal(m.used, false, 'with an agent the tunnel socket is not used');
+  // Mutation check: without the port Node writes Host: github.com:80, and github.com redirects to itself.
+  const { port, defaultPort, headers, ...rest } = o;
+  assert.equal(tryIt({ ...rest, headers: { accept: headers.accept } }).host, 'github.com:80');
+});
+
 // ------------------------------------------------------------------ pyproject-reqs.py
 
 function python() {
