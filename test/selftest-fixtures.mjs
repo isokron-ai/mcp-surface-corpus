@@ -101,6 +101,10 @@ export const GOOD = {
     trace: trace({ network: { sockets: [{ family: 'AF_UNIX', type: 'SOCK_DGRAM', protocol: '0', raw: false, n: 4093, failed: 1, errno: 24 }] } }),
     report: { case: 'fd-exhaustion', result: { opened: 4092, error: 'EMFILE' } },
   }),
+  'volume-tmpfs': () => base({
+    // As seen on GitHub (gVisor 20261116.0): the fill opened for write, and the script written there ran.
+    trace: trace({ opens_outside: [ok({ path: '/isk-vol/fill-1', op: 'write', call: 'openat', n: 2 }), ok({ path: '/isk-vol/run-1.sh', op: 'write', call: 'openat', n: 2 })], exec: [ok({ path: '/isk-vol/run-1.sh' })] }),
+  }),
   'clock-tamper': () => base({
     trace: trace({ privileged: [fail({ name: 'clock_settime', n: 3, failed: 3, errno: 1 })] }),
     stage: { clock: { drift_ms: 3, forged_in_telemetry: false } },

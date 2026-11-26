@@ -390,3 +390,23 @@ test('R-CASE-23 R-CASE-27 the later stage\'s grow and exists commands', () => {
   const e = JSON.parse(spawnSync(process.execPath, [stage, 'exists', a, join(d, 'none')], { encoding: 'utf8' }).stdout).exists;
   assert.deepEqual(e, { [a]: true, [join(d, 'none')]: false });
 });
+
+test('R-CASE-28 volume-tmpfs: a fill of an image VOLUME\'s tmpfs past its cap or without ENOSPC is no pass; a run from it is recorded (runsc does not enforce noexec)', () => {
+  const g = (f) => { const ev = GOOD['volume-tmpfs'](); f(ev); return evaluateCase('volume-tmpfs', ev); };
+  assert.equal(g(() => {}).pass, true, 'from the trace alone: the fill was tried');
+  const rep = (fill) => (ev) => { ev.report = { case: 'volume-tmpfs', result: { fill, planted: { ok: true }, exec: { ok: true, exit: 0 } } }; };
+  // The shape seen on GitHub: ENOSPC at exactly 32 MiB.
+  const seen = g(rep({ ok: false, errno: 28, error: 'ENOSPC', bytes: 33554432 }));
+  assert.equal(seen.pass, true);
+  assert.ok(seen.evidence.some((e) => /ran \(runsc does not enforce noexec/.test(e)), 'the run is recorded');
+  assert.match(g(rep({ ok: true, bytes: 40 * 1024 * 1024 })).detail, /^got through: the volume tmpfs took 41943040 bytes/, 'the size cap did not hold');
+  assert.match(g(rep({ ok: false, errno: 5, bytes: 1024 })).detail, /^got through: the volume tmpfs took/, 'a stop that is not ENOSPC');
+  assert.match(g(rep({ ok: false, errno: 28, bytes: 33554433 })).detail, /^got through/, 'one byte past the cap');
+  assert.equal(g((ev) => { ev.trace.opens_outside = []; }).logged, false, 'no write traced: nothing was tried');
+  // The case container gets the tmpfs exactly as a corpus run gives an image VOLUME one.
+  const sst = readFileSync(new URL('../bin/sandbox-selftest.mjs', import.meta.url), 'utf8');
+  assert.match(sst, /\.\.\.\(name === 'volume-tmpfs' \? \{ tmpfs: \[VOLUME_CASE_PATH\] \} : \{\}\)/);
+  const py = readFileSync(new URL('../selftest/hostile.py', import.meta.url), 'utf8');
+  assert.match(py, /VOLUME_CASE_PATH = "\/isk-vol"/);
+  assert.match(py, /for _ in range\(40\):/);
+});
