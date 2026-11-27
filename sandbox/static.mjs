@@ -4,9 +4,14 @@
  * of it. Runs inside a sandbox container with no network; the archive comes in on stdin (the GitHub
  * tar.gz of the pinned commit) and is read in memory: nothing is unpacked to disk.
  *
- *   node static.mjs [--subdir path/in/repo] < source.tar.gz
+ *   node static.mjs [--subdir path/in/repo] [--reader /path/static-read.cjs --repo owner/name --sha <40 hex>] < source.tar.gz
  *
  * Prints one JSON object (isokron-surface-static/1).
+ *
+ * `static` is this repository's own reading (engine/repo-source.cjs, vendored from mcp-check at the commit in
+ * engine/VENDORED.json), used by our layer analysis. With --reader, `reader` is also the answer of a caller's source
+ * reader over every file of the archive (mcp-check's live-probe lane hands its own, so its static-against-live
+ * comparison grades what mcp-check reads, not this copy): readerLayer.
  */
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
@@ -187,6 +192,28 @@ export function analyseArchive(buf, { subdir = '' } = {}) {
   return out;
 }
 
+/** Files a caller's reader is given: every regular file under the subfolder's repository, below this size, with its bytes. */
+export const READER_FILE_MAX = 1500000;
+
+/**
+ * The caller's reader over the archive (its readFiles(files, { repo, sha, subdir })): every regular file of the
+ * repository with its size, and the bytes of those under READER_FILE_MAX; symbolic links are not handed over. The
+ * reader's own answer is returned as it is (it carries its id); a reader that throws gives { error }.
+ */
+export async function readerLayer(buf, { reader, repo, sha, subdir = '' }) {
+  let R; try { R = require(reader); } catch (e) { return { error: 'reader_missing' }; }
+  // views into the unpacked archive, not copies: the reader holds one unpacked copy in memory, not two
+  const { entries } = readTar(buf, { want: (p, size) => size < READER_FILE_MAX, copy: false });
+  const files = [];
+  for (const e of entries) {
+    if (e.type !== 'file') continue;
+    const r = e.path.split('/').slice(1).join('/');
+    if (!r) continue;
+    files.push({ path: r, size: e.size, data: e.data || null });
+  }
+  try { return await R.readFiles(files, { repo, sha, subdir }); } catch (e) { return { error: 'reader_threw', message: String(e && e.message).slice(0, 200) }; }
+}
+
 function guessSpdx(t) {
   const s = t.slice(0, 3000);
   if (/MIT License|Permission is hereby granted, free of charge/i.test(s)) return 'MIT';
@@ -204,11 +231,14 @@ function guessSpdx(t) {
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   const args = process.argv.slice(2);
-  const i = args.indexOf('--subdir');
-  const subdir = i >= 0 ? args[i + 1] || '' : '';
+  const opt = (k) => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] || '' : ''; };
+  const subdir = opt('--subdir');
+  const reader = opt('--reader');
   const chunks = []; let n = 0;
   for await (const c of process.stdin) { n += c.length; if (n > 256 * 1024 * 1024) { process.stderr.write('archive over 256 MiB\n'); process.exit(1); } chunks.push(c); }
   let out;
-  try { out = analyseArchive(Buffer.concat(chunks), { subdir }); } catch (e) { out = { format: FORMAT, error: String(e.message).slice(0, 500) }; }
+  const buf = Buffer.concat(chunks);
+  try { out = analyseArchive(buf, { subdir }); } catch (e) { out = { format: FORMAT, error: String(e.message).slice(0, 500) }; }
+  if (reader && !out.error) out.reader = await readerLayer(buf, { reader, repo: opt('--repo'), sha: opt('--sha'), subdir });
   process.stdout.write(`${JSON.stringify(out)}\n`, () => process.exit(out.error ? 1 : 0));
 }

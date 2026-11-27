@@ -36,7 +36,7 @@ function parsePax(text) {
 }
 
 /** Reads a .tar.gz (or plain .tar) buffer. Returns { entries, global, truncated }. */
-export function readTar(input, { want = () => false, maxUnpacked = MAX_UNPACKED } = {}) {
+export function readTar(input, { want = () => false, maxUnpacked = MAX_UNPACKED, copy = true } = {}) {
   let buf = input;
   if (buf[0] === 0x1f && buf[1] === 0x8b) buf = gunzipSync(buf, { maxOutputLength: maxUnpacked });
   const entries = [];
@@ -64,7 +64,7 @@ export function readTar(input, { want = () => false, maxUnpacked = MAX_UNPACKED 
     pax = null;
     const type = flag === '0' || flag === '\0' || flag === '7' ? 'file' : flag === '5' ? 'dir' : flag === '2' ? 'symlink' : flag === '1' ? 'link' : 'other';
     const e = { path: name, size, type };
-    if (type === 'file' && want(name, size)) e.data = Buffer.from(data);
+    if (type === 'file' && want(name, size)) e.data = copy ? Buffer.from(data) : data;
     entries.push(e);
   }
   return { entries, global };

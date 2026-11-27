@@ -156,6 +156,17 @@ async function prepare(ctx, dk) {
   ctx.imageIds = { node24: await dk.image(ctx.images.node24, 'node24') };
 }
 
+/**
+ * The `reader` option of main (a caller's source reader for the static step): { dir, id, entry }, a folder holding the
+ * entry file, a 64-hex id and a plain .cjs file name, or null. Anything else is a harness error.
+ */
+export function readerOption(r) {
+  if (r == null) return null;
+  const ok = r && typeof r.dir === 'string' && typeof r.id === 'string' && /^[0-9a-f]{64}$/.test(r.id) && typeof r.entry === 'string' && /^[A-Za-z0-9_.-]{1,64}\.cjs$/.test(r.entry) && existsSync(join(r.dir, r.entry));
+  if (!ok) throw new HarnessError('the reader option needs { dir, id, entry } with the entry file in dir');
+  return { dir: resolve(r.dir), id: r.id, entry: r.entry };
+}
+
 /** After the sandbox check: our tools volume, the install CA (local only) and the proxies' egress network. */
 async function prepareTools(ctx, dk) {
   // Our in-container code (sandbox/, src/, engine/), read-only in every container. Copied through
@@ -165,6 +176,15 @@ async function prepareTools(ctx, dk) {
   if (tar.status !== 0) throw new HarnessError('packing the sandbox tools failed');
   ctx.toolsSha = sha256(tar.stdout);
   await dk.must(dk.d(helperRunArgs({ name: dk.name(null, 'h'), image: ctx.images.node24, user: '0:0', labels: dk.labels(), stdin: true, mounts: [{ src: ctx.toolsVol, dst: P.tools }], cmd: ['tar', '-x', '-f', '-', '--no-same-owner', '-C', P.tools] }), { input: tar.stdout }), 'tools volume');
+  // The caller's source reader (mcp-check's own, from its live-probe driver), as reader/ beside our code, read-only
+  // like it: the static step reads the archive with it too (static.mjs --reader). Only files of the given folder.
+  ctx.readerSha = null;
+  if (ctx.reader) {
+    const rt = spawnSync('tar', ['-C', ctx.reader.dir, '-cf', '-', '--owner=0', '--group=0', '--mode=a+rX,go-w', '.'], { maxBuffer: 64 * 1024 * 1024 });
+    if (rt.status !== 0) throw new HarnessError('packing the source reader failed');
+    ctx.readerSha = sha256(rt.stdout);
+    await dk.must(dk.d(helperRunArgs({ name: dk.name(null, 'h'), image: ctx.images.node24, user: '0:0', labels: dk.labels(), stdin: true, mounts: [{ src: ctx.toolsVol, dst: P.tools }], cmd: ['sh', '-c', `mkdir -p ${P.tools}/reader && tar -x -f - --no-same-owner -C ${P.tools}/reader`] }), { input: rt.stdout }), 'reader in the tools volume');
+  }
   ctx.caEnv = {};
   ctx.installCa = null;
   if (process.env.SURFACE_INSTALL_CA_FILE) {
@@ -339,11 +359,11 @@ async function runTarget(t, list, ctx, dk) {
     try {
       const a = await sourceArchive(t.repo, facts.sha, { fetchFn: ctx.fetchFn, cacheDir: ctx.sourceCache });
       rec.source.archive = { sha256: a.sha256, bytes: a.bytes, via: a.via };
-      const r = await helper({ stdin: true, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', '--max-old-space-size=1536', `${P.tools}/sandbox/static.mjs`, ...(t.subdir ? ['--subdir', t.subdir] : [])] }, { input: a.buf, keepStdout: true, logStdout: false, cap: OUT_CAP, deadline: left(STEP_MS * 2), onTimeout: () => dk.sweep(id) });
+      const r = await helper({ stdin: true, mounts: [{ src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', '--max-old-space-size=1536', `${P.tools}/sandbox/static.mjs`, ...(t.subdir ? ['--subdir', t.subdir] : []), ...(ctx.reader ? ['--reader', `${P.tools}/reader/${ctx.reader.entry}`, '--repo', t.repo, '--sha', facts.sha] : [])] }, { input: a.buf, keepStdout: true, logStdout: false, cap: OUT_CAP, deadline: left(STEP_MS * 2), onTimeout: () => dk.sweep(id) });
       stat = r.exit === 0 && !r.stdout_truncated ? safeParse(r.stdout) : null;
       if (stat && stat.format && !stat.error) {
         keep('static.json', stat);
-        rec.static = { ok: true, best: stat.static.best, candidates: stat.static.candidates.map((c) => ({ kind: c.kind, fidelity: c.fidelity, tools: c.tools.length, path: c.path ?? null })), readme_tools: stat.readme ? stat.readme.tools.length : 0, languages: stat.languages, primary_language: stat.primary_language, sdk: stat.sdk, manifests: stat.manifests, license_files: stat.license_files, subdir_found: stat.archive.subdir_found, documented_commands: stat.documented_commands, env_refs: stat.env_refs };
+        rec.static = { ok: true, reader: stat.reader ? { reader_id: stat.reader.reader_id ?? null, error: stat.reader.error ?? null, best: stat.reader.scan && stat.reader.scan.candidates[stat.reader.scan.best_index] ? { kind: stat.reader.scan.candidates[stat.reader.scan.best_index].kind, fidelity: stat.reader.scan.candidates[stat.reader.scan.best_index].fidelity, tools: stat.reader.scan.candidates[stat.reader.scan.best_index].tools.length } : null } : null, best: stat.static.best, candidates: stat.static.candidates.map((c) => ({ kind: c.kind, fidelity: c.fidelity, tools: c.tools.length, path: c.path ?? null })), readme_tools: stat.readme ? stat.readme.tools.length : 0, languages: stat.languages, primary_language: stat.primary_language, sdk: stat.sdk, manifests: stat.manifests, license_files: stat.license_files, subdir_found: stat.archive.subdir_found, documented_commands: stat.documented_commands, env_refs: stat.env_refs };
         rec.layers.static = !!stat.static.best;
         rec.layers.readme = !!(stat.readme && stat.readme.tools.length);
       } else { rec.static = { ok: false, exit: r.exit, timed_out: r.timed_out, error: stat && stat.error ? stat.error : 'the static reader gave no result' }; stat = null; }
@@ -637,7 +657,7 @@ async function runTarget(t, list, ctx, dk) {
  * Options are for the tests (a scripted daemon, no network): makeDocker, probe (the stdio probe),
  * runscConfig, readResolv, readLog, traceWaitMs. The defaults are what CI runs.
  */
-export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync, resolveHost = (h) => lookup(h, { all: true, family: 4 }) } = {}) {
+export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, reader = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync, resolveHost = (h) => lookup(h, { all: true, family: 4 }) } = {}) {
   const o = parseArgs(argv);
   const list = validateList(JSON.parse(readFileSync(o.targets, 'utf8')));
   if (o.consume) rmSync(o.targets, { force: true });
@@ -652,6 +672,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     githubToken: process.env.GH_TOKEN || null,
     runner: { os: platform(), arch: arch(), kernel: release(), node: process.version },
     baselineMs: null,
+    reader: readerOption(reader),
     cfg, tel, probe, readLog, traceWaitMs, statfs, hostRun, hostLog: false, resolveRegistries: (names) => resolveRegistries(names, resolveHost), cidDir: join(out, '_shard', 'cid'),
   };
   const dk = makeDocker({ runId, log: join(out, '_shard', 'docker.log') });
@@ -677,7 +698,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     ctx.hostLog = pf.hostLog;
     await prepareTools(ctx, dk);
     ctx.baselineMs = await baseline(ctx, dk);
-    Object.assign(shard, { tools_sha256: ctx.toolsSha, install_ca: ctx.installCa, baseline_initialize_ms: ctx.baselineMs, image_ids: ctx.imageIds, cpus: ctx.cpus });
+    Object.assign(shard, { reader: ctx.reader ? { id: ctx.reader.id, tar_sha256: ctx.readerSha } : null, tools_sha256: ctx.toolsSha, install_ca: ctx.installCa, baseline_initialize_ms: ctx.baselineMs, image_ids: ctx.imageIds, cpus: ctx.cpus });
     for (const t of shuffled(targets, runId)) {
       // Room for one more target, or the shard stops here: a full disk would lose every result.
       const low = o.lane === 'ci' ? diskProblem(cfg, out, { statfs }) : null;
