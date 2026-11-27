@@ -1,6 +1,6 @@
 {
   "from": "isokron-ai/mcp-check",
-  "commit": null,
+  "commit": "22c76a6dd416dbc4264190e1fcd3249862870a38",
   "rubric_version": "2.1.0",
   "checks": 76,
   "files": [

@@ -141,3 +141,39 @@ test('static reader: the pinned SDK decides the listed form, and a tool declarat
   assert.deepEqual(t.execution, { taskSupport: 'forbidden' }, 'SDK 1.24+ adds execution');
   assert.ok(out.static.sdk_read && out.static.sdk_read.kind === 'v1');
 });
+
+test('R-SBX-55 --reader: the caller\'s reader gets every regular file of the archive (not only what our reading keeps), bytes below READER_FILE_MAX, and the subject; its answer is returned as it is', async () => {
+  const { readerLayer, READER_FILE_MAX } = await import('../sandbox/static.mjs');
+  const { mkdtempSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { spawnSync } = await import('node:child_process');
+  const d = mkdtempSync(join(tmpdir(), 'surface-reader-'));
+  const stub = join(d, 'static-read.cjs');
+  writeFileSync(stub, 'module.exports = { readFiles: async (files, o) => ({ format: "stub/1", reader_id: "r", got: files.map((f) => [f.path, f.size, f.data ? f.data.length : null]), o }) };\n');
+  const big = 'x'.repeat(READER_FILE_MAX);
+  const buf = tarGz({ 'packages/server/src/index.ts': TS, 'docs/guide.md': '# Guide\n', 'data/huge.json': big, 'README.md': '# demo\n' });
+  const r = await readerLayer(buf, { reader: stub, repo: 'o/n', sha: 'a'.repeat(40), subdir: 'packages/server' });
+  assert.equal(r.format, 'stub/1');
+  assert.deepEqual(r.o, { repo: 'o/n', sha: 'a'.repeat(40), subdir: 'packages/server' });
+  assert.deepEqual(r.got.sort(), [['README.md', 7, 7], ['data/huge.json', READER_FILE_MAX, null], ['docs/guide.md', 8, 8], ['packages/server/src/index.ts', Buffer.byteLength(TS), Buffer.byteLength(TS)]].sort(), 'files our own reading never keeps are handed over too, with their sizes');
+  assert.deepEqual(await readerLayer(buf, { reader: join(d, 'missing.cjs'), repo: 'o/n', sha: 'a'.repeat(40) }), { error: 'reader_missing' });
+  const bad = join(d, 'throws.cjs'); writeFileSync(bad, 'module.exports = { readFiles: async () => { throw new Error("boom"); } };\n');
+  assert.equal((await readerLayer(buf, { reader: bad, repo: 'o/n', sha: 'a'.repeat(40) })).error, 'reader_threw');
+  // through the command line: `reader` next to an unchanged `static`
+  const cli = (extra) => JSON.parse(spawnSync(process.execPath, [new URL('../sandbox/static.mjs', import.meta.url).pathname, ...extra], { input: buf, maxBuffer: 64 * 1024 * 1024 }).stdout.toString());
+  const plain = cli([]); const withReader = cli(['--reader', stub, '--repo', 'o/n', '--sha', 'a'.repeat(40)]);
+  assert.equal(plain.reader, undefined);
+  assert.equal(withReader.reader.format, 'stub/1');
+  delete withReader.reader;
+  assert.deepEqual(withReader, plain, 'our own reading is the same with or without a caller\'s reader');
+});
+
+test('R-SBX-55 engine/VENDORED.json names the mcp-check commit the vendored engine was copied from, and the files match it', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { createHash } = await import('node:crypto');
+  const root = new URL('..', import.meta.url);
+  const m = JSON.parse(readFileSync(new URL('engine/VENDORED.json', root), 'utf8'));
+  assert.match(m.commit, /^[0-9a-f]{40}$/, 'a vendored copy says which commit it is');
+  for (const f of m.files) assert.equal(createHash('sha256').update(readFileSync(new URL(f.path, root))).digest('hex'), f.sha256, f.path);
+});

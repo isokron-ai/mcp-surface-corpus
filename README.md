@@ -297,6 +297,12 @@ downloads every artifact, checks it, and decrypts into
 checkout of `isokron-ai/mcp-check` and records their hashes in `engine/VENDORED.json`. The rubric
 version is recorded in every record and aggregate, so runs before and after can be told apart.
 
+The vendored copy is mcp-check 22c76a6 (19 Nov 2026, rubric 2.1.0), older than mcp-check's current reader. It is used
+only for this repository's own layer analysis. A caller that compares a static list with a live one should hand the
+static step its own reader instead: `bin/run-shard.mjs` takes a `reader` option (`{ dir, id, entry }`), puts that
+folder in the tools volume as `reader/`, and `sandbox/static.mjs --reader` returns that reader's answer as `reader` in
+`static.json`. mcp-check's live-probe lane does this with its own `corpus/static-read.cjs`.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -470,3 +470,31 @@ test('R-SBX-37 a launch plan\'s own server settings (a runtime roll-forward, a b
   for (const a of server('s001')) { assert.ok(a.includes('DOTNET_ROLL_FORWARD=Major')); assert.ok(!a.includes('DOTNET_ROLL_FORWARD=Disable')); }
   assert.ok(server('s002')[0].includes('PYTHONPATH=/work/pkg'));
 });
+
+test('R-SBX-56 a caller\'s source reader goes into the tools volume as reader/, and the static step runs it on the subject\'s repository and commit; the shard records its id', async () => {
+  const s = setup({ targets: [{ id: 's001', repo: 'o/n', commit: SHA, subdir: 'packages/server', launch: { kind: 'npm', package: 'n', version: '1.2.3' } }] });
+  const dir = join(s.d, 'reader'); mkdirSync(dir);
+  writeFileSync(join(dir, 'static-read.cjs'), 'module.exports = { readFiles: async () => ({}) };\n');
+  const id = 'f'.repeat(64);
+  const r = await runMain({ ...s, opts: { ...s.opts, reader: { dir, id, entry: 'static-read.cjs' } } });
+  assert.equal(r.rc, 0);
+  const runs = s.box.dk.calls.filter((a) => a[0] === 'run');
+  const put = runs.find((a) => a.join(' ').includes('mkdir -p /opt/surface/reader && tar -x -f - --no-same-owner -C /opt/surface/reader'));
+  assert.ok(put, 'the reader folder is unpacked into the tools volume');
+  const stat = runs.find((a) => a.includes('/opt/surface/sandbox/static.mjs'));
+  assert.deepEqual(stat.slice(stat.indexOf('/opt/surface/sandbox/static.mjs') + 1), ['--subdir', 'packages/server', '--reader', '/opt/surface/reader/static-read.cjs', '--repo', 'o/n', '--sha', SHA]);
+  assert.ok(stat.some((x) => /^type=volume,src=[^,]+,dst=\/opt\/surface,readonly$/.test(x)), 'the tools volume, the reader in it, is read-only in the static step');
+  assert.equal(r.shard.reader.id, id);
+  assert.match(r.shard.reader.tar_sha256, /^[0-9a-f]{64}$/);
+  // without the option, the static step is as before
+  const s2 = setup();
+  const r2 = await runMain(s2);
+  assert.equal(r2.rc, 0);
+  const stat2 = s2.box.dk.calls.filter((a) => a[0] === 'run').find((a) => a.includes('/opt/surface/sandbox/static.mjs'));
+  assert.ok(!stat2.includes('--reader'));
+  assert.equal(r2.shard.reader, null);
+  // a reader option that does not hold its entry file is refused
+  assert.throws(() => D.readerOption({ dir, id, entry: 'other.cjs' }), /reader option/);
+  assert.throws(() => D.readerOption({ dir, id: 'x', entry: 'static-read.cjs' }), /reader option/);
+  assert.equal(D.readerOption(null), null);
+});
