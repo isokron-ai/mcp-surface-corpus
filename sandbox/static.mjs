@@ -202,7 +202,8 @@ export const READER_FILE_MAX = 1500000;
  */
 export async function readerLayer(buf, { reader, repo, sha, subdir = '' }) {
   let R; try { R = require(reader); } catch (e) { return { error: 'reader_missing' }; }
-  const { entries } = readTar(buf, { want: (p, size) => size < READER_FILE_MAX });
+  // views into the unpacked archive, not copies: the reader holds one unpacked copy in memory, not two
+  const { entries } = readTar(buf, { want: (p, size) => size < READER_FILE_MAX, copy: false });
   const files = [];
   for (const e of entries) {
     if (e.type !== 'file') continue;
