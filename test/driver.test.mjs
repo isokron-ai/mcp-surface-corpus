@@ -25,8 +25,9 @@ test('driver options: shard bounds, id shape, no unknown flags', () => {
 test('images.json: every image pinned by digest; a mirror changes the host, never the digest', () => {
   const f = new URL('../images.json', import.meta.url).pathname;
   const a = D.loadImages(f, '');
-  assert.deepEqual(Object.keys(a), ['node24', 'node24-build', 'node22', 'node22-build', 'python', 'go']);
-  assert.ok(Object.values(a).every((r) => /^docker\.io\/library\/[a-z]+:[a-z0-9.-]+@sha256:[0-9a-f]{64}$/.test(r)));
+  assert.deepEqual(Object.keys(a), ['node24', 'node24-build', 'node22', 'node22-build', 'python', 'go', 'rust-build', 'dotnet-sdk']);
+  // Docker Hub's official images, and Microsoft's own registry for the .NET SDK (it publishes no image on Docker Hub).
+  assert.ok(Object.entries(a).every(([k, r]) => (k === 'dotnet-sdk' ? /^mcr\.microsoft\.com\/dotnet\/sdk:[0-9.]+-noble@sha256:[0-9a-f]{64}$/ : /^docker\.io\/library\/[a-z]+:[a-z0-9.-]+@sha256:[0-9a-f]{64}$/).test(r)));
   const b = D.loadImages(f, 'mirror.gcr.io');
   assert.ok(Object.keys(a).every((k) => b[k] === a[k].replace('docker.io/', 'mirror.gcr.io/')));
   assert.throws(() => D.loadImages(f, 'evil.example/x y'), /not a host name/);

@@ -33,6 +33,8 @@ const PROXY = [
   { t: '2026-11-21T10:00:01.000Z', host: 'registry.npmjs.org', port: 443, allowed: true, up: 100, down: 2000, ms: 30 },
   { t: '2026-11-21T10:00:02.000Z', host: 'evil.example', port: 443, allowed: false, error: 'not on the allowlist' },
 ].map((o) => JSON.stringify(o)).join('\n');
+// The other registries' names resolve to a public address in these tests (crates.io, NuGet, GitHub release assets, PyPI).
+const PUBLIC_HOSTS = ['index.crates.io', 'static.crates.io', 'api.nuget.org', 'globalcdn.nuget.org', 'github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com', 'pypi.org', 'files.pythonhosted.org'];
 const val = (a, flag) => (a.indexOf(flag) < 0 ? null : a[a.indexOf(flag) + 1]);
 
 /** A Docker session that answers from a script instead of a daemon, and records what it was asked. */
@@ -70,6 +72,9 @@ function daemon({ logDir, flags, noTrace = null, runscPath = '/usr/local/lib/iso
       if (val(argv, '--cidfile')) writeFileSync(val(argv, '--cidfile'), `${id}`);
       if (argv.includes('--detach') || c0 === 'create') return { stdout: `${id}\n` };
       if (/npm-entry\.mjs/.test(cmd)) return { stdout: JSON.stringify({ script: '/work/pkg/node_modules/n/index.js', version: '1.2.3' }) };
+      if (/cargo-entry\.mjs/.test(cmd)) return { stdout: JSON.stringify({ script: '/work/pkg/bin/crate-mcp', version: '0.4.1', bins: 1 }) };
+      if (/nuget-entry\.mjs/.test(cmd)) return { stdout: JSON.stringify({ script: '/work/pkg/.store/p.mcp/1.0.0/p.mcp/1.0.0/tools/net9.0/any/P.Mcp.dll', runner: 'dotnet', command: 'p-mcp', version: '1.0.0', tfm: 'net9.0', rid: 'any' }) };
+      if (/mcpb-fetch\.mjs/.test(cmd)) return { stdout: JSON.stringify({ ok: true, bytes: 1000, sha256: 'a'.repeat(64), files: 3, dirs: 1, links_skipped: 0, unpacked: 2000 }) };
       if (/realpath -e/.test(cmd)) return { stdout: '{"lockfileVersion":3,"packages":{}}' };
       if (/probe\.mjs/.test(cmd)) return { stdout: JSON.stringify({ format: 'isokron-surface-probe/1', mode: 'http', error: 'no answer', lists: {}, transcript: [], transport: {} }) };
       return {};
@@ -126,7 +131,7 @@ function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = n
   const fetchFn = fakeFetch({ archives: { '*': tarGz({ 'README.md': '# n\n' }, { commit: SHA }) } });
   // The trace folder as install-runsc.sh mounts it: its own filesystem of trace_fs_mb, mostly free.
   const statfs = (p) => (p === logDir ? { bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 - 10 } : { bsize: 4096, blocks: 1e9, bavail: 1e9 });
-  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs, hostRun: fakeHostRun(cfg), resolveHost: async (h) => (h === 'registry.npmjs.org' ? [{ address: '104.16.1.34', family: 4 }, { address: '10.0.0.9', family: 4 }] : []) } };
+  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs, hostRun: fakeHostRun(cfg), resolveHost: async (h) => (h === 'registry.npmjs.org' ? [{ address: '104.16.1.34', family: 4 }, { address: '10.0.0.9', family: 4 }] : PUBLIC_HOSTS.includes(h) ? [{ address: '140.82.112.3', family: 4 }] : []) } };
 }
 
 async function runMain(s) {
@@ -345,4 +350,123 @@ test('R-SBX-22 a native build runs in the build image with every hardening an in
   const st = r.by('settings', (x) => x.subject === 's001' && x.role === 'install')[0];
   assert.deepEqual([st.manifest.runtime, st.manifest.user, st.manifest.read_only], ['runsc', '65534:65534', true]);
   assert.equal(JSON.parse(readFileSync(join(s.out, 's001', 'record.json'), 'utf8')).install.image, images['node24-build']);
+});
+
+/** The hardening of one container's `docker run` arguments, as R-SBX-22 reads it. */
+const hardening = (a) => ({
+  runtime: val(a, '--runtime'), user: val(a, '--user'), capDrop: val(a, '--cap-drop'), readOnly: a.includes('--read-only'),
+  noNewPriv: a.some((x) => /no-new-privileges/.test(x)), ip: val(a, '--ip'), memory: val(a, '--memory'), pids: val(a, '--pids-limit'),
+  resolv: a.includes(`type=bind,src=${NETS.install.resolv},dst=/etc/resolv.conf,readonly`), proxy: a.includes(`HTTPS_PROXY=http://${NETS.install.proxy}:8080`),
+  rwMounts: a.filter((x) => /^type=volume,/.test(x) && !/,readonly/.test(x)).map((x) => x.replace(/^.*dst=([^,]+).*$/, '$1')),
+});
+
+test('R-SBX-35 a crate builds in the pinned Rust image and a .NET tool installs in the pinned SDK image, every step hardened like any install, the helper steps in our node image, the proxy open to crates.io or NuGet only', async () => {
+  const s = setup({ targets: [
+    { id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'cargo', crate: 'crate-mcp', version: 'latest', args: ['--stdio'] } },
+    { id: 's002', repo: 'o/n', commit: SHA, launch: { kind: 'nuget', package: 'P.Mcp', version: '1.0.0' } },
+    { id: 's003', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3' } },
+  ] });
+  const r = await runMain(s);
+  assert.equal(r.rc, 0);
+  const images = D.loadImages(new URL('../images.json', import.meta.url).pathname);
+  const runs = s.box.dk.calls.filter((a) => a[0] === 'run' || a[0] === 'create');
+  const imageOf = (a) => a.find((x) => /@sha256:[0-9a-f]{64}$/.test(x));
+  const subject = (a) => (val(a, '--name') || '').match(/-(s00\d)-/)?.[1];
+  const installs = (id) => runs.filter((a) => val(a, '--ip') === NETS.install.target && subject(a) === id);
+  const crate = installs('s001'); const tool = installs('s002'); const npm = installs('s003');
+  assert.deepEqual(crate.map(imageOf), [images['rust-build'], images.node24, images['rust-build']], 'build, entry helper, clean');
+  assert.deepEqual(tool.map(imageOf), [images['dotnet-sdk'], images['dotnet-sdk'], images.node24, images['dotnet-sdk']], 'config, install, entry helper, clean');
+  for (const a of [...crate, ...tool]) assert.deepEqual(hardening(a), hardening(npm[0]), 'hardened exactly like an npm install container');
+  assert.deepEqual([hardening(crate[0]).runtime, hardening(crate[0]).user, hardening(crate[0]).capDrop, hardening(crate[0]).readOnly, hardening(crate[0]).rwMounts], ['runsc', '65534:65534', 'ALL', true, ['/work']]);
+  const cmdOf = (a) => a.slice(a.indexOf(imageOf(a)) + 1);
+  assert.deepEqual(cmdOf(crate[0]), ['cargo', 'install', '--locked', '--root', '/work/pkg', '--', 'crate-mcp']);
+  assert.ok(crate[0].includes('CARGO_HOME=/work/cargo-home') && crate[0].includes('CARGO_TARGET_DIR=/work/target'));
+  assert.deepEqual(cmdOf(crate[2]), ['rm', '-rf', '/work/target', '/work/cargo-home'], 'the build output is gone before the server starts');
+  assert.deepEqual(cmdOf(tool[1]), ['dotnet', 'tool', 'install', 'P.Mcp', '--tool-path', '/work/pkg', '--configfile', '/work/nuget.config', '--allow-roll-forward', '--version', '1.0.0']);
+  assert.ok(tool[1].includes('NUGET_CERT_REVOCATION_MODE=offline') && tool[1].includes('NUGET_PACKAGES=/work/nuget'));
+  // The proxy of each: its registry's hosts only.
+  const proxies = runs.filter((a) => a.some((x) => x.endsWith('/sandbox/egress-proxy.mjs')));
+  const hostsOf = (id) => proxies.filter((p) => subject(p) === id).map((p) => p.slice(p.findIndex((x) => x.endsWith('/sandbox/egress-proxy.mjs')) + 2));
+  assert.deepEqual(hostsOf('s001'), [['index.crates.io', 'static.crates.io']]);
+  assert.deepEqual(hostsOf('s002'), [['api.nuget.org', 'globalcdn.nuget.org']]);
+  // The servers: the crate's binary in the Rust image; the tool's entry point on the SDK image's runtime, rolled forward.
+  const server = (id) => s.box.probes.find((a) => new RegExp(`-${id}-s`).test(val(a, '--name') || ''));
+  assert.equal(imageOf(server('s001')), images['rust-build']);
+  assert.deepEqual(cmdOf(server('s001')), ['/work/pkg/bin/crate-mcp', '--stdio']);
+  assert.equal(imageOf(server('s002')), images['dotnet-sdk']);
+  assert.deepEqual(cmdOf(server('s002')), ['dotnet', '/work/pkg/.store/p.mcp/1.0.0/p.mcp/1.0.0/tools/net9.0/any/P.Mcp.dll']);
+  assert.ok(server('s002').includes('DOTNET_ROLL_FORWARD=Major') && !server('s001').some((x) => x.startsWith('DOTNET_')));
+  for (const id of ['s001', 's002']) {
+    const a = server(id);
+    assert.deepEqual([val(a, '--runtime'), val(a, '--user'), val(a, '--cap-drop'), a.includes('--read-only'), val(a, '--ip')], ['runsc', '65534:65534', 'ALL', true, NETS.run.target]);
+    assert.ok(a.includes('type=volume,src=surface-' + s.box.dk.runId + `-${id}-work,dst=/work,readonly`) || a.some((x) => /dst=\/work,readonly$/.test(x)), 'the work volume is read-only for the server');
+  }
+  // Recorded: which image each step ran in, and the version the entry helper read.
+  const rec = JSON.parse(readFileSync(join(s.out, 's001', 'record.json'), 'utf8'));
+  assert.deepEqual(rec.install.steps.map((x) => [x.name, x.image ?? null]), [['install', null], ['entry', 'node24'], ['clean', null]]);
+  assert.equal(rec.install.resolved_version, '0.4.1');
+  assert.deepEqual(r.by('trace_summary', (x) => x.subject === 's001').map((x) => x.role).sort(), ['install', 'install', 'install', 'server']);
+});
+
+test('R-SBX-36 an MCP bundle is fetched and unpacked by our helper behind a proxy open to GitHub release assets only; it runs from the read-only volume in its runtime image, a uv bundle installs its dependencies through PyPI only', async () => {
+  const url = 'https://github.com/o/n/releases/download/v1.0.0/n.mcpb';
+  const sha = 'a'.repeat(64);
+  const s = setup({ targets: [
+    { id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'mcpb', url, sha256: sha, runtime: 'node', args: ['/work/pkg/server/index.js'], workdir: '.' } },
+    { id: 's002', repo: 'o/n', commit: SHA, launch: { kind: 'mcpb', url, sha256: sha, runtime: 'python', args: ['/work/pkg/server/main.py'], pythonpath: ['server/lib'] } },
+    { id: 's003', repo: 'o/n', commit: SHA, launch: { kind: 'mcpb', url, sha256: sha, runtime: 'binary', entry: 'server/n-linux' } },
+    { id: 's004', repo: 'o/n', commit: SHA, launch: { kind: 'mcpb', url, sha256: sha, runtime: 'uv', console: 'n-mcp', extras: ['mcp'] } },
+    { id: 's005', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3' } },
+  ] });
+  const r = await runMain(s);
+  assert.equal(r.rc, 0);
+  const images = D.loadImages(new URL('../images.json', import.meta.url).pathname);
+  const runs = s.box.dk.calls.filter((a) => a[0] === 'run' || a[0] === 'create');
+  const imageOf = (a) => a.find((x) => /@sha256:[0-9a-f]{64}$/.test(x));
+  const cmdOf = (a) => a.slice(a.indexOf(imageOf(a)) + 1);
+  const subject = (a) => (val(a, '--name') || '').match(/-(s00\d)-/)?.[1];
+  const installs = (id) => runs.filter((a) => val(a, '--ip') === NETS.install.target && subject(a) === id);
+  const npm = installs('s005');
+  for (const id of ['s001', 's002', 's003', 's004']) {
+    const f = installs(id)[0];
+    assert.equal(imageOf(f), images.node24, `${id}: the fetch runs in our node image`);
+    assert.deepEqual(cmdOf(f).slice(0, 5), ['node', '/opt/surface/sandbox/mcpb-fetch.mjs', url, sha, '/work/pkg']);
+    for (const a of installs(id)) assert.deepEqual(hardening(a), hardening(npm[0]), `${id}: hardened like any install`);
+  }
+  assert.deepEqual(cmdOf(installs('s003')[0]).slice(5), ['--exec', 'server/n-linux']);
+  assert.deepEqual(installs('s004').map(imageOf), [images.node24, images.python, images.python, images.python, images.python]);
+  assert.deepEqual(cmdOf(installs('s004')[2]), ['python', '-I', '/opt/surface/sandbox/pyproject-reqs.py', '/work/pkg', '/work/lock/requirements.txt', 'mcp']);
+  const proxies = runs.filter((a) => a.some((x) => x.endsWith('/sandbox/egress-proxy.mjs')));
+  const hostsOf = (id) => proxies.filter((p) => subject(p) === id).map((p) => p.slice(p.findIndex((x) => x.endsWith('/sandbox/egress-proxy.mjs')) + 2));
+  const gh = ['github.com', 'release-assets.githubusercontent.com', 'objects.githubusercontent.com'];
+  for (const id of ['s001', 's002', 's003']) assert.deepEqual(hostsOf(id), [gh]);
+  assert.deepEqual(hostsOf('s004'), [[...gh, 'pypi.org', 'files.pythonhosted.org']]);
+  const server = (id) => s.box.probes.find((a) => new RegExp(`-${id}-s`).test(val(a, '--name') || ''));
+  assert.deepEqual([imageOf(server('s001')), cmdOf(server('s001')), val(server('s001'), '--workdir')], [images.node24, ['node', '/work/pkg/server/index.js'], '/work/pkg']);
+  assert.deepEqual([imageOf(server('s002')), cmdOf(server('s002'))], [images.python, ['python', '/work/pkg/server/main.py']]);
+  assert.ok(server('s002').includes('PYTHONPATH=/work/pkg/server/lib'));
+  assert.deepEqual([imageOf(server('s003')), cmdOf(server('s003'))], [images['node24-build'], ['/work/pkg/server/n-linux']]);
+  assert.deepEqual([imageOf(server('s004')), cmdOf(server('s004'))], [images.python, ['/work/venv/bin/n-mcp']]);
+  for (const id of ['s001', 's002', 's003', 's004']) {
+    const a = server(id);
+    assert.deepEqual([val(a, '--runtime'), val(a, '--user'), val(a, '--cap-drop'), a.includes('--read-only'), val(a, '--ip')], ['runsc', '65534:65534', 'ALL', true, NETS.run.target]);
+    assert.ok(a.some((x) => /dst=\/work,readonly$/.test(x)), `${id}: the bundle is read-only for the server`);
+  }
+  const rec = JSON.parse(readFileSync(join(s.out, 's001', 'record.json'), 'utf8'));
+  assert.deepEqual(rec.install.steps[0].result, { ok: true, bytes: 1000, sha256: sha, files: 3, dirs: 1, links_skipped: 0, unpacked: 2000 }, 'the fetch answer is kept');
+});
+
+test('R-SBX-37 a launch plan\'s own server settings (a runtime roll-forward, a bundle\'s PYTHONPATH) sit on top of a target\'s env, never under it', async () => {
+  // runEnv sits on top of the target's env: a target env name cannot replace PYTHONPATH or DOTNET_ROLL_FORWARD (and the
+  // list validator refuses PYTHONPATH as a target env name anyway).
+  const url = 'https://github.com/o/n/releases/download/v1.0.0/n.mcpb';
+  const s = setup({ targets: [
+    { id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'nuget', package: 'P.Mcp', version: '1.0.0', env: { DOTNET_ROLL_FORWARD: 'Disable' } } },
+    { id: 's002', repo: 'o/n', commit: SHA, launch: { kind: 'mcpb', url, sha256: 'b'.repeat(64), runtime: 'python', args: ['/work/pkg/m.py'], pythonpath: ['.'] } },
+  ] });
+  const r = await runMain(s);
+  assert.equal(r.rc, 0);
+  const server = (id) => s.box.probes.filter((a) => new RegExp(`-${id}-s`).test(val(a, '--name') || ''));
+  for (const a of server('s001')) { assert.ok(a.includes('DOTNET_ROLL_FORWARD=Major')); assert.ok(!a.includes('DOTNET_ROLL_FORWARD=Disable')); }
+  assert.ok(server('s002')[0].includes('PYTHONPATH=/work/pkg'));
 });

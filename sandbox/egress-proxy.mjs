@@ -18,6 +18,8 @@ import { createServer } from 'node:http';
 import { connect, isIP } from 'node:net';
 
 const MAX_OPEN = 64;
+/** How long a tunnel's sides may take to close after one of them has. */
+export const LINGER_MS = 10_000;
 /** Lines printed at most (as the network logger's): about 3 MB, well inside one container log file. */
 export const MAX_LINES = 20_000;
 
@@ -40,7 +42,10 @@ export function decide(target, allowed) {
   return { ok: true, host, port: 443 };
 }
 
-export function makeProxy(allow, log) {
+/** The upstream connection of an allowed CONNECT (the tests pass a local server instead). */
+const upstreamOf = (host) => connect({ host, port: 443, timeout: 30_000 });
+
+export function makeProxy(allow, log, { connectTo = upstreamOf } = {}) {
   let open = 0;
   const server = createServer((req, res) => {
     log({ host: String(req.headers.host || '').slice(0, 253), method: String(req.method).slice(0, 16), allowed: false, error: 'plain HTTP refused' });
@@ -62,10 +67,15 @@ export function makeProxy(allow, log) {
       if (done) return;
       done = true; open--;
       log({ host: d.host, port: 443, allowed: true, up, down, ms: Date.now() - t0, ...(error ? { error: String(error.code || error.message).slice(0, 80) } : {}) });
-      upstream.destroy(); client.destroy();
+      // Each side is ended after what is still buffered for it has been written, then destroyed if it has not closed
+      // within LINGER_MS. A destroy at once threw away the last bytes a server sent just before it closed (a 302 from
+      // github.com, then its close: the client saw a reset and never the redirect).
+      for (const s of [upstream, client]) { s.end(); setTimeout(() => s.destroy(), LINGER_MS).unref(); }
     };
-    const upstream = connect({ host: d.host, port: 443, timeout: 30_000 });
+    const upstream = connectTo(d.host);
     upstream.on('connect', () => {
+      // The client may have gone (and finish run) before the upstream connection came up.
+      if (done) return;
       upstream.setTimeout(0);
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head && head.length) { up += head.length; upstream.write(head); }

@@ -100,7 +100,7 @@ export function parseArgs(argv) {
 
 /** Images from images.json, every one pinned by digest. SURFACE_IMAGE_MIRROR (never set on CI) swaps docker.io for a mirror of the same digests. */
 /** The images.json keys the driver uses (each pinned by digest). */
-export const IMAGE_KEYS = ['node24', 'node24-build', 'node22', 'node22-build', 'python', 'go'];
+export const IMAGE_KEYS = ['node24', 'node24-build', 'node22', 'node22-build', 'python', 'go', 'rust-build', 'dotnet-sdk'];
 
 export function loadImages(file, mirror = process.env.SURFACE_IMAGE_MIRROR || '') {
   const j = JSON.parse(readFileSync(file, 'utf8'));
@@ -434,13 +434,22 @@ async function runTarget(t, list, ctx, dk) {
               const s1 = Date.now();
               const name = dk.name(id, 'i');
               const cidfile = join(ctx.cidDir, `${name}.cid`);
-              const argv = sandboxRunArgs({ name, image, network: inNet, ip: NETS.install.target, resolv: 'install', cidfile, labels: lbl, cpus: ctx.cpus, workdir: P.work, mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: installEnv(ctx, step.env || {}), cmd: step.cmd });
+              // A step may run in another of our images (a helper of ours in the node image after a build in the
+              // Rust or .NET image): the same container, network, mounts and hardening as every install step.
+              let stepImage = image;
+              if (step.image) {
+                stepImage = ctx.images[step.image];
+                if (!stepImage) throw new HarnessError(`an install step names an image that is not ours (${String(step.image).slice(0, 40)})`);
+                ctx.imageIds[step.image] ??= await dk.image(stepImage, step.image);
+              }
+              const argv = sandboxRunArgs({ name, image: stepImage, network: inNet, ip: NETS.install.target, resolv: 'install', cidfile, labels: lbl, cpus: ctx.cpus, workdir: P.work, mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: installEnv(ctx, step.env || {}), cmd: step.cmd });
               writeSettings(ctx, argv, { subject: id, role: 'install' });
-              const r = await tdk.d(argv, { deadline: left(), keepStdout: !!step.out, logStdout: !step.out, cap: 1024 * 1024, onTimeout: () => dk.kill(name) });
+              // A step's own cap (a build may take BUILD_CAP_MS), never past the target's time limit.
+              const r = await tdk.d(argv, { deadline: left(Number.isSafeInteger(step.capMs) && step.capMs > 0 ? step.capMs : Infinity), keepStdout: !!step.out, logStdout: !step.out, cap: 1024 * 1024, onTimeout: () => dk.kill(name) });
               instIds.push(readCid(cidfile));
               await recordContainer(ctx, { id: readCid(cidfile), t0: s1, exit: r.exit, signal: r.signal, timedOut: r.timed_out, meta: { subject: id, role: 'install' } });
-              const s = { name: step.name, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - s1 };
-              if (step.out) { const j = safeParse(r.stdout); if (step.name === 'entry') entry = j && typeof j.script === 'string' && j.script.startsWith(`${P.work}/pkg/`) && !/[\u0000\n]/.test(j.script) ? j : null; s.result = j; }
+              const s = { name: step.name, exit: r.exit, timed_out: r.timed_out, ms: Date.now() - s1, ...(step.image ? { image: step.image } : {}) };
+              if (step.out) { const j = safeParse(r.stdout); if (step.name === 'entry') entry = j && typeof j.script === 'string' && j.script.startsWith(`${P.work}/pkg/`) && !/[\u0000\n]/.test(j.script) && !j.script.split('/').includes('..') && (j.runner === undefined || ['dotnet', 'executable'].includes(j.runner)) ? j : null; s.result = j; }
               inst.steps.push(s);
               if (r.exit !== 0 || (step.name === 'entry' && !entry)) { okAll = false; break; }
             }
@@ -498,20 +507,26 @@ async function runTarget(t, list, ctx, dk) {
           if (!plan.targetImage) ctx.imageIds[plan.runImage ?? plan.image] ??= await dk.image(runImage, 'run');
           const cmd = plan.run(entry);
           const mounts = [...(work ? [{ src: work, dst: P.work, ro: true }] : [])];
+          // What the launch plan itself sets for the server (a .NET runtime's roll-forward, a bundle's PYTHONPATH inside
+          // the read-only volume): on top of a target's env, never under it. Its working folder, when it names one.
+          const serverEnv = (env) => runEnv({ ...env, ...(plan.runEnv || {}) });
+          const workdir = plan.workdir && work ? plan.workdir : undefined;
           const meta = { subject: id, role: 'server' };
           // An OCI target runs in its image's WORKDIR (ours, /tmp, only when it sets none) with its VOLUMEs as tmpfs.
-          const oci = plan.targetImage && inst.oci ? { ...(inst.oci.workdir ? { workdir: inst.oci.workdir } : {}), tmpfs: inst.oci.volumes } : {};
+          // ...or, for a package kind, the working folder its plan names inside its volume (an MCP bundle's folder): one or the
+          // other, never both (an OCI target has no work volume).
+          const oci = plan.targetImage && inst.oci ? { ...(inst.oci.workdir ? { workdir: inst.oci.workdir } : {}), tmpfs: inst.oci.volumes } : workdir ? { workdir } : {};
           const probeOnce = async (net, env, tag) => {
             if (timedOut()) return null;
             const transport = t.launch.transport ?? 'stdio';
             let p;
             if (transport === 'stdio') {
-              p = await probeStdioIn(ctx, tdk, { network: net, name: dk.name(id, 's'), image: runImage, labels: lbl, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), meta });
+              p = await probeStdioIn(ctx, tdk, { network: net, name: dk.name(id, 's'), image: runImage, labels: lbl, mounts, env: serverEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), meta });
             } else {
               // Streamable HTTP: the server at .3 and our probe at .4 of the run network. `server` is a
               // fixed host entry in the probe's container: every other name resolves to the logger.
               const name = dk.name(id, 's');
-              const argv = sandboxRunArgs({ name, image: runImage, network: net, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, cpus: ctx.cpus, mounts, env: runEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci });
+              const argv = sandboxRunArgs({ name, image: runImage, network: net, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, cpus: ctx.cpus, mounts, env: serverEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci });
               writeSettings(ctx, argv, meta);
               const t1 = Date.now();
               const started = await tdk.d(argv, { deadline: left(STEP_MS), keepStdout: true, cap: 4096 });
