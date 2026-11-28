@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const ID = /^R-(?:SBX|CASE|CI|MUT)-\d{2}$/;
+const ID = /^R-(?:SBX|CASE|CI|MUT|PROBE)-\d{2}$/;
 
 /** The ledger's rows: { id, tests: [[file, name]], fixes }. */
 export function ledgerRows(text) {
