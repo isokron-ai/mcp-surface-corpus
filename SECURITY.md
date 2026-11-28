@@ -159,7 +159,7 @@ Network:
 - Install: the network's other member is our allowlist proxy (`sandbox/egress-proxy.mjs`, at `.3`).
   The proxy accepts `CONNECT` to port 443 of the kind's registry hosts only (npm:
   `registry.npmjs.org`; PyPI: `pypi.org`, `files.pythonhosted.org`; Go: `proxy.golang.org`,
-  `sum.golang.org`), refuses plain HTTP, and logs each attempt with bytes
+  `sum.golang.org`, `storage.googleapis.com`), refuses plain HTTP, and logs each attempt with bytes
   up and down.
 - Server, stdio and http alike: the run network, shared with the logger and our probe container only.
 - `scripts/net-guard.sh` (run as root before any target) logs and drops, in chains of its own jumped

@@ -184,8 +184,11 @@ export const NATIVE_BUILD_ENV = Object.freeze({ npm_config_nodedir: '/usr/local'
 export const BUILD_CAP_MS = 15 * 60_000;
 export const INSTALL_CAP_MS = 5 * 60_000;
 
-/** The hosts a Go build may reach: the module proxy and the checksum database (R-SBX-62). */
-export const GO_REGISTRIES = Object.freeze(['proxy.golang.org', 'sum.golang.org']);
+/**
+ * The hosts a Go build may reach (R-SBX-62): the module proxy, the checksum database, and storage.googleapis.com, where
+ * proxy.golang.org redirects module downloads; a Go build without it fails (proved by mcp-writecheck-action run 46103312907).
+ */
+export const GO_REGISTRIES = Object.freeze(['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com']);
 
 /** A Go install: its folders in the work volume, read-only module files, no VCS stamp, no cgo, no telemetry, the image's own toolchain. */
 export const GO_ENV = Object.freeze({ GOBIN: `${P.work}/bin`, GOPATH: `${P.work}/go`, GOCACHE: `${P.work}/gocache`, GOTMPDIR: `${P.work}/gotmp`, GOFLAGS: '-mod=readonly -buildvcs=false', CGO_ENABLED: '0', GOTOOLCHAIN: 'local', GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org', GOTELEMETRY: 'off' });
@@ -293,7 +296,7 @@ export function launchPlan(l) {
   if (l.kind === 'go') {
     // `go install <package path>@<version>` in the pinned Go image (images.json), at most BUILD_CAP_MS. The version is a
     // release tag or a full commit; a commit is how a repository with no release is built at the commit it was read at.
-    // The module proxy and the checksum database are the only doors (R-SBX-62); a module that needs another host fails
+    // The module proxy, the checksum database and the storage host the proxy redirects downloads to are the only doors (R-SBX-62); a module that needs another host fails
     // as a denied host, which the harness tells apart from a failure of the package. Read-only module files (-mod=readonly),
     // no VCS stamp (the image has no git), the toolchain the image has (GOTOOLCHAIN=local), no cgo, and Go's own
     // scratch folder in the work volume (the sandbox's /tmp is small). The module cache and the build cache are removed

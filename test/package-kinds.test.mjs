@@ -129,13 +129,13 @@ test('R-SBX-38 mutation check: the validator\'s crate, NuGet id and bundle URL c
 
 // ------------------------------------------------------------------ Go install
 
-test('R-SBX-62 a Go install builds a repository at its commit in the pinned Go image: read-only module files, no VCS stamp, the image\'s own toolchain, the module proxy and checksum database only, within the build cap, its caches removed after', () => {
+test('R-SBX-62 a Go install builds a repository at its commit in the pinned Go image: read-only module files, no VCS stamp, the image\'s own toolchain, the module proxy, checksum database and its download host only, within the build cap, its caches removed after', () => {
   const sha = 'a1'.repeat(20);
   const l = { kind: 'go', module: 'github.com/o/n/cmd/srv', version: sha, args: ['--stdio'] };
   assert.doesNotThrow(() => validateTarget(base(l)));
   const p = launchPlan(l);
   assert.deepEqual([p.image, p.runImage], ['go', 'node24']);
-  assert.deepEqual(p.registries, ['proxy.golang.org', 'sum.golang.org'], 'no host but the module proxy and the checksum database (storage.googleapis.com only when a proof shows a build needs it)');
+  assert.deepEqual(p.registries, ['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com'], 'the module proxy, the checksum database and the host the proxy redirects module downloads to (a Go build fails without it: mcp-writecheck-action run 46103312907); nothing else');
   const inst = p.install.find((s) => s.name === 'install');
   assert.deepEqual(inst.cmd, ['go', 'install', `github.com/o/n/cmd/srv@${sha}`], 'the commit, never latest');
   assert.equal(inst.capMs, BUILD_CAP_MS);
