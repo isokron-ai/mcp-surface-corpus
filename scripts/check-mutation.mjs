@@ -55,6 +55,10 @@ export const EXPECT = {
   nofile: { case: 'fd-exhaustion', why: /^got through: \d+ descriptors opened, past the limit of 4096/, blocked: false },
   // The target's claimed time as the harness's: the telemetry holds it.
   'target-time': { case: 'clock-tamper', why: /^got through: a time the target claimed reached the telemetry/, blocked: false, logged: true },
+  // work-overlay's container on its work volume itself, read-write: what it wrote is in the work volume under the layer.
+  'overlay-lower-rw': { case: 'work-overlay', why: /^got through: the case's writes reached the work volume under the overlay/, blocked: false, logged: true },
+  // A layer left where it is after its container was torn down: Docker still lists it.
+  'overlay-keep': { case: 'work-overlay', why: /^got through: the case's layer outlived its teardown/, blocked: false, logged: true },
   'volume-cap': { case: 'install-archive-bomb', why: /^got through: (?:the runner's disk lost \d+ MB|the work volume's filesystem holds)/, blocked: false },
 };
 

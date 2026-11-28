@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSyn
 import { arch, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fakeFetch, fakeHostRun, tarGz } from './helpers.mjs';
-import { Docker } from '../src/docker.mjs';
+import { Docker, LIMITS } from '../src/docker.mjs';
 import { loadRunscConfig, runscFlags } from '../src/runsc.mjs';
 import { NETS, resolvConf } from '../src/sandbox-net.mjs';
 import { Telemetry, readTelemetry } from '../src/telemetry.mjs';
@@ -49,16 +49,38 @@ class FakeDocker extends Docker {
 }
 
 /** The daemon: every runsc container leaves a trace in logDir, as runsc would. */
-function daemon({ logDir, flags, noTrace = null, runscPath = '/usr/local/lib/isokron-gvisor/current/runsc' }) {
+function daemon({ logDir, flags, noTrace = null, runscPath = '/usr/local/lib/isokron-gvisor/current/runsc', overlayFails = false, layerRmFails = false }) {
   const nets = new Map();
   const box = new Map();
+  // Volumes as the local driver keeps them: under the data-root, with the options they were made with.
+  const vols = new Map();
+  const dataRoot = loadRunscConfig().docker_root;
   let n = 0;
   return (argv) => {
     const [c0, c1] = argv;
     if (c0 === 'version') return { stdout: '27.3.1 linux/amd64\n' };
     if (c0 === 'info') return { stdout: argv[2] === '{{.NCPU}}' ? '4\n' : JSON.stringify({ runc: { path: 'runc' }, ...(flags ? { runsc: { path: runscPath, runtimeArgs: flags } } : {}) }) };
     if (c0 === 'image') return { stdout: `sha256:${'e'.repeat(64)}\n` };
-    if (c0 === 'volume' && c1 === 'inspect') return { exit: 1 };
+    if (c0 === 'volume' && c1 === 'create') {
+      const o = {};
+      for (let i = 0; i < argv.length; i++) if (argv[i] === '--opt') { const [k, ...v] = argv[i + 1].split('='); o[k] = v.join('='); }
+      if (overlayFails && o.type === 'overlay') return { exit: 1 };
+      vols.set(argv[argv.length - 1], o);
+      return {};
+    }
+    if (c0 === 'volume' && c1 === 'rm') {
+      const names = argv.slice(2).filter((x) => x !== '-f');
+      if (layerRmFails && !argv.includes('-f') && names.some((v) => /-layer\d+$/.test(v))) return { exit: 1 };
+      for (const v of names) vols.delete(v);
+      return {};
+    }
+    if (c0 === 'volume' && c1 === 'inspect') {
+      const name = argv[argv.length - 1];
+      if (!vols.has(name)) return { exit: 1 };
+      if (argv[3] === '{{.Mountpoint}}') return { stdout: `${dataRoot}/volumes/${name}/_data\n` };
+      if (String(argv[3]).startsWith('{{.Driver}}')) return { stdout: `local ${JSON.stringify(vols.get(name))}\n` };
+      return { stdout: `${name}\n` };
+    }
     if (c0 === 'network' && c1 === 'create') { nets.set(argv[argv.length - 1], { internal: argv.includes('--internal'), subnet: val(argv, '--subnet') ?? '172.18.0.0/16' }); return {}; }
     if (c0 === 'network' && c1 === 'inspect') { const x = nets.get(argv[argv.length - 1]); return { stdout: `${x.internal} false ${x.subnet}\n` }; }
     if (c0 === 'start') return {};
@@ -101,13 +123,13 @@ function gnuTarOnPath(d) {
   return `${bin}:${process.env.PATH}`;
 }
 
-function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = null, hostLogFailsAfter = Infinity, targets = null } = {}) {
+function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = null, hostLogFailsAfter = Infinity, targets = null, overlayFails = false, layerRmFails = false, fs = {} } = {}) {
   const d = mkdtempSync(join(tmpdir(), 'surface-sbx-'));
   const logDir = join(d, 'runsc'); mkdirSync(logDir);
   const cfg = { ...loadRunscConfig(), log_dir: logDir };
   const want = runscFlags(cfg, arch());
   const box = { dk: null, probes: [], logReads: 0 };
-  const makeDocker = (o) => (box.dk = new FakeDocker(o, daemon({ logDir, flags: flags === 'expected' ? want : flags, noTrace })));
+  const makeDocker = (o) => (box.dk = new FakeDocker(o, daemon({ logDir, flags: flags === 'expected' ? want : flags, noTrace, overlayFails, layerRmFails })));
   // The stdio probe starts `docker run --interactive`; here it writes the cidfile and the trace as docker and runsc would.
   const probe = async (argv) => {
     box.probes.push(argv);
@@ -131,7 +153,7 @@ function setup({ flags = 'expected', hostLog = true, lane = 'local', noTrace = n
   const fetchFn = fakeFetch({ archives: { '*': tarGz({ 'README.md': '# n\n' }, { commit: SHA }) } });
   // The trace folder as install-runsc.sh mounts it: its own filesystem of trace_fs_mb, mostly free.
   const statfs = (p) => (p === logDir ? { bsize: 4096, blocks: cfg.trace_fs_mb * 256, bavail: cfg.trace_fs_mb * 256 - 10 } : { bsize: 4096, blocks: 1e9, bavail: 1e9 });
-  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs, hostRun: fakeHostRun(cfg), resolveHost: async (h) => (h === 'registry.npmjs.org' ? [{ address: '104.16.1.34', family: 4 }, { address: '10.0.0.9', family: 4 }] : PUBLIC_HOSTS.includes(h) ? [{ address: '140.82.112.3', family: 4 }] : []) } };
+  return { d, cfg, logDir, box, lane, out: join(d, 'out'), path: gnuTarOnPath(d), opts: { fetchFn, makeDocker, probe, runscConfig: cfg, readResolv, readLog, traceWaitMs: 0, statfs, hostRun: fakeHostRun(cfg, { fs }), resolveHost: async (h) => (h === 'registry.npmjs.org' ? [{ address: '104.16.1.34', family: 4 }, { address: '10.0.0.9', family: 4 }] : PUBLIC_HOSTS.includes(h) ? [{ address: '140.82.112.3', family: 4 }] : []) } };
 }
 
 async function runMain(s) {
@@ -497,4 +519,116 @@ test('R-SBX-56 a caller\'s source reader goes into the tools volume as reader/, 
   assert.throws(() => D.readerOption({ dir, id, entry: 'other.cjs' }), /reader option/);
   assert.throws(() => D.readerOption({ dir, id: 'x', entry: 'static-read.cjs' }), /reader option/);
   assert.equal(D.readerOption(null), null);
+});
+
+test('R-SBX-59 with writableWork, each server probe of a package kind gets a fresh layer of its own at /work and a /data tmpfs, removed before the next; the work volume stays read-only to everything else; off by default, never for an OCI target', async () => {
+  const targets = [
+    { id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3', env: { N_API_KEY: 'dummy-value-1' } } },
+    { id: 's002', repo: 'o/n', commit: SHA, launch: { kind: 'docker', image: IMAGE } },
+  ];
+  const s = setup({ targets });
+  s.opts.writableWork = true;
+  const r = await runMain(s);
+  assert.equal(r.rc, 0);
+  assert.equal(r.shard.writable_work, true);
+  const calls = s.box.dk.calls;
+  const at = (pred) => calls.findIndex(pred);
+  const servers = s.box.probes.filter((a) => !a.some((x) => x.endsWith('null-server.mjs')));
+  const npm = servers.filter((a) => val(a, '--name').includes('-s001-'));
+  assert.equal(npm.length, 2, 'bare and env');
+  const layers = npm.map((a) => {
+    const m = a.filter((x, i) => a[i - 1] === '--mount' && x.startsWith('type=volume,'));
+    assert.equal(m.length, 1, 'one volume: the layer');
+    assert.ok(a.includes(`type=bind,src=${NETS.run.resolv},dst=/etc/resolv.conf,readonly`));
+    const mm = /^type=volume,src=(surface-[a-z0-9-]+-s001-layer\d+),dst=\/work,volume-nocopy$/.exec(m[0]);
+    assert.ok(mm, `the layer at /work, writable: ${m[0]}`);
+    assert.ok(a.includes(`/data:rw,nosuid,nodev,noexec,size=${LIMITS.volTmp},mode=1777`));
+    for (const f of ['--read-only', '--init']) assert.ok(a.includes(f));
+    assert.equal(val(a, '--runtime'), 'runsc');
+    assert.equal(val(a, '--user'), '65534:65534');
+    assert.ok(a.join(' ').includes('--cap-drop ALL --security-opt no-new-privileges'));
+    return mm[1];
+  });
+  assert.notEqual(layers[0], layers[1], 'one layer per probe: nothing the bare probe wrote reaches the env probe');
+  for (const l of layers) {
+    const create = at((a) => a[0] === 'volume' && a[1] === 'create' && a[a.length - 1] === l);
+    const opts = calls[create].filter((x, i) => calls[create][i - 1] === '--opt');
+    assert.equal(opts[0], 'type=overlay');
+    assert.match(opts[2], new RegExp(`^o=lowerdir=${loadRunscConfig().docker_root}/volumes/surface-[a-z0-9]+-s001-work/_data,upperdir=`));
+    assert.ok(at((a) => a[0] === 'volume' && a[1] === 'rm' && a.includes(l)) > create, `${l} is removed`);
+  }
+  // The first layer is gone before the second is made, and each goes only after its server's container is removed.
+  const rm0 = at((a) => a[0] === 'volume' && a[1] === 'rm' && a.includes(layers[0]));
+  assert.ok(rm0 < at((a) => a[0] === 'volume' && a[1] === 'create' && a[a.length - 1] === layers[1]));
+  assert.ok(at((a) => a[0] === 'rm' && a.includes(val(npm[0], '--name'))) < rm0);
+  // The work volume itself: read-write for the install, read-only for every helper, never mounted by a server.
+  const workMounts = calls.filter((a) => a[0] === 'run' && a.some((x) => /src=surface-[a-z0-9]+-s001-work,dst=\/work/.test(x)));
+  assert.ok(workMounts.length >= 3);
+  assert.ok(!servers.some((a) => a.some((x) => /-s001-work,/.test(x))), 'no server sees the work volume itself');
+  const rec = JSON.parse(readFileSync(join(s.out, 's001', 'record.json'), 'utf8'));
+  assert.deepEqual(rec.writable_work, { layer: 'overlay', lower: 'work volume, unchanged', data: ['/data'], data_size: LIMITS.volTmp, probes: { bare: { layer: true, error: null, removed: true }, env: { layer: true, error: null, removed: true } } });
+  // An OCI target never gets one: its own image, its VOLUMEs.
+  const oci = servers.filter((a) => val(a, '--name').includes('-s002-'));
+  assert.ok(oci.length >= 1 && oci.every((a) => !a.some((x) => /layer|\/data:/.test(x))));
+  assert.equal(JSON.parse(readFileSync(join(s.out, 's002', 'record.json'), 'utf8')).writable_work, undefined);
+
+  // Off by default: the read-only work volume, no layer, no /data.
+  const off = setup({ targets });
+  const r2 = await runMain(off);
+  assert.equal(r2.rc, 0);
+  assert.equal(r2.shard.writable_work, false);
+  assert.ok(!off.box.dk.calls.some((a) => a[0] === 'volume' && a[1] === 'create' && a.includes('type=overlay')));
+  const plain = off.box.probes.filter((a) => val(a, '--name').includes('-s001-'));
+  assert.ok(plain.length === 2 && plain.every((a) => a.some((x) => /^type=volume,src=surface-[a-z0-9]+-s001-work,dst=\/work,readonly$/.test(x)) && !a.some((x) => x.startsWith('/data:'))));
+  assert.equal(JSON.parse(readFileSync(join(off.out, 's001', 'record.json'), 'utf8')).writable_work, undefined);
+  await assert.rejects(D.main(['--targets', join(off.d, 'targets.json'), '--out', join(off.d, 'o2')], { ...off.opts, writableWork: 'yes' }), /writableWork option is true or false/);
+});
+
+test('R-SBX-59 a layer that cannot be made is recorded and the probe runs on the read-only work volume, as without the option', async () => {
+  const s = setup({ targets: [{ id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3' } }], overlayFails: true });
+  s.opts.writableWork = true;
+  const r = await runMain(s);
+  assert.equal(r.rc, 0);
+  const servers = s.box.probes.filter((a) => val(a, '--name').includes('-s001-'));
+  assert.equal(servers.length, 1);
+  assert.ok(servers[0].some((x) => /^type=volume,src=surface-[a-z0-9]+-s001-work,dst=\/work,readonly$/.test(x)));
+  assert.ok(!servers[0].some((x) => x.startsWith('/data:')));
+  const rec = JSON.parse(readFileSync(join(s.out, 's001', 'record.json'), 'utf8'));
+  assert.equal(rec.writable_work.probes.bare.layer, false);
+  assert.match(rec.writable_work.probes.bare.error, /writable layer: overlay volume failed/);
+});
+
+test('R-SBX-61 writableWork is refused on every lane unless Docker\'s volumes are their own capped filesystem: the local lane\'s preflight does not check it', async () => {
+  const targets = [{ id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3' } }];
+  for (const [what, fs] of [['not mounted', { volumes: { mounted: false } }], ['another filesystem', { volumes: { fstype: 'xfs' } }], ['the wrong size', { volumes: { sectors: 2048 } }]]) {
+    const s = setup({ targets, fs });
+    s.opts.writableWork = true;
+    const r = await runMain(s);
+    assert.equal(r.rc, 1, what);
+    assert.deepEqual(r.lines, ['run finished, exit 125'], what);
+    assert.match(r.shard.harness_error, /writableWork needs Docker's volumes on their own capped filesystem: the Docker volumes folder .* is not a filesystem of its own/, what);
+    assert.ok(!s.box.dk.calls.some((a) => a[0] === 'volume' && a[1] === 'create' && a.includes('type=overlay')), `${what}: no layer`);
+    assert.deepEqual(s.box.probes.filter((a) => !a.some((x) => x.endsWith('null-server.mjs'))), [], `${what}: no server ran`);
+  }
+  // The same host without the option: the local lane runs as before.
+  const off = setup({ targets, fs: { volumes: { mounted: false } } });
+  assert.equal((await runMain(off)).rc, 0);
+  // And with the capped filesystem in place, on the local lane, the option runs.
+  const on = setup({ targets });
+  on.opts.writableWork = true;
+  const r = await runMain(on);
+  assert.equal(r.rc, 0);
+  assert.ok(on.box.dk.calls.some((a) => a[0] === 'volume' && a[1] === 'create' && a.includes('type=overlay')));
+});
+
+test('R-SBX-59 a layer Docker will not remove is recorded as not removed, with the error, and its upper volume is left for the sweep', async () => {
+  const s = setup({ targets: [{ id: 's001', repo: 'o/n', commit: SHA, launch: { kind: 'npm', package: 'n', version: '1.2.3' } }], layerRmFails: true });
+  s.opts.writableWork = true;
+  await runMain(s);
+  const rec = JSON.parse(readFileSync(join(s.out, 's001', 'record.json'), 'utf8'));
+  assert.equal(rec.writable_work.probes.bare.removed, false);
+  assert.match(rec.writable_work.probes.bare.remove_error, /^the overlay volume could not be removed/);
+  assert.ok(rec.errors.some((e) => e.step === 'live' && /writable layer of probe bare could not be removed: the overlay volume/.test(e.error)));
+  const rms = s.box.dk.calls.filter((a) => a[0] === 'volume' && a[1] === 'rm' && !a.includes('-f'));
+  assert.ok(rms.length >= 1 && rms.every((a) => /-layer\d+$/.test(a[2])), 'no upper volume is removed while its overlay volume is still there');
 });

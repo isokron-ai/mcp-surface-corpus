@@ -66,6 +66,8 @@ export function mutationTelemetry(file, protection) {
     if (protection === 'nofile') { ev.trace.network.sockets[0] = { ...ev.trace.network.sockets[0], n: 20000, failed: 0, errno: null }; }
     if (protection === 'target-time') ev.stage.clock.forged_in_telemetry = true;
     if (protection === 'volume-cap') Object.assign(ev.stage.disk, { host_free_drop_mb: 8200, work_fs_mb: 73000, work_fs_inodes: 9000000 });
+    if (protection === 'overlay-lower-rw') { Object.assign(ev.stage.lower, { intact: false, entries: 40, changed: 31 }); ev.stage.fresh.leaked = ['/work/isk-new-1', '/work/isk-l00']; Object.assign(ev.stage.disk, { landed: 0, layer_bytes_mb: 0 }); }
+    if (protection === 'overlay-keep') ev.stage.layer_gone = false;
     if (protection === 'proxy-allowlist') ev.egress = [...ev.egress.filter((e) => e.host !== 'example.com' || e.port !== 443), { host: 'example.com', port: 443, allowed: true, up: 0, down: 0, ms: 3, error: 'EAI_AGAIN' }];
     const meta = { subject: `case:${exp.case}`, role: 'case' };
     tel.write('container', { runtime: ev.inspect.runtime, exit: 0, signal: null, timed_out: false, oom_killed: false, ms: 1 }, meta);

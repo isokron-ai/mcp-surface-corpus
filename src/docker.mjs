@@ -126,11 +126,63 @@ export function dockerEnvFrom(env) {
   return Object.fromEntries(keep.filter((k) => env[k] !== undefined).map((k) => [k, env[k]]));
 }
 
-/** Only named Docker volumes, by a name the driver made; never a host path. */
-export function volumeMount({ src, dst, ro = false }) {
+/**
+ * Only named Docker volumes, by a name the driver made; never a host path. `nocopy`: Docker never copies what the image
+ * holds at the mount point into the volume (a writable layer of ours is never seeded from the image).
+ */
+export function volumeMount({ src, dst, ro = false, nocopy = false }) {
   if (!/^surface-[a-z0-9-]+$/.test(src)) throw new HarnessError('only surface volumes are mounted');
   if (!/^\/[A-Za-z0-9._/-]+$/.test(dst)) throw new HarnessError('bad mount path');
-  return `type=volume,src=${src},dst=${dst}${ro ? ',readonly' : ''}`;
+  return `type=volume,src=${src},dst=${dst}${ro ? ',readonly' : ''}${nocopy ? ',volume-nocopy' : ''}`;
+}
+
+/**
+ * The writable layer a package kind's server may get (bin/run-shard.mjs, the writableWork option): servers that write
+ * into their own install (a logs folder in site-packages) or to /data failed at start on the read-only work volume.
+ *
+ *   /work  a kernel overlay (Docker's local volume driver, type overlay) whose one lower layer is the target's work
+ *          volume, as it is (overlayfs never writes to a lower layer), and whose upper layer is a fresh volume of its
+ *          own on the same volume filesystem (gvisor.json volume_fs_mb, volume_fs_inodes: the cap every work volume
+ *          has). Mounted nosuid,nodev, exec (a venv's console scripts and a binary run from it, as from the work
+ *          volume itself). One per server container: made before it starts, removed after it is gone, so nothing it
+ *          writes reaches another probe, another target or the lower layer the lock read-out and the next probe see.
+ *   /data  a tmpfs like an OCI VOLUME's (LIMITS.volTmp, noexec,nosuid,nodev): memory of the sandbox, gone with it.
+ *
+ * The overlay's folders are the data-root's own volume folders (volumeDataPath), read back from Docker and checked,
+ * never a path a target or a list gives. WRITABLE_KINDS: the kinds with a work volume (not docker: an OCI target runs
+ * from its own image, with its VOLUMEs as tmpfs).
+ */
+export const DATA_TMPFS = Object.freeze(['/data']);
+export const WRITABLE_KINDS = Object.freeze(['npm', 'pypi', 'go', 'cargo', 'nuget', 'mcpb']);
+/** What the helper that makes a layer's upper volume runs (root with CAP_CHOWN only): chmod before chown, as WORK_VOLUME_CMD. */
+export const LAYER_CMD = 'mkdir /layer/upper /layer/work && chmod 0750 /layer/upper && chown 65534:65534 /layer/upper';
+/** What the helper that checks a layer runs (65534, the layer read-only): the merged /work shows the work volume. */
+export const LAYER_CHECK_CMD = '[ -d /work ] && [ -n "$(ls -A /work)" ]';
+
+const SURFACE_VOLUME = /^surface-[a-z0-9-]{1,120}$/;
+const DATA_ROOT = /^\/[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+){0,10}$/;
+/** Where Docker keeps a named volume's data under its data-root (the local driver), as `docker volume inspect` says. */
+export function volumeDataPath(root, name) {
+  if (typeof root !== 'string' || !DATA_ROOT.test(root) || root.split('/').some((x) => x === '.' || x === '..')) throw new HarnessError('the data-root is not a plain absolute path');
+  if (typeof name !== 'string' || !SURFACE_VOLUME.test(name)) throw new HarnessError('only surface volumes make a layer');
+  return `${root}/volumes/${name}/_data`;
+}
+
+/**
+ * The `o` option of a layer's overlay volume: the work volume's folder as the one lower layer, the upper volume's
+ * folder for upperdir and workdir, nosuid and nodev. Each folder must be the data-root's own folder of that volume.
+ */
+export function overlayOptions({ root, lower, upper }) {
+  const lo = volumeDataPath(root, lower);
+  const up = volumeDataPath(root, upper);
+  if (lower === upper) throw new HarnessError('a layer\'s upper volume is never its lower one');
+  return `lowerdir=${lo},upperdir=${up}/upper,workdir=${up}/work,nosuid,nodev`;
+}
+
+/** The `docker volume create` arguments of a layer's overlay volume. */
+export function overlayVolumeArgs({ name, root, lower, upper, labels = {} }) {
+  if (!SURFACE_VOLUME.test(String(name)) || name === lower || name === upper) throw new HarnessError('a layer takes a surface volume name of its own');
+  return ['volume', 'create', '--driver', 'local', '--opt', 'type=overlay', '--opt', 'device=overlay', '--opt', `o=${overlayOptions({ root, lower, upper })}`, ...labelArgs(labels), name];
 }
 
 /** `docker image inspect --format '{{json .Config}} {{.Os}}/{{.Architecture}}'` output, read as imageConfig returns it. */
@@ -407,6 +459,70 @@ export class Docker {
     return name;
   }
 
+  /** Where Docker keeps a volume's data, read back and checked to be the data-root's own folder of it (volumeDataPath). */
+  async volumePath(name, root) {
+    const want = volumeDataPath(root, name);
+    const r = await this.d(['volume', 'inspect', '--format', '{{.Mountpoint}}', name], { keepStdout: true, logStdout: false, cap: 4096, deadline: Date.now() + 30_000 });
+    const got = r.exit === 0 ? r.stdout.toString().trim() : '';
+    if (got !== want) throw new HarnessError(`the volume ${name} is not kept in ${root}/volumes (Docker says ${tailLine(got, 120) || 'nothing'})`);
+    return want;
+  }
+
+  /**
+   * A writable layer over the work volume `work`, for one server container (see DATA_TMPFS above): a fresh upper volume
+   * (its upper and work folders, the upper one 65534's and 0750 like /work), then the overlay volume, whose options are
+   * read back and must be exactly ours, then a helper of ours that mounts it and sees the work volume through it (so a
+   * layer the kernel refuses is our failure, never the server's). Returns { volume, upper, lower }. Everything carries
+   * the run's labels, so the sweep removes it too; dropLayer removes it after each server.
+   */
+  async writableLayer(work, { root, image, target = null, deadlineMs = 120_000 }) {
+    checkPinned(image, 'helper');
+    volumeDataPath(root, work);
+    const lbl = this.labels(target);
+    const upper = await this.volume(this.name(target, 'up'), target);
+    await this.must(this.d(helperRunArgs({ name: this.name(target, 'h'), image, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: upper, dst: '/layer' }], cmd: ['sh', '-c', LAYER_CMD] }), { deadline: Date.now() + deadlineMs }), 'writable layer: upper volume');
+    await this.volumePath(work, root);
+    await this.volumePath(upper, root);
+    const volume = this.name(target, 'layer');
+    const seen = await this.d(['volume', 'inspect', '--format', '{{.Name}}', volume], { keepStdout: true, logStdout: false });
+    if (seen.exit === 0) throw new HarnessError('a volume of that name exists already');
+    const argv = overlayVolumeArgs({ name: volume, root, lower: work, upper, labels: lbl });
+    await this.must(this.d(argv, { deadline: Date.now() + 60_000 }), 'writable layer: overlay volume');
+    const opt = await this.d(['volume', 'inspect', '--format', '{{.Driver}} {{json .Options}}', volume], { keepStdout: true, logStdout: false, cap: 8192, deadline: Date.now() + 30_000 });
+    const text = opt.exit === 0 ? opt.stdout.toString().trim() : '';
+    let o = null;
+    try { o = text.startsWith('local ') ? JSON.parse(text.slice(6)) : null; } catch { o = null; }
+    const wantO = overlayOptions({ root, lower: work, upper });
+    if (!o || Object.keys(o).sort().join(',') !== 'device,o,type' || o.type !== 'overlay' || o.device !== 'overlay' || o.o !== wantO) throw new HarnessError('writable layer: the overlay volume\'s options are not the ones the harness gave');
+    await this.must(this.d(helperRunArgs({ name: this.name(target, 'h'), image, labels: lbl, mounts: [{ src: volume, dst: '/work', ro: true, nocopy: true }], cmd: ['sh', '-c', LAYER_CHECK_CMD] }), { deadline: Date.now() + deadlineMs }), 'writable layer: check');
+    return { volume, upper, lower: work };
+  }
+
+  /**
+   * Removes a layer (the overlay volume, then its upper volume; the work volume under it stays as it is) once no
+   * container of it is left: { removed, error }. Never with -f (which drops Docker's record of a volume it failed to
+   * remove, and the data with it would stay on the volume filesystem unlisted), and the upper volume only once the
+   * overlay volume is gone (never an upperdir a mounted overlay still uses). removed is true only when Docker lists
+   * neither any more.
+   */
+  async dropLayer(layer) {
+    if (!layer) return { removed: true, error: null };
+    for (const [v, what] of [[layer.volume, 'overlay'], [layer.upper, 'upper']]) {
+      const r = await this.d(['volume', 'rm', v], { deadline: Date.now() + 60_000 });
+      if (r.exit !== 0) return { removed: false, error: `the ${what} volume could not be removed (exit ${r.exit}${r.timed_out ? ', time limit' : ''}): ${tailLine(r.stderr_tail || '', 120)}`.slice(0, 200) };
+    }
+    return (await this.layerGone(layer)) ? { removed: true, error: null } : { removed: false, error: 'Docker still lists a volume of the layer after its removal' };
+  }
+
+  /** Whether Docker lists neither of a layer's volumes any more. */
+  async layerGone(layer) {
+    for (const v of [layer.volume, layer.upper]) {
+      const r = await this.d(['volume', 'inspect', '--format', '{{.Name}}', v], { keepStdout: true, logStdout: false, deadline: Date.now() + 30_000 });
+      if (r.exit === 0) return false;
+    }
+    return true;
+  }
+
   /**
    * A new bridge network. `sandbox` names one of the fixed sandbox networks (src/sandbox-net.mjs):
    * internal, its fixed subnet and gateway, no IPv6, and checked to be exactly that after creation.
@@ -458,6 +574,11 @@ export class Docker {
     const nets = await list(['network', 'ls', '-q', ...f]);
     if (nets.length) await this.d(['network', 'rm', ...nets]);
     const vols = await list(['volume', 'ls', '-q', ...f]);
-    if (vols.length) await this.d(['volume', 'rm', '-f', ...vols]);
+    // Writable layers first, without -f: while one is still there, no upper volume goes (it may be its upperdir).
+    const layers = vols.filter((v) => /-layer\d+$/.test(v));
+    let stuck = false;
+    for (const v of layers) if ((await this.d(['volume', 'rm', v])).exit !== 0) stuck = true;
+    const rest = vols.filter((v) => !layers.includes(v) && !(stuck && /-up\d+$/.test(v)));
+    if (rest.length) await this.d(['volume', 'rm', '-f', ...rest]);
   }
 }

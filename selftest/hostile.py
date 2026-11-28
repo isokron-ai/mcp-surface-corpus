@@ -896,12 +896,134 @@ def case_volume_tmpfs(nonce, gw, canary):
     return {"fill": {**filled, "bytes": written["bytes"]}, "planted": planted, "exec": ran}
 
 
+# work-overlay: the writable layer a package kind's server gets (src/docker.mjs writableLayer): /work an overlay over the
+# case's work volume, which the harness seeded as an install would leave it, and /data a 32 MiB tmpfs. The case uses the
+# layer as a server would (a logs folder in site-packages, a copy-up, a whiteout), then tries to get out of it: links out
+# (to the host's canary folder too) and over the files the harness reads out, hard links, a mount over /work, an umount
+# of it, open_by_handle_at, trusted.overlay attributes, a whiteout device, a setuid bit, writes outside, and one
+# allocation past the volume filesystem's cap after LAYER_FILL_MB of real data. The later stage (ours) decides.
+LAYER_FILL_MB = 64
+LAYER_LOGS = "/work/venv/lib/site-packages/logs"
+DATA_PATH = "/data"
+
+
+def libc_call(name, *args):
+    def go():
+        libc = ctypes.CDLL(None, use_errno=True)
+        if getattr(libc, name)(*args) != 0:
+            e = ctypes.get_errno()
+            raise OSError(e, os.strerror(e))
+        return {"worked": True}
+    return attempt(go)
+
+
+def open_by_handle():
+    """open_by_handle_at on a guessed handle (ext4's root, inode 2): the Shocker way past a mount's root."""
+    def go():
+        libc = ctypes.CDLL(None, use_errno=True)
+        handle = ctypes.create_string_buffer(struct.pack("Ii", 8, 1) + struct.pack("II", 2, 0))
+        fd = os.open("/work", os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            r = libc.open_by_handle_at(fd, handle, os.O_RDONLY)
+            if r < 0:
+                e = ctypes.get_errno()
+                raise OSError(e, os.strerror(e))
+            os.close(r)
+            return {"opened": True}
+        finally:
+            os.close(fd)
+    return attempt(go)
+
+
+def step(path, fn):
+    return {"path": path, **attempt(lambda: (fn(), None)[-1])}
+
+
+def case_work_overlay(nonce, gw, canary, host_canary=None):
+    out = {}
+    # The layer as a server uses it: new files, a log folder in its own install, a file of the install changed (a copy-up)
+    # and one removed (a whiteout), a mode changed.
+    out["inside"] = [
+        write(f"/work/isk-new-{nonce}"),
+        step(LAYER_LOGS, lambda: os.makedirs(LAYER_LOGS, exist_ok=True)),
+        write(f"{LAYER_LOGS}/isk-{nonce}.log", f"isk-{nonce}\n".encode()),
+        write("/work/lock/freeze.txt", f"isk-over-{nonce}\n".encode()),
+        step("/work/pkg/package-lock.json", lambda: os.unlink("/work/pkg/package-lock.json")),
+        step("/work/venv/bin/isk-tool", lambda: os.chmod("/work/venv/bin/isk-tool", 0o4755)),
+        # A copy-up of one half of a hard-linked pair the install left (the other half must stay as it is below), then a
+        # hard link inside the layer to the other half (a copy-up of it first).
+        write("/work/venv/lib/site-packages/isk_pair.py", f"isk-pair-{nonce}\n".encode()),
+        step(f"/work/isk-hl-{nonce}", lambda: os.link("/work/venv/lib/site-packages/isk_seed.py", f"/work/isk-hl-{nonce}")),
+    ]
+    # Links out of the layer, read and written through; the read-out files replaced by links to outside.
+    made, reads, writes = [], [], []
+    targets = LINK_TARGETS + ([host_canary, f"{host_canary}/canary"] if host_canary else [])
+    for i, t in enumerate(targets):
+        link = f"/work/isk-l{i:02d}"
+        made.append({"to": t, **attempt(lambda: os.symlink(t, link))})
+        reads.append(read_through(link))
+        writes.append(write_through(link, t, nonce))
+    planted = []
+    for path, to in (("/work/lock/go-version-m.txt", "/proc/self/environ"), ("/work/pkg/package-lock.json", "/etc/passwd")):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        planted.append({"path": path, "to": to, **attempt(lambda: os.symlink(to, path))})
+    out["links"], out["reads"], out["attempts"], out["planted"] = made, reads, writes, planted
+    out["canary_seen"] = sum(int(r.get("canary") or 0) for r in reads)
+    out["host_canary"] = host_canary
+    out["hard"] = [step(f"/work/isk-hard-{nonce}", lambda: os.link("/etc/passwd", f"/work/isk-hard-{nonce}")),
+                   step(f"/tmp/isk-hard-{nonce}", lambda: os.link("/work/lock/freeze.txt", f"/tmp/isk-hard-{nonce}"))]
+    # Out of the layer: writes outside, a mount over /work, an umount of it (MNT_DETACH), a file handle, the overlay's
+    # own attributes (a redirect to elsewhere, an opaque folder), a whiteout device.
+    out["outside"] = [write(p) for p in (f"/etc/isk-{nonce}", f"/usr/local/isk-{nonce}", f"/opt/surface/isk-{nonce}", f"/isk-{nonce}", f"/var/lib/isokron-docker/volumes/isk-{nonce}")]
+    out["mount"] = libc_call("mount", b"none", b"/work", b"tmpfs", 0, None)
+    out["umount"] = libc_call("umount2", b"/work", 2)
+    out["handle"] = open_by_handle()
+    out["xattrs"] = [{"name": n, **attempt(lambda: os.setxattr(f"/work/isk-new-{nonce}", n, b"/etc"))} for n in ("trusted.overlay.redirect", "trusted.overlay.opaque", "user.overlay.redirect")]
+    out["whiteout"] = attempt(lambda: (os.mknod(f"/work/isk-wh-{nonce}", 0o020600, os.makedev(0, 0)), None)[-1])
+    # The fill: real data first (it must land in the layer), then one allocation past the volume filesystem's cap.
+    out["fill"] = fill(f"/work/fill-{nonce}", LAYER_FILL_MB << 20)
+    out["fallocate"] = fallocate(f"/work/big-{nonce}", BOMB_GIB << 30)
+    for p in (f"/work/big-{nonce}",):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+    out["statfs"] = statfs("/work")
+    # /data: 40 MiB into its 32 MiB; a script written there is run too (recorded: runsc does not enforce noexec).
+    path = f"{DATA_PATH}/fill-{nonce}"
+    written = {"bytes": 0}
+
+    def data_fill():
+        chunk = b"\0" * (1 << 20)
+        with open(path, "wb") as f:
+            for _ in range(40):
+                f.write(chunk)
+                f.flush()
+                written["bytes"] += len(chunk)
+        return {"written": True}
+    filled = attempt(data_fill, seconds=20.0)
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+    out["data_fill"] = {**filled, "bytes": written["bytes"]}
+    script = f"{DATA_PATH}/run-{nonce}.sh"
+    attempt(lambda: (open(script, "w").write("#!/bin/sh\nexit 0\n"), os.chmod(script, 0o755), None)[-1])
+    out["data_exec"] = attempt(lambda: {"exit": subprocess.run([script], timeout=5).returncode})
+    # Last, a folder of the install moved (overlayfs may refuse it, EXDEV).
+    out["rename"] = step("/work/pkg", lambda: os.rename("/work/pkg", f"/work/pkg-moved-{nonce}"))
+    return out
+
+
 CASES = {
     "direct-ip": case_direct_ip, "doh-ip": case_doh_ip, "raw-socket": case_raw_socket, "ipv6": case_ipv6, "icmp": case_icmp,
     "docker-host": case_docker_host, "metadata": case_metadata, "env-token": case_env_token, "write-outside": case_write_outside,
     "fork-bomb": case_fork_bomb, "output-forgery": case_output_forgery, "symlink-escape": case_symlink_escape, "unix-socket": case_unix_socket,
     "output-flood": case_output_flood, "background": case_background, "proc-sys": case_proc_sys, "fd-exhaustion": case_fd_exhaustion,
-    "clock-tamper": case_clock_tamper, "volume-tmpfs": case_volume_tmpfs,
+    "clock-tamper": case_clock_tamper, "volume-tmpfs": case_volume_tmpfs, "work-overlay": case_work_overlay,
     "install-proxy-host": case_install_proxy_host, "install-proxy-ip": case_install_proxy_ip, "install-proxy-port": case_install_proxy_port,
     "install-direct": case_install_direct, "install-metadata": case_install_metadata, "install-host": case_install_host,
     "install-archive-bomb": case_install_archive_bomb, "install-git-submodule": case_install_git_submodule,
@@ -909,8 +1031,8 @@ CASES = {
 
 
 def main(argv):
-    if len(argv) not in (5, 6) or argv[1] not in CASES or not argv[4].isdigit() or (len(argv) == 6 and (argv[1] != "symlink-escape" or not argv[5].startswith("/"))):
-        sys.stderr.write("usage: hostile.py <case> <nonce> <gateway> <canary-port> [<host-canary-dir>, symlink-escape only]\n")
+    if len(argv) not in (5, 6) or argv[1] not in CASES or not argv[4].isdigit() or (len(argv) == 6 and (argv[1] not in ("symlink-escape", "work-overlay") or not argv[5].startswith("/"))):
+        sys.stderr.write("usage: hostile.py <case> <nonce> <gateway> <canary-port> [<host-canary-dir>, symlink-escape and work-overlay only]\n")
         return 2
     case, nonce, gw, canary = argv[1], argv[2], argv[3], int(argv[4])
     t0 = time.monotonic()
