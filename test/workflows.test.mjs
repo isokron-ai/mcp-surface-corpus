@@ -32,8 +32,8 @@ const guard = (y) => {
   return { env, script: `${body.join('\n')}\n` };
 };
 
-test('there are exactly six workflows: ci, corpus, sandbox-selftest, sandbox-conformance, conformance-nightly and pin-drift', () => {
-  assert.deepEqual(Object.keys(WF).sort(), ['ci.yml', 'conformance-nightly.yml', 'corpus.yml', 'pin-drift.yml', 'sandbox-conformance.yml', 'sandbox-selftest.yml']);
+test('there are exactly seven workflows: ci, corpus, sandbox-selftest, sandbox-conformance, conformance-nightly, pin-drift and mutation-probe', () => {
+  assert.deepEqual(Object.keys(WF).sort(), ['ci.yml', 'conformance-nightly.yml', 'corpus.yml', 'mutation-probe.yml', 'pin-drift.yml', 'sandbox-conformance.yml', 'sandbox-selftest.yml']);
 });
 
 // The reusable workflow of this repository, and the sandbox guard action from the checked-out sandbox.
@@ -47,6 +47,8 @@ test('every action is pinned by a full commit SHA with its version beside it, ex
     assert.ok(uses.length >= 1, f);
     for (const [, ref, rest] of uses) {
       if (LOCAL_USES.has(ref)) continue;
+      // The caller of tool-qa's reusable mutation-probe workflow: its shape is pinned by test/mutation-probe-caller.test.mjs.
+      if (f === 'mutation-probe.yml' && /^isokron-ai\/tool-qa\/\.github\/workflows\/mutation-probe\.yml@[0-9a-f]{40}$/.test(ref)) continue;
       const m = /^(actions\/(?:checkout|setup-node|upload-artifact|download-artifact))@([0-9a-f]{40})$/.exec(ref);
       assert.ok(m, `${f}: ${ref}`);
       assert.match(rest, /# v\d+\.\d+\.\d+/, `${f}: ${ref} has no version comment`);

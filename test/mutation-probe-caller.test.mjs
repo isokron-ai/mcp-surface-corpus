@@ -8,7 +8,7 @@ const text = readFileSync(new URL('../.github/workflows/mutation-probe.yml', imp
 
 const code = text.split('\n').filter((l) => !/^\s*#/.test(l)).join('\n'); // the workflow without its comments
 
-test('R-PROBE-01: mutation-probe.yml calls the reusable workflow at one full commit and passes the same commit as probe-ref; dispatch only, read-only, no secrets', () => {
+test('R-PROBE-01 mutation-probe.yml calls the reusable workflow at one full commit and passes the same commit as probe-ref; dispatch only, read-only, no secrets', () => {
   const uses = /^\s+uses: isokron-ai\/tool-qa\/\.github\/workflows\/mutation-probe\.yml@([0-9a-f]{40})\s*$/m.exec(text);
   assert.ok(uses, 'uses the reusable workflow, pinned to a full commit');
   assert.match(text, new RegExp(`^\\s+probe-ref: ${uses[1]}\\s*$`, 'm'), 'probe-ref is the same commit');
