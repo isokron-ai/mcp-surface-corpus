@@ -58,6 +58,12 @@ Per kind:
 `latest` is allowed so a list can follow a fast-moving server; the version actually installed is
 recorded, and the diff against the previous run reports the change.
 
+With the driver's `writableWork` option (`--writable-work`), every kind but `docker` runs its server on a writable
+layer of its own per probe instead of the read-only volume: `/work` an overlay over the volume (which stays as the
+install left it) and a 32 MiB `/data` tmpfs, both gone after the probe (SECURITY.md). The target's record says so in
+`writable_work`: `{ layer: "overlay", lower, data, data_size, probes: { bare|env: { layer, error, removed } } }`;
+`layer: false` with an `error` means that probe ran on the read-only volume (our limit).
+
 ## Choosing targets
 
 - Prefer `commit` (reproducible) and an exact package version that matches it.

@@ -6,6 +6,11 @@
  *
  *   node bin/run-shard.mjs --targets T.json --out DIR [--shard N --shards M] [--only s001,s002]
  *                          [--consume-targets] [--images images.json] [--source-cache DIR] [--lane ci|local]
+ *                          [--writable-work]
+ *
+ * --writable-work (or main's writableWork option): each package kind's server gets a writable layer of its own per
+ * probe, an overlay over its work volume at /work and a /data tmpfs (src/docker.mjs writableLayer); the work volume
+ * itself stays as the install left it. Off by default: the server runs on the read-only volume.
  *
  * Local only, never set on CI: SURFACE_SOURCE_CACHE (same as --source-cache: <sha>.tar.gz and
  * <sha>.facts.json for a machine that cannot reach GitHub), SURFACE_IMAGE_MIRROR (a registry mirror
@@ -49,7 +54,7 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, volumePlan, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { DATA_TMPFS, Docker, HarnessError, WRITABLE_KINDS, checkDockerVersion, checkPinned, helperRunArgs, isPublicIp4, sandboxRunArgs, volumePlan, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
 import { lookup } from 'node:dns/promises';
 import { ID, P, idNumber, launchPlan, shardTargets, timeoutOf, validateList } from '../src/targets.mjs';
 import { githubFacts, registryEntry, sourceArchive } from '../src/sources.mjs';
@@ -77,7 +82,7 @@ const MAX_ENV = 40;
 export const PROXY_PORT = 8080;
 
 export function parseArgs(argv) {
-  const o = { lane: 'local', shard: 1, shards: 1, only: null, consume: false, images: join(root, 'images.json'), sourceCache: process.env.SURFACE_SOURCE_CACHE || null };
+  const o = { lane: 'local', shard: 1, shards: 1, only: null, consume: false, writableWork: false, images: join(root, 'images.json'), sourceCache: process.env.SURFACE_SOURCE_CACHE || null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]; const v = () => { if (i + 1 >= argv.length) throw new HarnessError(`${a} needs a value`); return argv[++i]; };
     if (a === '--targets') o.targets = v();
@@ -89,6 +94,7 @@ export function parseArgs(argv) {
     else if (a === '--images') o.images = v();
     else if (a === '--source-cache') o.sourceCache = v();
     else if (a === '--lane') o.lane = v();
+    else if (a === '--writable-work') o.writableWork = true;
     else throw new HarnessError(`unknown option ${a}`);
   }
   if (!o.targets || !o.out) throw new HarnessError('usage: run-shard.mjs --targets T.json --out DIR [--shard N --shards M] [--only IDS]');
@@ -165,6 +171,15 @@ export function readerOption(r) {
   const ok = r && typeof r.dir === 'string' && typeof r.id === 'string' && /^[0-9a-f]{64}$/.test(r.id) && typeof r.entry === 'string' && /^[A-Za-z0-9_.-]{1,64}\.cjs$/.test(r.entry) && existsSync(join(r.dir, r.entry));
   if (!ok) throw new HarnessError('the reader option needs { dir, id, entry } with the entry file in dir');
   return { dir: resolve(r.dir), id: r.id, entry: r.entry };
+}
+
+/**
+ * The `writableWork` option of main (or --writable-work): true gives each package kind's server a writable layer of its
+ * own per probe (src/docker.mjs writableLayer), false (the default) the read-only work volume. Nothing else is accepted.
+ */
+export function writableWorkOption(w) {
+  if (w === true || w === false) return w;
+  throw new HarnessError('the writableWork option is true or false');
 }
 
 /** After the sandbox check: our tools volume, the install CA (local only) and the proxies' egress network. */
@@ -526,7 +541,12 @@ async function runTarget(t, list, ctx, dk) {
           const runImage = plan.targetImage ? image : ctx.images[plan.runImage ?? plan.image];
           if (!plan.targetImage) ctx.imageIds[plan.runImage ?? plan.image] ??= await dk.image(runImage, 'run');
           const cmd = plan.run(entry);
-          const mounts = [...(work ? [{ src: work, dst: P.work, ro: true }] : [])];
+          const roMounts = [...(work ? [{ src: work, dst: P.work, ro: true }] : [])];
+          // With the writableWork option, a package kind's server gets a writable layer of its own per probe (src/docker.mjs
+          // writableLayer): /work an overlay over its work volume, which stays as it is, and a /data tmpfs. A layer that
+          // cannot be made is recorded and the probe runs on the read-only volume, as without the option.
+          const layered = ctx.writableWork === true && !!work && !plan.targetImage && WRITABLE_KINDS.includes(t.launch.kind);
+          if (layered) rec.writable_work = { layer: 'overlay', lower: 'work volume, unchanged', data: [...DATA_TMPFS], data_size: LIMITS.volTmp, probes: {} };
           // What the launch plan itself sets for the server (a .NET runtime's roll-forward, a bundle's PYTHONPATH inside
           // the read-only volume): on top of a target's env, never under it. Its working folder, when it names one.
           const serverEnv = (env) => runEnv({ ...env, ...(plan.runEnv || {}) });
@@ -535,17 +555,45 @@ async function runTarget(t, list, ctx, dk) {
           // An OCI target runs in its image's WORKDIR (ours, /tmp, only when it sets none) with its VOLUMEs as tmpfs.
           // ...or, for a package kind, the working folder its plan names inside its volume (an MCP bundle's folder): one or the
           // other, never both (an OCI target has no work volume).
-          const oci = plan.targetImage && inst.oci ? { ...(inst.oci.workdir ? { workdir: inst.oci.workdir } : {}), tmpfs: inst.oci.volumes } : workdir ? { workdir } : {};
+          const oci0 = plan.targetImage && inst.oci ? { ...(inst.oci.workdir ? { workdir: inst.oci.workdir } : {}), tmpfs: inst.oci.volumes } : workdir ? { workdir } : {};
           const probeOnce = async (net, env, tag) => {
             if (timedOut()) return null;
+            let layer = null;
+            if (layered) {
+              try {
+                layer = await tdk.writableLayer(work, { root: ctx.cfg.docker_root, image: ctx.images.node24, target: id, deadlineMs: Math.max(1000, Math.min(STEP_MS, deadline - Date.now())) });
+                rec.writable_work.probes[tag] = { layer: true, error: null, removed: null };
+              } catch (e) {
+                if (!(e instanceof HarnessError)) throw e;
+                // What was made of it carries the target's labels: the target's sweep removes it.
+                rec.writable_work.probes[tag] = { layer: false, error: String(e.message).slice(0, 200), removed: null };
+              }
+            }
+            const sname = dk.name(id, 's');
+            try {
+              return await probeIn(net, env, tag, layer, sname);
+            } finally {
+              if (layer) {
+                // The server's container first (probeStdioIn and the HTTP branch remove it already; this is for a probe
+                // that threw), then the layer: nothing the server wrote outlives its probe.
+                await tdk.kill(sname);
+                const removed = await tdk.dropLayer(layer);
+                rec.writable_work.probes[tag].removed = removed;
+                if (!removed) rec.errors.push({ step: 'live', error: `the writable layer of probe ${tag} could not be removed` });
+              }
+            }
+          };
+          const probeIn = async (net, env, tag, layer, sname) => {
+            const mounts = layer ? [{ src: layer.volume, dst: P.work, nocopy: true }] : roMounts;
+            const oci = layer ? { ...oci0, tmpfs: [...DATA_TMPFS] } : oci0;
             const transport = t.launch.transport ?? 'stdio';
             let p;
             if (transport === 'stdio') {
-              p = await probeStdioIn(ctx, tdk, { network: net, name: dk.name(id, 's'), image: runImage, labels: lbl, mounts, env: serverEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), meta });
+              p = await probeStdioIn(ctx, tdk, { network: net, name: sname, image: runImage, labels: lbl, mounts, env: serverEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci, timeoutMs: Math.max(1000, Math.min(PROBE_MS, deadline - Date.now())), meta });
             } else {
               // Streamable HTTP: the server at .3 and our probe at .4 of the run network. `server` is a
               // fixed host entry in the probe's container: every other name resolves to the logger.
-              const name = dk.name(id, 's');
+              const name = sname;
               const argv = sandboxRunArgs({ name, image: runImage, network: net, ip: NETS.run.target, resolv: 'run', detach: true, labels: lbl, cpus: ctx.cpus, mounts, env: serverEnv(env), cmd, entrypoint: plan.entrypoint ?? null, ...oci });
               writeSettings(ctx, argv, meta);
               const t1 = Date.now();
@@ -655,9 +703,10 @@ async function runTarget(t, list, ctx, dk) {
 
 /**
  * Options are for the tests (a scripted daemon, no network): makeDocker, probe (the stdio probe),
- * runscConfig, readResolv, readLog, traceWaitMs. The defaults are what CI runs.
+ * runscConfig, readResolv, readLog, traceWaitMs. The defaults are what CI runs. reader and writableWork are a
+ * caller's (mcp-check's live-probe driver): readerOption, writableWorkOption.
  */
-export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, reader = null, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync, resolveHost = (h) => lookup(h, { all: true, family: 4 }) } = {}) {
+export async function main(argv = process.argv.slice(2), { fetchFn = fetch, makeDocker = (o) => new Docker(o), probe = probeStdio, runscConfig = null, reader = null, writableWork = false, readResolv = undefined, readLog = readHostLog, traceWaitMs = 5000, statfs = statfsSync, hostRun = spawnSync, resolveHost = (h) => lookup(h, { all: true, family: 4 }) } = {}) {
   const o = parseArgs(argv);
   const list = validateList(JSON.parse(readFileSync(o.targets, 'utf8')));
   if (o.consume) rmSync(o.targets, { force: true });
@@ -673,6 +722,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     runner: { os: platform(), arch: arch(), kernel: release(), node: process.version },
     baselineMs: null,
     reader: readerOption(reader),
+    writableWork: writableWorkOption(writableWork) || o.writableWork,
     cfg, tel, probe, readLog, traceWaitMs, statfs, hostRun, hostLog: false, resolveRegistries: (names) => resolveRegistries(names, resolveHost), cidDir: join(out, '_shard', 'cid'),
   };
   const dk = makeDocker({ runId, log: join(out, '_shard', 'docker.log') });
@@ -698,7 +748,7 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     ctx.hostLog = pf.hostLog;
     await prepareTools(ctx, dk);
     ctx.baselineMs = await baseline(ctx, dk);
-    Object.assign(shard, { reader: ctx.reader ? { id: ctx.reader.id, tar_sha256: ctx.readerSha } : null, tools_sha256: ctx.toolsSha, install_ca: ctx.installCa, baseline_initialize_ms: ctx.baselineMs, image_ids: ctx.imageIds, cpus: ctx.cpus });
+    Object.assign(shard, { writable_work: ctx.writableWork, reader: ctx.reader ? { id: ctx.reader.id, tar_sha256: ctx.readerSha } : null, tools_sha256: ctx.toolsSha, install_ca: ctx.installCa, baseline_initialize_ms: ctx.baselineMs, image_ids: ctx.imageIds, cpus: ctx.cpus });
     for (const t of shuffled(targets, runId)) {
       // Room for one more target, or the shard stops here: a full disk would lose every result.
       const low = o.lane === 'ci' ? diskProblem(cfg, out, { statfs }) : null;

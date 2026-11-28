@@ -95,6 +95,21 @@ Every container that runs target code (install and server):
   hostile self test checks the cap (ENOSPC at 32 MiB) under runsc. runsc does not enforce `noexec` on these tmpfs
   mounts (seen in the self test, gVisor 20261116.0): a file written there can run, as one written to `/tmp` (mounted
   `exec`) always could, so this grants no new capability; the flag stays for any runtime that honours it;
+- with the `writableWork` option (`--writable-work`, off by default; mcp-check's live-probe sets it), a package
+  kind's server (npm, PyPI, Go, crates, .NET tools, MCP bundles) gets a writable layer of its own per probe instead
+  of the read-only work volume (`src/docker.mjs` `writableLayer`): `/work` is a kernel overlay made by Docker's
+  local volume driver, whose one lower layer is the work volume's own folder under the data-root and whose upper
+  layer is a fresh volume on the same volume filesystem (the cap every work volume has), mounted `nosuid,nodev` and
+  `exec` like the work volume; `/data` is a tmpfs like an image VOLUME's (32 MiB, `noexec,nosuid,nodev`). The
+  overlay's folders are read back from `docker volume inspect` and must be the data-root's own folders of those two
+  volumes, its options must be exactly ours, and a helper must see the work volume through it before the server
+  starts. overlayfs never writes to a lower layer, so the work volume stays as the install left it for the lock
+  read-out and the next probe; the layer is removed with its server's container, before the next probe gets a fresh
+  one. Isolation does not rest on `nosuid` or `noexec` there (runsc may ignore them, as it ignores `noexec` on
+  tmpfs): it rests on gVisor, user 65534, no capabilities and no-new-privileges, as for `/tmp`. The `work-overlay`
+  hostile case runs the layer as a server gets it and checks the work volume under it is unchanged, a fresh layer
+  shows nothing written, the layer is gone after teardown, the fill meets the volume filesystem's cap, and links,
+  hard links, mounts, umount, file handles and overlay attributes lead nowhere;
 - `--memory 2g` (no swap beyond it), at most 2 CPUs, at most 512 processes and threads:
   `--ulimit nproc=512:512`, which gVisor's kernel enforces inside the sandbox (a fork past it fails
   with EAGAIN). `--pids-limit 2048` bounds the sandbox's own host tasks (gVisor's threads and a stub

@@ -303,6 +303,12 @@ static step its own reader instead: `bin/run-shard.mjs` takes a `reader` option 
 folder in the tools volume as `reader/`, and `sandbox/static.mjs --reader` returns that reader's answer as `reader` in
 `static.json`. mcp-check's live-probe lane does this with its own `corpus/static-read.cjs`.
 
+Some servers write into their own install at start (a logs folder in site-packages) or to `/data`, and fail on the
+read-only work volume. A caller that wants them started passes `writableWork: true` (or `--writable-work`): each
+probe of a package kind then gets a writable layer of its own, an overlay over the work volume at `/work` and a
+32 MiB `/data` tmpfs, removed after the probe; the work volume itself is never written (SECURITY.md, and the
+`work-overlay` case of the self test). Records say so in `writable_work`.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

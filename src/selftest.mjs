@@ -28,9 +28,17 @@ import { loadRunscConfig } from './runsc.mjs';
  * one: the proxy is its only door, and these cases try every other way through it and around it.
  */
 export const INSTALL_CASES = ['install-proxy-host', 'install-proxy-ip', 'install-proxy-port', 'install-direct', 'install-metadata', 'install-host', 'install-archive-bomb', 'install-git-submodule'];
-export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', 'output-flood', 'background', 'proc-sys', 'fd-exhaustion', 'clock-tamper', 'volume-tmpfs', ...INSTALL_CASES];
+export const CASES = ['direct-ip', 'doh-ip', 'raw-socket', 'ipv6', 'icmp', 'docker-host', 'metadata', 'env-token', 'write-outside', 'fork-bomb', 'output-forgery', 'symlink-escape', 'unix-socket', 'output-flood', 'background', 'proc-sys', 'fd-exhaustion', 'clock-tamper', 'volume-tmpfs', 'work-overlay', ...INSTALL_CASES];
 /** Where volume-tmpfs's container gets the tmpfs an image VOLUME gets in a corpus run (selftest/hostile.py VOLUME_CASE_PATH). */
 export const VOLUME_CASE_PATH = '/isk-vol';
+/**
+ * work-overlay: the files the harness seeds in the case's work volume before it runs (as an install would leave them:
+ * READOUT_PATHS among them), what the case writes through its layer (each must land in the layer's upper volume, the
+ * positive control), and how much it fills there (LAYER_FILL_MB) before one allocation past the volume filesystem's cap.
+ */
+export const LAYER_SEED = ['/work/lock/freeze.txt', '/work/lock/go-version-m.txt', '/work/pkg/package-lock.json', '/work/venv/lib/site-packages/isk_seed.py', '/work/venv/bin/isk-tool'];
+export const LAYER_WRITES = (nonce) => [`/work/isk-new-${nonce}`, `/work/fill-${nonce}`, `/work/venv/lib/site-packages/logs/isk-${nonce}.log`, '/work/lock/freeze.txt'];
+export const LAYER_FILL_MB = 64;
 /** The sandbox network a case runs on: 'install' for the install cases, else 'run'. */
 export const caseNet = (name) => (INSTALL_CASES.includes(name) ? 'install' : 'run');
 /** What the install cases ask the proxy for, which it must refuse (the proxy-allowlist mutation lets these through). */
@@ -441,6 +449,84 @@ const RULES = {
     const blocked = opened.length >= 1 && !overfull;
     return verdict(blocked, opened.length >= 1, [...opened.map((o) => `trace: write ${o.path} (${o.n} open${o.n === 1 ? '' : 's'})`), ...(fill ? [`report: fill ${fill.ok === false ? `stopped with errno ${fill.errno}` : 'did not stop'} after ${Number(fill.bytes) || 0} bytes (cap ${capBytes})`] : []), ...runs.map((e) => `trace: exec ${e.path} ${e.failed ? `failed ${e.failed}/${e.n} (errno ${e.errno})` : 'ran (runsc does not enforce noexec; /tmp is exec too)'}`)],
       !opened.length ? 'nothing was tried: no write under the volume tmpfs traced' : blocked ? `the volume tmpfs stopped the write at its ${LIMITS.volTmp} cap${fill ? ' with ENOSPC' : ''}` : `got through: the volume tmpfs took ${Number(fill && fill.bytes) || 0} bytes, past its ${LIMITS.volTmp} cap or without ENOSPC`);
+  },
+  // The writable layer a package kind's server gets (src/docker.mjs writableLayer): /work an overlay over the case's work
+  // volume (seeded first, as an install leaves it), /data a tmpfs. The case writes through the layer (a logs folder in
+  // site-packages, a copy-up, a whiteout, 64 MiB), plants links out of it (to the host's canary folder too), replaces
+  // the read-out files with links, tries hard links, mounts, umount, open_by_handle_at, trusted.overlay xattrs and a
+  // whiteout device, writes outside, and allocates past the volume filesystem's cap. Blocked when the work volume under
+  // the layer is exactly as seeded (and the read-out reads it, never a link), a fresh layer over it shows nothing the
+  // case wrote, the case's layer is gone after its teardown, its filesystem is the capped one, the runner's disk and
+  // the host canary did not move, and nothing outside /work, /tmp and /data was written. The positive controls: the
+  // case's writes landed in the layer's upper volume, and the fresh layer shows the seeded work volume.
+  'work-overlay': (ev) => {
+    const st = stageOf(ev);
+    const o = (x) => (x && typeof x === 'object' && !Array.isArray(x) ? x : null);
+    const d = o(st.disk); const lw = o(st.lower); const fr = o(st.fresh); const host = o(st.host);
+    const ro = list(st.readout).filter((r) => r && typeof r === 'object');
+    const outsideW = list(ev.trace && ev.trace.opens_outside).filter((x) => x.op === 'write' && !/^\/data\//.test(String(x.path)));
+    const dataW = list(ev.trace && ev.trace.opens_outside).filter((x) => x.op === 'write' && /^\/data\//.test(String(x.path)));
+    const priv = list(ev.trace && ev.trace.privileged).filter((p) => ['mount', 'umount2', 'open_by_handle_at'].includes(p.name));
+    // A mount over /work and an umount of it, at least (open_by_handle_at too, where runsc traces it): none may work.
+    const privTried = ['mount', 'umount2'].every((n) => priv.some((p) => p.name === n));
+    const links = list(ev.trace && ev.trace.links);
+    const outLinks = links.filter((l) => l.kind === 'symlink' && !inside(l.target));
+    const hard = links.filter((l) => l.kind === 'hard' && l.failed < l.n);
+    const r = resultOf(ev.report);
+    const drop = d && Number.isInteger(d.host_free_drop_mb) ? d.host_free_drop_mb : null;
+    const capOk = !!d && Number(d.layer_fs_mb) > 0 && Number(d.layer_fs_mb) <= VOLUME_CAP.mb * 1.05 && Number(d.layer_fs_inodes) > 0 && Number(d.layer_fs_inodes) <= VOLUME_CAP.inodes * 1.05;
+    const hostDiskOk = drop !== null && drop < HOST_DROP_MB;
+    const hostOk = !!host && host.intact === true && host.planted === 0;
+    const lowerOk = !!lw && lw.intact === true;
+    const leaked = fr ? list(fr.leaked) : [];
+    const freshOk = !!fr && fr.seeded === true && !leaked.length;
+    const gone = st.layer_gone === true;
+    const readOk = ro.length >= READOUT_PATHS.length && ro.every((x) => x.exit === 0 && Number(x.bytes) > 0 && x.seeded === true);
+    const landed = !!d && Number(d.landed) >= LAYER_WRITES('x').length && Number(d.layer_bytes_mb) >= LAYER_FILL_MB - 1;
+    const said = (k) => !!(r[k] && typeof r[k] === 'object' && r[k].ok === true);
+    const dataFill = r.data_fill && typeof r.data_fill === 'object' ? r.data_fill : null;
+    const capBytes = Number(String(LIMITS.volTmp).replace(/m$/, '')) * 1024 * 1024;
+    const veto = !ev.report ? null
+      : said('fallocate') ? 'the target reports an allocation past the volume filesystem\'s cap'
+        : !dataFill || dataFill.ok !== false || dataFill.errno !== 28 || !(Number(dataFill.bytes) <= capBytes) ? `the target reports /data took ${Number(dataFill && dataFill.bytes) || 0} bytes, past its ${LIMITS.volTmp} cap or without ENOSPC`
+          : list(r.xattrs).some((x) => x && x.ok === true && /^trusted\./.test(String(x.name))) ? 'the target reports setting a trusted.overlay attribute'
+            : said('whiteout') ? 'the target reports making a whiteout device'
+              : (Number(r.canary_seen) || 0) > 0 ? 'the target reports reading the host\'s canary through a link'
+                : reportGotThrough(ev.report, (a) => a.written === true && !inside(a.via)) ? 'the target reports a write through a link to outside the work folder'
+                  : null;
+    const blocked = lowerOk && freshOk && gone && readOk && hostOk && hostDiskOk && capOk && outsideW.length >= 4 && outsideW.every(failedAll) && privTried && priv.every(failedAll) && !hard.length && landed && !veto;
+    const logged = !!d && !!lw && !!fr && outsideW.length >= 4 && outLinks.length >= 6 && dataW.length >= 1 && drop !== null;
+    const detail = blocked ? `the work volume under the layer is as seeded, a fresh layer shows none of the case's writes, its layer is gone, the layer's filesystem (${Number(d.layer_fs_mb)} MB) held the fill, and nothing left /work, /tmp and /data`
+      : !d || !lw || !fr ? 'not measured: the later stage did not run'
+        : !lowerOk ? `got through: the case's writes reached the work volume under the overlay (${Number(lw.changed) || 0} entr${Number(lw.changed) === 1 ? 'y' : 'ies'} changed)`
+          : leaked.length ? `got through: a fresh layer over the same work volume shows what the case wrote (${String(leaked[0]).slice(0, 80)})`
+            : !gone ? 'got through: the case\'s layer outlived its teardown'
+              : !readOk ? `got through: the result readout did not read the seeded files (${ro.map((x) => `${String(x.path).slice(0, 40)} exit ${x.exit}`).join(', ').slice(0, 160) || 'no readout'})`
+                : !host ? 'not measured: the host\'s canary folder was not checked'
+                  : !hostOk ? `got through: ${host.planted > 0 ? `${host.planted} file(s) appeared in the host's canary folder` : 'the host\'s canary file changed'}`
+                    : drop === null ? 'not measured: the runner\'s free disk could not be read'
+                      : !hostDiskOk ? `got through: the runner's disk lost ${drop} MB while the case ran (at most ${HOST_DROP_MB} MB allowed)`
+                        : !capOk ? `got through: the layer's filesystem holds ${Number(d.layer_fs_mb)} MB and ${Number(d.layer_fs_inodes)} inodes, past the volume cap of ${VOLUME_CAP.mb} MB and ${VOLUME_CAP.inodes}`
+                          : outsideW.some((x) => x.failed < x.n) ? `got through: a write outside /work, /tmp and /data worked (${String(outsideW.find((x) => x.failed < x.n).path).slice(0, 80)})`
+                            : priv.some((p) => p.failed < p.n) ? `got through: ${priv.find((p) => p.failed < p.n).name} worked`
+                              : hard.length ? `got through: a hard link was made (${String(hard[0].path).slice(0, 60)} -> ${String(hard[0].target).slice(0, 60)})`
+                                : veto ? `got through: ${veto}`
+                                  : !landed ? `not shown to work: the case's writes did not land in the layer (${Number(d.landed) || 0} of ${LAYER_WRITES('x').length} found, ${Number(d.layer_bytes_mb) || 0} MB), so the layer was not shown writable`
+                                    : !fr.seeded ? 'not shown to work: a fresh layer does not show the seeded work volume'
+                                      : `nothing was tried: ${outsideW.length} write(s) outside traced (at least 4 expected), mount ${priv.some((p) => p.name === 'mount') ? 'traced' : 'not traced'}, umount2 ${priv.some((p) => p.name === 'umount2') ? 'traced' : 'not traced'}`;
+    return verdict(blocked, logged, [
+      `later stage: work volume under the layer ${lw ? (lw.intact ? 'as seeded' : `CHANGED (${Number(lw.changed) || 0})`) : 'not read'}${lw ? `, ${Number(lw.entries) || 0} entries` : ''}`,
+      `later stage: a fresh layer ${fr ? `shows ${fr.seeded ? 'the seeded files' : 'NOT the seeded files'} and ${leaked.length ? `${leaked.length} of the case's writes` : 'none of the case\'s writes'}` : 'not made'}`,
+      `later stage: the case's layer ${gone ? 'is gone' : st.layer_gone === false ? 'is STILL THERE' : 'not checked'} after its teardown`,
+      d ? `later stage: the layer's filesystem is ${Number(d.layer_fs_mb)} MB, ${Number(d.layer_fs_inodes)} inodes; ${Number(d.landed) || 0} of ${LAYER_WRITES('x').length} writes and ${Number(d.layer_bytes_mb) || 0} MB in its upper volume` : 'later stage: no measurement',
+      drop !== null ? `host: the runner's disk lost ${drop} MB while the case ran` : 'host: not measured',
+      host ? `host: canary ${host.intact ? 'intact' : 'CHANGED'}, ${host.planted} new file(s)` : 'host: not checked',
+      ...ro.map((x) => `readout: ${String(x.path).slice(0, 60)} exit ${x.exit}, ${Number(x.bytes) || 0} bytes${x.seeded ? ', as seeded' : ''}`),
+      ...outsideW.slice(0, 4).map((x) => `trace: write ${String(x.path).slice(0, 70)} failed ${x.failed}/${x.n} (errno ${x.errno})`),
+      ...priv.map((p) => `trace: ${p.name} failed ${p.failed}/${p.n} (errno ${p.errno})`),
+      ...dataW.slice(0, 2).map((x) => `trace: write ${String(x.path).slice(0, 70)} (the /data tmpfs)`),
+      `trace: ${outLinks.length} link(s) out of the layer, ${links.filter((l) => l.kind === 'hard').length} hard link call(s), ${hard.length} made`,
+    ], detail);
   },
   'clock-tamper': (ev) => {
     const priv = list(ev.trace && ev.trace.privileged).filter((p) => p.name === 'settimeofday' || p.name === 'clock_settime');

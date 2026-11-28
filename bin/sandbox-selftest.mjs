@@ -30,12 +30,12 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Docker, HarnessError, checkDockerVersion, dockerEnvFrom, helperRunArgs, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
+import { DATA_TMPFS, Docker, HarnessError, checkDockerVersion, dockerEnvFrom, helperRunArgs, sandboxRunArgs, LIMITS, LABEL_RUN, LABEL_TARGET } from '../src/docker.mjs';
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, fromProxy, newRunId, readTelemetry } from '../src/telemetry.mjs';
-import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, VOLUME_CASE_PATH, caseNet, evaluateCase } from '../src/selftest.mjs';
+import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, LAYER_SEED, LAYER_WRITES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, VOLUME_CASE_PATH, caseNet, evaluateCase } from '../src/selftest.mjs';
 import { PROXY_LOG_CAP, imageHoles, firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { lookup } from 'node:dns/promises';
@@ -74,6 +74,8 @@ export const MUTATIONS = {
   'runc-proc': 'proc-sys runs under runc (as runtime-runc), where /proc and /sys are the host kernel\'s',
   nofile: 'the case container has no --ulimit nofile: Docker\'s default descriptor limit',
   'target-time': 'the harness writes the case\'s output records at the time the target claims (its measured_at), not its own clock',
+  'overlay-lower-rw': 'work-overlay\'s container gets its work volume itself, read-write, at /work instead of the writable layer over it',
+  'overlay-keep': 'work-overlay\'s layer is not removed when its container is torn down (as a corpus run would leave it if it skipped dropLayer)',
 };
 
 /**
@@ -154,6 +156,15 @@ export function mutateHost(disable, run = spawnSync) {
  * CAP_DAC_READ_SEARCH can no longer reach what is inside it.
  */
 export const WORK_VOLUME_CMD = 'chmod 0750 /work && mkdir /work/home && chown 65534:65534 /work/home /work';
+
+/** work-overlay: what the harness seeds at each LAYER_SEED path before the case (one line naming the path and the nonce). */
+export const seedContent = (path, nonce) => `isk-seed-${nonce} ${path}\n`;
+/** The helper's command (65534, the work volume read-write) that seeds it, as an install would leave it. Paths and nonce are ours. */
+export function layerSeedCmd(nonce) {
+  if (!/^[0-9a-f]{16}$/.test(String(nonce))) throw new HarnessError('a seed takes a nonce of ours');
+  const dirs = [...new Set(LAYER_SEED.map((p) => p.replace(/\/[^/]+$/, '')))];
+  return [`mkdir -p ${dirs.join(' ')}`, ...LAYER_SEED.map((p) => `printf '%s\\n' 'isk-seed-${nonce} ${p}' > ${p}`), 'chmod 0755 /work/venv/bin/isk-tool'].join(' && ');
+}
 
 /** The env the hostile target gets: what any target gets, nothing of the runner's. */
 const CASE_ENV = { HOME: P.home, TMPDIR: '/tmp', NO_COLOR: '1', PYTHONDONTWRITEBYTECODE: '1', PYTHONUNBUFFERED: '1', SURFACE_SANDBOX: '1' };
@@ -341,6 +352,43 @@ const STAGES = {
   'proc-sys': async (ctx, { stdout }) => ({ host_facts: hostFactsIn(stdout, ctx.cfg) }),
   // What Docker kept of the flood is the case's target_output record; the harness adds how far the runner's disk fell.
   'output-flood': async () => ({ disk: {} }),
+  // The writable layer, after the case: its upper volume (did the case's writes land there, on which filesystem), the work
+  // volume under it (exactly as seeded? does the readout read the seeded files?), then the case's layer torn down as a
+  // corpus run tears it down (gone?), and a fresh layer over the same work volume, as the next probe gets (does it show
+  // the seeded files, and nothing the case wrote?).
+  'work-overlay': async (ctx, { work, lbl, name, id, nonce, layer, seeded }) => {
+    if ((await ctx.dk.anyRunning([id])).length) throw new HarnessError('the case container is still running: its layer is not read');
+    const stage = async (mounts, args) => lastLine((await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'stage'), image: ctx.images.node22, labels: lbl, mounts: [...mounts, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, ...args] }), { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 120_000 })).stdout);
+    const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+    const writes = LAYER_WRITES(nonce);
+    const up = await stage([{ src: layer.upper, dst: '/layer', ro: true }], ['layer', '/layer', ...writes.map((p) => `/layer/upper${p.slice(P.work.length)}`)]);
+    const ud = up && up.disk && typeof up.disk === 'object' ? up.disk : null;
+    const disk = ud ? { layer_fs_mb: n(ud.work_fs_mb), layer_fs_inodes: n(ud.work_fs_inodes), layer_bytes_mb: n(ud.work_bytes_mb), landed: Object.values(up.exists || {}).filter((x) => x === true).length } : null;
+    const after = await stage([{ src: work, dst: P.work, ro: true }], ['tree', P.work]);
+    const ta = after && after.tree && typeof after.tree === 'object' ? after.tree : null;
+    const before = new Map((seeded && Array.isArray(seeded.items) ? seeded.items : []).map(([p, h]) => [p, h]));
+    const now = new Map((ta && Array.isArray(ta.items) ? ta.items : []).map(([p, h]) => [p, h]));
+    const changed = [...new Set([...before.keys(), ...now.keys()])].filter((k) => before.get(k) !== now.get(k)).length;
+    const lower = ta && seeded ? { intact: ta.sha256 === seeded.sha256 && ta.entries === seeded.entries, entries: ta.entries, changed } : null;
+    const readout = [];
+    for (const path of READOUT_PATHS) {
+      const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'readout'), image: ctx.images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }], cmd: workReadCmd(path, 1024 * 1024) }), { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 60_000 });
+      readout.push({ path, exit: Number.isInteger(r.exit) ? r.exit : null, bytes: r.stdout_bytes, seeded: r.exit === 0 && r.stdout.toString('utf8') === seedContent(path, nonce) });
+    }
+    // The teardown a corpus run does after each server: its container, then its layer.
+    await ctx.dk.kill(id);
+    // (the overlay-keep mutation leaves the layer where it is, and asks Docker the same way)
+    const gone = ctx.disable === 'overlay-keep' ? await ctx.dk.layerGone(layer) : await ctx.dk.dropLayer(layer);
+    let fresh = null;
+    const fl = await ctx.dk.writableLayer(work, { root: ctx.cfg.docker_root, image: ctx.images.node22, target: name });
+    try {
+      const leakPaths = [`${P.work}/isk-new-${nonce}`, `${P.work}/fill-${nonce}`, `${P.work}/venv/lib/site-packages/logs`, `${P.work}/isk-l00`, `${P.work}/isk-wh-${nonce}`];
+      const ex = await stage([{ src: fl.volume, dst: P.work, ro: true, nocopy: true }], ['exists', ...leakPaths, ...LAYER_SEED]);
+      const e = ex && ex.exists && typeof ex.exists === 'object' ? ex.exists : null;
+      fresh = e ? { seeded: LAYER_SEED.every((p) => e[p] === true), leaked: leakPaths.filter((p) => e[p] !== false).map((p) => clip(p, 100)) } : null;
+    } finally { await ctx.dk.dropLayer(fl); }
+    return { disk, lower, readout, fresh, layer_gone: gone };
+  },
   // The filesystem the work volume lives on, as a helper sees it, and how far the runner's disk fell.
   'install-archive-bomb': async (ctx, { work, lbl, name }) => {
     const r = await ctx.dk.d(helperRunArgs({ name: ctx.dk.name(name, 'measure'), image: ctx.images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, 'measure', P.work] }), { keepStdout: true, logStdout: false, cap: 64 * 1024, deadline: Date.now() + 120_000 });
@@ -390,24 +438,37 @@ async function runCase(name, ctx) {
       work = u.name; ctx.cleanup.push(u.dir);
     } else work = await dk.volume(`surface-${dk.runId}-${name}-work`, name);
     await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, user: '0:0', capAdd: ['CHOWN'], labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', WORK_VOLUME_CMD] }), { deadline: Date.now() + 120_000 }), 'work volume');
+    // work-overlay: the work volume seeded as an install leaves it, its tree read, and the writable layer over it that a
+    // package kind's server gets in a corpus run (src/docker.mjs writableLayer), made the same way.
+    let layer = null; let seeded = null;
+    if (name === 'work-overlay') {
+      await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, labels: lbl, mounts: [{ src: work, dst: P.work }], cmd: ['sh', '-c', layerSeedCmd(nonce)] }), { deadline: Date.now() + 120_000 }), 'work volume seed');
+      const t = await dk.must(dk.d(helperRunArgs({ name: dk.name(name, 'h'), image: images.node22, labels: lbl, mounts: [{ src: work, dst: P.work, ro: true }, { src: ctx.toolsVol, dst: P.tools, ro: true }], cmd: ['node', `${P.tools}/selftest/stage.mjs`, 'tree', P.work] }), { keepStdout: true, logStdout: false, cap: 1024 * 1024, deadline: Date.now() + 120_000 }), 'work volume tree');
+      const o = lastLine(t.stdout);
+      seeded = o && o.tree && typeof o.tree === 'object' && /^[0-9a-f]{64}$/.test(String(o.tree.sha256)) ? o.tree : null;
+      if (!seeded) throw new HarnessError('the seeded work volume could not be read');
+      layer = await dk.writableLayer(work, { root: cfg.docker_root, image: images.node22, target: name });
+    }
     netlog = await startNetlogOn(dk, { net: netName, network, image: images.node22, toolsVol: ctx.toolsVol, labels: lbl, target: name });
     if (netName === 'install') proxy = await startProxy(dk, ctx, { inNet: network, name, lbl });
     canary = await listenCanary(NET.gateway, CANARY_PORT);
     extra.canary_bound = canary.bound;
-    if (name === 'symlink-escape') hostCanary = plantHostCanary(out, nonce);
+    if (name === 'symlink-escape' || name === 'work-overlay') hostCanary = plantHostCanary(out, nonce);
     // install-archive-bomb, output-flood: the runner's own disk (its root, and --out), watched while
     // they run. Docker's data-root and volumes are filesystems of their own, reserved up front.
-    if (name === 'install-archive-bomb' || name === 'output-flood') disk = watchFree(['/', out]);
+    if (name === 'install-archive-bomb' || name === 'output-flood' || name === 'work-overlay') disk = watchFree(['/', out]);
 
     const cname = dk.name(name, 'case');
     // An install case runs as an npm install with scripts runs: in the node24-build image, at .4 of
     // the install network, with the proxy in its environment.
     let argv = sandboxRunArgs({
       name: cname, image: netName === 'install' ? images['node24-build'] : images.python, network, ip: NET.target, resolv: netName, detach: true, labels: lbl, workdir: P.work,
-      mounts: [{ src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: netName === 'install' ? INSTALL_CASE_ENV : CASE_ENV,
+      // work-overlay: the layer at /work (the overlay-lower-rw mutation: the work volume under it, read-write), /data a tmpfs.
+      mounts: [layer ? { src: ctx.disable === 'overlay-lower-rw' ? work : layer.volume, dst: P.work, nocopy: true } : { src: work, dst: P.work }, { src: ctx.toolsVol, dst: P.tools, ro: true }], env: netName === 'install' ? INSTALL_CASE_ENV : CASE_ENV,
       cmd: ['python3', `${P.tools}/selftest/hostile.py`, name, nonce, NET.gateway, String(CANARY_PORT), ...(hostCanary ? [hostCanary.dir] : [])],
       // volume-tmpfs: the tmpfs an OCI image's VOLUME gets in a corpus run, made the same way.
       ...(name === 'volume-tmpfs' ? { tmpfs: [VOLUME_CASE_PATH] } : {}),
+      ...(name === 'work-overlay' ? { tmpfs: [...DATA_TMPFS] } : {}),
       hostEnv: process.env,
     });
     if (ctx.disable) argv = mutateCaseArgs(argv, ctx.disable, canaries);
@@ -466,7 +527,7 @@ async function runCase(name, ctx) {
 
     // The later stage, if the case has one: what a stage after it would meet of what it left behind.
     if (STAGES[name]) {
-      ev.stage = await STAGES[name](ctx, { work, lbl, name, network, nonce, id, stdout: logs.stdout.toString('utf8'), t0, mono0 });
+      ev.stage = await STAGES[name](ctx, { work, lbl, name, network, nonce, id, stdout: logs.stdout.toString('utf8'), t0, mono0, layer, seeded });
       if (before && before.reach) ev.stage.reach_before = before.reach;
       if (before && before.grow) ev.stage.grow_before = before.grow;
       if (hostCanary) { ev.stage.host = checkHostCanary(hostCanary, out, nonce); hostCanary = null; }

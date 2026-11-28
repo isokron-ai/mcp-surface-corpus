@@ -40,7 +40,7 @@ on:
   workflow_call:
     inputs:
       mutations:
-        description: Also run the mutation matrix (each protection off in turn; twenty more jobs).
+        description: Also run the mutation matrix (each protection off in turn; twenty-two more jobs).
         type: boolean
         required: false
         default: false
@@ -92,7 +92,7 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    # Twenty-six cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
+    # Twenty-eight cases of at most two minutes each (CASE_MS), plus the gVisor install and image pulls.
     timeout-minutes: 60
     outputs:
       sandbox-sha: ${{ steps.which.outputs.sha }}
@@ -206,6 +206,10 @@ jobs:
             cases: fd-exhaustion
           - disable: target-time
             cases: clock-tamper
+          - disable: overlay-lower-rw
+            cases: work-overlay
+          - disable: overlay-keep
+            cases: work-overlay
     steps:
       - id: which
         name: Name the sandbox commit and the artifact
