@@ -555,7 +555,7 @@ async function runTarget(t, list, ctx, dk) {
           // An OCI target runs in its image's WORKDIR (ours, /tmp, only when it sets none) with its VOLUMEs as tmpfs.
           // ...or, for a package kind, the working folder its plan names inside its volume (an MCP bundle's folder): one or the
           // other, never both (an OCI target has no work volume).
-          const oci0 = plan.targetImage && inst.oci ? { ...(inst.oci.workdir ? { workdir: inst.oci.workdir } : {}), tmpfs: inst.oci.volumes } : workdir ? { workdir } : {};
+          const oci = plan.targetImage && inst.oci ? { ...(inst.oci.workdir ? { workdir: inst.oci.workdir } : {}), tmpfs: inst.oci.volumes } : workdir ? { workdir } : {};
           const probeOnce = async (net, env, tag) => {
             if (timedOut()) return null;
             let layer = null;
@@ -571,7 +571,7 @@ async function runTarget(t, list, ctx, dk) {
             }
             const sname = dk.name(id, 's');
             try {
-              return await probeIn(net, env, tag, layer, sname);
+              return await probeIn(net, env, tag, layer, sname, layer ? { ...oci, tmpfs: [...DATA_TMPFS] } : oci);
             } finally {
               if (layer) {
                 // The server's container first (probeStdioIn and the HTTP branch remove it already; this is for a probe
@@ -583,9 +583,9 @@ async function runTarget(t, list, ctx, dk) {
               }
             }
           };
-          const probeIn = async (net, env, tag, layer, sname) => {
+          // oci: the start settings of this probe (with a layer, its /data tmpfs too).
+          const probeIn = async (net, env, tag, layer, sname, oci) => {
             const mounts = layer ? [{ src: layer.volume, dst: P.work, nocopy: true }] : roMounts;
-            const oci = layer ? { ...oci0, tmpfs: [...DATA_TMPFS] } : oci0;
             const transport = t.launch.transport ?? 'stdio';
             let p;
             if (transport === 'stdio') {
