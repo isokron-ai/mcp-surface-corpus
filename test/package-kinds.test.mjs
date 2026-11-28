@@ -127,6 +127,42 @@ test('R-SBX-38 mutation check: the validator\'s crate, NuGet id and bundle URL c
   }
 });
 
+// ------------------------------------------------------------------ Go install
+
+test('R-SBX-62 a Go install builds a repository at its commit in the pinned Go image: read-only module files, no VCS stamp, the image\'s own toolchain, the module proxy and checksum database only, within the build cap, its caches removed after', () => {
+  const sha = 'a1'.repeat(20);
+  const l = { kind: 'go', module: 'github.com/o/n/cmd/srv', version: sha, args: ['--stdio'] };
+  assert.doesNotThrow(() => validateTarget(base(l)));
+  const p = launchPlan(l);
+  assert.deepEqual([p.image, p.runImage], ['go', 'node24']);
+  assert.deepEqual(p.registries, ['proxy.golang.org', 'sum.golang.org'], 'no host but the module proxy and the checksum database (storage.googleapis.com only when a proof shows a build needs it)');
+  const inst = p.install.find((s) => s.name === 'install');
+  assert.deepEqual(inst.cmd, ['go', 'install', `github.com/o/n/cmd/srv@${sha}`], 'the commit, never latest');
+  assert.equal(inst.capMs, BUILD_CAP_MS);
+  assert.equal(inst.env.GOFLAGS, '-mod=readonly -buildvcs=false');
+  assert.equal(inst.env.CGO_ENABLED, '0');
+  assert.equal(inst.env.GOTOOLCHAIN, 'local');
+  assert.equal(inst.env.GOPROXY, 'https://proxy.golang.org');
+  assert.equal(inst.env.GOSUMDB, 'sum.golang.org');
+  assert.ok(Object.values(inst.env).every((v) => !/git/i.test(v)), 'no VCS host in the build env');
+  assert.deepEqual(p.install.map((s) => s.name), ['prep', 'install', 'buildinfo', 'clean']);
+  assert.ok(p.install.findIndex((s) => s.name === 'prep') < p.install.findIndex((s) => s.name === 'install'), 'the scratch folder exists before the build');
+  assert.match(p.install.find((s) => s.name === 'clean').cmd.join(' '), /rm -rf \/work\/go \/work\/gocache \/work\/gotmp/);
+  assert.deepEqual(p.run(), ['/work/bin/srv', '--stdio']);
+  const root = launchPlan({ kind: 'go', module: 'github.com/o/n', version: sha });
+  assert.deepEqual(root.run(), ['/work/bin/n'], 'the module root builds a binary named for the repository');
+  for (const k of [p.image, p.runImage, ...p.install.map((s) => s.image)].filter(Boolean)) assert.ok(IMAGE_KEYS.includes(k), k);
+  const images = JSON.parse(readFileSync(new URL('../images.json', import.meta.url), 'utf8'));
+  assert.match(images.go, /^docker\.io\/library\/golang:[0-9.]+-alpine@sha256:[0-9a-f]{64}$/, 'an official Go image, pinned by digest');
+  // A branch, a tag-less ref, a query or a second @ are not versions; a package path is a path, never a flag or a URL.
+  for (const version of ['main', 'HEAD', '-mod=mod', 'v1.0.0 --x']) {
+    assert.throws(() => validateTarget(base({ kind: 'go', module: 'github.com/o/n', version })), /vX\.Y\.Z, a commit, or "latest"/, version);
+  }
+  for (const module of ['-x=y', 'https://github.com/o/n', 'github.com/o/n@v1', 'github.com/o/n cmd']) {
+    assert.throws(() => validateTarget(base({ kind: 'go', module, version: sha })), /Go package path/, module);
+  }
+});
+
 // ------------------------------------------------------------------ cargo-entry.mjs
 
 function crates(installs, bins = []) {

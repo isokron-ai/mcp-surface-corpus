@@ -96,7 +96,7 @@ test('launch plans: install with scripts off, run without npx or a shell, lock f
   assert.equal(py.locks[0].name, 'freeze.txt');
   const go = launchPlan({ kind: 'go', module: 'github.com/o/n/cmd/srv', version: 'v1.0.0' });
   assert.deepEqual([go.image, go.runImage], ['go', 'node24']);
-  assert.equal(go.install[0].env.CGO_ENABLED, '0');
+  assert.equal(go.install.find((x) => x.name === 'install').env.CGO_ENABLED, '0');
   assert.deepEqual(go.run(), ['/work/bin/srv']);
   const dk = launchPlan({ kind: 'docker', image: `x/y@sha256:${'a'.repeat(64)}`, args: ['--stdio'] });
   assert.deepEqual([dk.install.length, dk.targetImage.startsWith('x/y@sha256:'), dk.run()], [0, true, ['--stdio']]);

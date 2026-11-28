@@ -184,6 +184,12 @@ export const NATIVE_BUILD_ENV = Object.freeze({ npm_config_nodedir: '/usr/local'
 export const BUILD_CAP_MS = 15 * 60_000;
 export const INSTALL_CAP_MS = 5 * 60_000;
 
+/** The hosts a Go build may reach: the module proxy and the checksum database (R-SBX-62). */
+export const GO_REGISTRIES = Object.freeze(['proxy.golang.org', 'sum.golang.org']);
+
+/** A Go install: its folders in the work volume, read-only module files, no VCS stamp, no cgo, no telemetry, the image's own toolchain. */
+export const GO_ENV = Object.freeze({ GOBIN: `${P.work}/bin`, GOPATH: `${P.work}/go`, GOCACHE: `${P.work}/gocache`, GOTMPDIR: `${P.work}/gotmp`, GOFLAGS: '-mod=readonly -buildvcs=false', CGO_ENABLED: '0', GOTOOLCHAIN: 'local', GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org', GOTELEMETRY: 'off' });
+
 /** A crate's build: its own folders in the work volume, crates.io's sparse index, two jobs, no colour or progress bars. */
 export const CARGO_ENV = Object.freeze({ CARGO_HOME: `${P.work}/cargo-home`, CARGO_TARGET_DIR: `${P.work}/target`, CARGO_TERM_COLOR: 'never', CARGO_TERM_PROGRESS_WHEN: 'never', CARGO_BUILD_JOBS: '2', CARGO_NET_RETRY: '2', CARGO_HTTP_TIMEOUT: '60', CARGO_REGISTRIES_CRATES_IO_PROTOCOL: 'sparse', CARGO_INCREMENTAL: '0' });
 
@@ -285,13 +291,22 @@ export function launchPlan(l) {
     };
   }
   if (l.kind === 'go') {
+    // `go install <package path>@<version>` in the pinned Go image (images.json), at most BUILD_CAP_MS. The version is a
+    // release tag or a full commit; a commit is how a repository with no release is built at the commit it was read at.
+    // The module proxy and the checksum database are the only doors (R-SBX-62); a module that needs another host fails
+    // as a denied host, which the harness tells apart from a failure of the package. Read-only module files (-mod=readonly),
+    // no VCS stamp (the image has no git), the toolchain the image has (GOTOOLCHAIN=local), no cgo, and Go's own
+    // scratch folder in the work volume (the sandbox's /tmp is small). The module cache and the build cache are removed
+    // after the build, so what the server's container mounts is the binary and the build record.
     const base = l.module.split('/').filter((x) => !/^v[0-9]+$/.test(x)).pop();
     return {
       image: 'go',
-      registries: ['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com'],
+      registries: [...GO_REGISTRIES],
       install: [
-        { name: 'install', cmd: ['go', 'install', `${l.module}@${l.version}`], env: { GOBIN: `${P.work}/bin`, GOPATH: `${P.work}/go`, GOCACHE: `${P.work}/gocache`, GOFLAGS: '-mod=mod', CGO_ENABLED: '0', GOTOOLCHAIN: 'local', GOPROXY: 'https://proxy.golang.org', GOSUMDB: 'sum.golang.org' } },
+        { name: 'prep', cmd: ['mkdir', '-p', `${P.work}/gotmp`] },
+        { name: 'install', capMs: BUILD_CAP_MS, cmd: ['go', 'install', `${l.module}@${l.version}`], env: GO_ENV },
         { name: 'buildinfo', cmd: ['sh', '-c', `mkdir -p /work/lock && go version -m "/work/bin/$1" > /work/lock/go-version-m.txt`, 'sh', base] },
+        { name: 'clean', cmd: ['sh', '-c', 'chmod -R u+w /work/go /work/gocache /work/gotmp 2>/dev/null; rm -rf /work/go /work/gocache /work/gotmp'] },
       ],
       locks: [{ path: `${P.work}/lock/go-version-m.txt`, name: 'go-version-m.txt' }],
       // A static binary (CGO_ENABLED=0): it runs in the node image, which has no Go toolchain.
