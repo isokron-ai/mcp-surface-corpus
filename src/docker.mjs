@@ -500,12 +500,18 @@ export class Docker {
 
   /**
    * Removes a layer (the overlay volume, then its upper volume; the work volume under it stays as it is) once no
-   * container of it is left, and says whether both are gone: true, or false when Docker still lists either.
+   * container of it is left: { removed, error }. Never with -f (which drops Docker's record of a volume it failed to
+   * remove, and the data with it would stay on the volume filesystem unlisted), and the upper volume only once the
+   * overlay volume is gone (never an upperdir a mounted overlay still uses). removed is true only when Docker lists
+   * neither any more.
    */
   async dropLayer(layer) {
-    if (!layer) return true;
-    for (const v of [layer.volume, layer.upper]) await this.d(['volume', 'rm', '-f', v], { deadline: Date.now() + 60_000 });
-    return this.layerGone(layer);
+    if (!layer) return { removed: true, error: null };
+    for (const [v, what] of [[layer.volume, 'overlay'], [layer.upper, 'upper']]) {
+      const r = await this.d(['volume', 'rm', v], { deadline: Date.now() + 60_000 });
+      if (r.exit !== 0) return { removed: false, error: `the ${what} volume could not be removed (exit ${r.exit}${r.timed_out ? ', time limit' : ''}): ${tailLine(r.stderr_tail || '', 120)}`.slice(0, 200) };
+    }
+    return (await this.layerGone(layer)) ? { removed: true, error: null } : { removed: false, error: 'Docker still lists a volume of the layer after its removal' };
   }
 
   /** Whether Docker lists neither of a layer's volumes any more. */
@@ -568,6 +574,11 @@ export class Docker {
     const nets = await list(['network', 'ls', '-q', ...f]);
     if (nets.length) await this.d(['network', 'rm', ...nets]);
     const vols = await list(['volume', 'ls', '-q', ...f]);
-    if (vols.length) await this.d(['volume', 'rm', '-f', ...vols]);
+    // Writable layers first, without -f: while one is still there, no upper volume goes (it may be its upperdir).
+    const layers = vols.filter((v) => /-layer\d+$/.test(v));
+    let stuck = false;
+    for (const v of layers) if ((await this.d(['volume', 'rm', v])).exit !== 0) stuck = true;
+    const rest = vols.filter((v) => !layers.includes(v) && !(stuck && /-up\d+$/.test(v)));
+    if (rest.length) await this.d(['volume', 'rm', '-f', ...rest]);
   }
 }

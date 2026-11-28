@@ -16,7 +16,7 @@
 //       much of it is used; { disk: { work_fs_mb, work_fs_inodes, work_used_mb, work_files } }
 //   node stage.mjs tree DIR
 //       every entry under DIR (links not followed: a link is its target as written), with its kind, mode,
-//       size and the sha256 of a file's bytes, and one digest over them all (work-overlay: the work volume
+//       owner, group, link count, size and the sha256 of a file's bytes, and one digest over them all (work-overlay: the work volume
 //       under a layer, before and after the case); { tree: { entries, sha256, items: [[path, sha256]] } }
 //   node stage.mjs layer DIR PATH...
 //       measure DIR (a layer's upper volume, read-only) and whether each PATH exists in it (links not
@@ -64,6 +64,13 @@ export function measure(dir, { maxEntries = 200_000, statfs = statfsSync } = {})
 const sha = (b) => createHash('sha256').update(b).digest('hex');
 const there = (p) => { try { lstatSync(p); return true; } catch { return false; } };
 
+/** One entry of a tree: kind, mode, owner, group, link count, then a file's size and digest or a link's target. */
+export function entryOf(l, extra = '') {
+  const kind = l.isSymbolicLink() ? 'l' : l.isDirectory() ? 'd' : l.isFile() ? 'f' : `o${l.mode >>> 12}`;
+  const head = `${kind} ${(l.mode & 0o7777).toString(8)} ${l.uid}:${l.gid} ${l.nlink}`;
+  return kind === 'f' ? `${head} ${l.size} ${extra}` : kind === 'l' ? `${head} ${extra}` : head;
+}
+
 /** Every entry under a folder, bounded, links not followed; one digest over the sorted entries. */
 export function tree(dir, { maxEntries = 20_000, maxFile = 16 * 1024 * 1024, maxItems = 2000 } = {}) {
   const items = []; const stack = [''];
@@ -74,11 +81,9 @@ export function tree(dir, { maxEntries = 20_000, maxFile = 16 * 1024 * 1024, max
     for (const n of names) {
       const r = rel ? `${rel}/${n}` : n; const p = join(dir, r);
       let l; try { l = lstatSync(p); } catch (e) { items.push([r, `gone ${e.code || 'error'}`]); continue; }
-      const mode = (l.mode & 0o7777).toString(8);
-      if (l.isSymbolicLink()) { let to = '?'; try { to = readlinkSync(p); } catch { /* as ? */ } items.push([r, `l ${mode} ${to}`]); } else if (l.isDirectory()) { items.push([r, `d ${mode}`]); stack.push(r); } else if (l.isFile()) {
-        let h = 'big'; if (l.size <= maxFile) { try { h = sha(readFileSync(p)); } catch (e) { h = `unreadable ${e.code || 'error'}`; } }
-        items.push([r, `f ${mode} ${l.size} ${h}`]);
-      } else items.push([r, `o ${mode} ${l.mode >>> 12}`]);
+      let extra = '';
+      if (l.isSymbolicLink()) { try { extra = readlinkSync(p); } catch { extra = '?'; } } else if (l.isDirectory()) stack.push(r); else if (l.isFile() && l.size <= maxFile) { try { extra = sha(readFileSync(p)); } catch (e) { extra = `unreadable ${e.code || 'error'}`; } } else if (l.isFile()) extra = 'big';
+      items.push([r, entryOf(l, extra)]);
       if (items.length >= maxEntries) break;
     }
   }

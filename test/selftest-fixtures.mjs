@@ -111,10 +111,10 @@ export const GOOD = {
     trace: trace({
       opens_outside: [...['/etc/isk-1', '/usr/local/isk-1', '/opt/surface/isk-1', '/isk-1'].map((path) => fail({ path, op: 'write', call: 'openat', errno: 30 })), fail({ path: '/var/lib/isokron-docker/volumes/isk-1', op: 'write', call: 'openat', errno: 2 }), ok({ path: '/data/fill-1', op: 'write', call: 'openat' }), ok({ path: '/data/run-1.sh', op: 'write', call: 'openat' })],
       privileged: [fail({ name: 'mount', errno: 1 }), fail({ name: 'umount2', errno: 1 }), fail({ name: 'open_by_handle_at', errno: 1 })],
-      links: [...['/', '/etc', '/etc/shadow', '/etc/passwd', '/root', '/proc/1/root', '/var/lib/isokron-docker'].map((target, i) => ok({ kind: 'symlink', target, path: `/work/isk-l0${i}` })), fail({ kind: 'hard', target: '/etc/passwd', path: '/work/isk-hard-1', errno: 18 }), fail({ kind: 'hard', target: '/work/lock/freeze.txt', path: '/tmp/isk-hard-1', errno: 18 })],
+      links: [...['/', '/etc', '/etc/shadow', '/etc/passwd', '/root', '/proc/1/root', '/var/lib/isokron-docker'].map((target, i) => ok({ kind: 'symlink', target, path: `/work/isk-l0${i}` })), fail({ kind: 'hard', target: '/etc/passwd', path: '/work/isk-hard-1', errno: 18 }), fail({ kind: 'hard', target: '/work/lock/freeze.txt', path: '/tmp/isk-hard-1', errno: 18 }), ok({ kind: 'hard', target: '/work/venv/lib/site-packages/isk_seed.py', path: '/work/isk-hl-1' })],
     }),
     stage: {
-      disk: { layer_fs_mb: VOLUME_CAP.mb - 150, layer_fs_inodes: VOLUME_CAP.inodes, layer_bytes_mb: 64, landed: 4, host_free_drop_mb: 2 },
+      disk: { layer_fs_mb: VOLUME_CAP.mb - 150, layer_fs_inodes: VOLUME_CAP.inodes, layer_bytes_mb: 64, landed: 5, host_free_drop_mb: 2 },
       lower: { intact: true, entries: 11, changed: 0 },
       readout: READOUT_PATHS.map((path) => ({ path, exit: 0, bytes: 60, seeded: true })),
       fresh: { seeded: true, leaked: [] },

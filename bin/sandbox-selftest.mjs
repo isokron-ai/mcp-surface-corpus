@@ -35,7 +35,7 @@ import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { inspectMismatches, settingsDigest, settingsManifest } from '../src/sandbox-env.mjs';
 import { Telemetry, fromNetlog, fromProxy, newRunId, readTelemetry } from '../src/telemetry.mjs';
-import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, LAYER_SEED, LAYER_WRITES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, VOLUME_CASE_PATH, caseNet, evaluateCase } from '../src/selftest.mjs';
+import { CASES, CANARY_PORT, CASE_LISTEN_PORT, INSTALL_CASES, LAYER_SEED, LAYER_SEED_LINKS, LAYER_WRITES, PROXY_ALLOWED, PROXY_DENIED_HOSTS, READOUT_PATHS, VOLUME_CASE_PATH, caseNet, evaluateCase } from '../src/selftest.mjs';
 import { PROXY_LOG_CAP, imageHoles, firewallCounts, limitsHit, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, watchTraces, workReadCmd, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { P } from '../src/targets.mjs';
 import { lookup } from 'node:dns/promises';
@@ -163,7 +163,7 @@ export const seedContent = (path, nonce) => `isk-seed-${nonce} ${path}\n`;
 export function layerSeedCmd(nonce) {
   if (!/^[0-9a-f]{16}$/.test(String(nonce))) throw new HarnessError('a seed takes a nonce of ours');
   const dirs = [...new Set(LAYER_SEED.map((p) => p.replace(/\/[^/]+$/, '')))];
-  return [`mkdir -p ${dirs.join(' ')}`, ...LAYER_SEED.map((p) => `printf '%s\\n' 'isk-seed-${nonce} ${p}' > ${p}`), 'chmod 0755 /work/venv/bin/isk-tool'].join(' && ');
+  return [`mkdir -p ${dirs.join(' ')}`, ...LAYER_SEED.map((p) => `printf '%s\\n' 'isk-seed-${nonce} ${p}' > ${p}`), 'chmod 0755 /work/venv/bin/isk-tool', ...LAYER_SEED_LINKS.map(([f, l]) => `ln ${f} ${l}`)].join(' && ');
 }
 
 /** The env the hostile target gets: what any target gets, nothing of the runner's. */
@@ -378,14 +378,15 @@ const STAGES = {
     // The teardown a corpus run does after each server: its container, then its layer.
     await ctx.dk.kill(id);
     // (the overlay-keep mutation leaves the layer where it is, and asks Docker the same way)
-    const gone = ctx.disable === 'overlay-keep' ? await ctx.dk.layerGone(layer) : await ctx.dk.dropLayer(layer);
+    const gone = ctx.disable === 'overlay-keep' ? await ctx.dk.layerGone(layer) : (await ctx.dk.dropLayer(layer)).removed;
     let fresh = null;
     const fl = await ctx.dk.writableLayer(work, { root: ctx.cfg.docker_root, image: ctx.images.node22, target: name });
     try {
-      const leakPaths = [`${P.work}/isk-new-${nonce}`, `${P.work}/fill-${nonce}`, `${P.work}/venv/lib/site-packages/logs`, `${P.work}/isk-l00`, `${P.work}/isk-wh-${nonce}`];
-      const ex = await stage([{ src: fl.volume, dst: P.work, ro: true, nocopy: true }], ['exists', ...leakPaths, ...LAYER_SEED]);
+      const leakPaths = [`${P.work}/isk-new-${nonce}`, `${P.work}/fill-${nonce}`, `${P.work}/venv/lib/site-packages/logs`, `${P.work}/isk-l00`, `${P.work}/isk-wh-${nonce}`, `${P.work}/isk-hl-${nonce}`];
+      const seededPaths = [...LAYER_SEED, ...LAYER_SEED_LINKS.map(([, l]) => l)];
+      const ex = await stage([{ src: fl.volume, dst: P.work, ro: true, nocopy: true }], ['exists', ...leakPaths, ...seededPaths]);
       const e = ex && ex.exists && typeof ex.exists === 'object' ? ex.exists : null;
-      fresh = e ? { seeded: LAYER_SEED.every((p) => e[p] === true), leaked: leakPaths.filter((p) => e[p] !== false).map((p) => clip(p, 100)) } : null;
+      fresh = e ? { seeded: seededPaths.every((p) => e[p] === true), leaked: leakPaths.filter((p) => e[p] !== false).map((p) => clip(p, 100)) } : null;
     } finally { await ctx.dk.dropLayer(fl); }
     return { disk, lower, readout, fresh, layer_gone: gone };
   },

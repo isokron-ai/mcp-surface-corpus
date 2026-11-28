@@ -103,10 +103,15 @@ Every container that runs target code (install and server):
   `exec` like the work volume; `/data` is a tmpfs like an image VOLUME's (32 MiB, `noexec,nosuid,nodev`). The
   overlay's folders are read back from `docker volume inspect` and must be the data-root's own folders of those two
   volumes, its options must be exactly ours, and a helper must see the work volume through it before the server
-  starts. overlayfs never writes to a lower layer, so the work volume stays as the install left it for the lock
-  read-out and the next probe; the layer is removed with its server's container, before the next probe gets a fresh
-  one. Isolation does not rest on `nosuid` or `noexec` there (runsc may ignore them, as it ignores `noexec` on
-  tmpfs): it rests on gVisor, user 65534, no capabilities and no-new-privileges, as for `/tmp`. The `work-overlay`
+  starts. The option is refused on every lane (the local lane's preflight is not strict) unless Docker's volumes
+  folder is the capped filesystem `install-runsc.sh` makes (`dockerFsProblem`). overlayfs never writes to a lower
+  layer, so the work volume stays as the install left it for the lock read-out and the next probe; the layer is
+  removed with its server's container, before the next probe gets a fresh one, without `-f` and its upper volume
+  only once the overlay volume is gone (a removal that fails is recorded, and the sweep leaves upper volumes alone
+  while a layer is still there). Isolation does not rest on `nosuid` or `noexec` there (runsc may ignore them, as it
+  ignores `noexec` on tmpfs): it rests on gVisor, user 65534, no capabilities and no-new-privileges, as for `/tmp`.
+  What is new on the host kernel's side is overlayfs's write path (copy-up, whiteouts, renames in the upper layer)
+  for one volume, reached through gVisor's gofer, besides the read path Docker's overlay2 rootfs already takes. The `work-overlay`
   hostile case runs the layer as a server gets it and checks the work volume under it is unchanged, a fresh layer
   shows nothing written, the layer is gone after teardown, the fill meets the volume filesystem's cap, and links,
   hard links, mounts, umount, file handles and overlay attributes lead nowhere;

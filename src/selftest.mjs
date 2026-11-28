@@ -37,7 +37,9 @@ export const VOLUME_CASE_PATH = '/isk-vol';
  * positive control), and how much it fills there (LAYER_FILL_MB) before one allocation past the volume filesystem's cap.
  */
 export const LAYER_SEED = ['/work/lock/freeze.txt', '/work/lock/go-version-m.txt', '/work/pkg/package-lock.json', '/work/venv/lib/site-packages/isk_seed.py', '/work/venv/bin/isk-tool'];
-export const LAYER_WRITES = (nonce) => [`/work/isk-new-${nonce}`, `/work/fill-${nonce}`, `/work/venv/lib/site-packages/logs/isk-${nonce}.log`, '/work/lock/freeze.txt'];
+/** Hard links the seed makes in the work volume, [file, link]: the case copies up one half of the pair through the layer. */
+export const LAYER_SEED_LINKS = [['/work/venv/lib/site-packages/isk_seed.py', '/work/venv/lib/site-packages/isk_pair.py']];
+export const LAYER_WRITES = (nonce) => [`/work/isk-new-${nonce}`, `/work/fill-${nonce}`, `/work/venv/lib/site-packages/logs/isk-${nonce}.log`, '/work/lock/freeze.txt', '/work/venv/lib/site-packages/isk_pair.py'];
 export const LAYER_FILL_MB = 64;
 /** The sandbox network a case runs on: 'install' for the install cases, else 'run'. */
 export const caseNet = (name) => (INSTALL_CASES.includes(name) ? 'install' : 'run');
@@ -471,7 +473,8 @@ const RULES = {
     const privTried = ['mount', 'umount2'].every((n) => priv.some((p) => p.name === n));
     const links = list(ev.trace && ev.trace.links);
     const outLinks = links.filter((l) => l.kind === 'symlink' && !inside(l.target));
-    const hard = links.filter((l) => l.kind === 'hard' && l.failed < l.n);
+    // A hard link that worked is a way out unless both its ends are in the layer or /tmp (a server may link its own files).
+    const hard = links.filter((l) => l.kind === 'hard' && l.failed < l.n && !(inside(l.target) && inside(l.path)));
     const r = resultOf(ev.report);
     const drop = d && Number.isInteger(d.host_free_drop_mb) ? d.host_free_drop_mb : null;
     const capOk = !!d && Number(d.layer_fs_mb) > 0 && Number(d.layer_fs_mb) <= VOLUME_CAP.mb * 1.05 && Number(d.layer_fs_inodes) > 0 && Number(d.layer_fs_inodes) <= VOLUME_CAP.inodes * 1.05;

@@ -63,7 +63,7 @@ import { envNameAllowed, settingsDigest, settingsManifest } from '../src/sandbox
 import { loadRunscConfig, RUNTIME } from '../src/runsc.mjs';
 import { NETS, readHostLog } from '../src/sandbox-net.mjs';
 import { Telemetry, fromProxy } from '../src/telemetry.mjs';
-import { jsonLines, diskProblem, workReadCmd, PROXY_LOG_CAP, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
+import { jsonLines, diskProblem, dockerFsProblem, workReadCmd, PROXY_LOG_CAP, firewallCounts, limitsHit, watchTraces, hostDropsFor, inspectOne, preflight, rolesOn, startNetlogOn, stopNetlog, sweepTraces, takeTrace, writeDrops, writeNetlog } from '../src/sandbox-run.mjs';
 import { sdkFromFile } from '../src/sdk.mjs';
 import { buildRow, buildState, RECORD_FORMAT } from '../src/record.mjs';
 import { probeStdio, listed, PROTOCOL_OFFERED } from '../sandbox/probe.mjs';
@@ -577,9 +577,12 @@ async function runTarget(t, list, ctx, dk) {
                 // The server's container first (probeStdioIn and the HTTP branch remove it already; this is for a probe
                 // that threw), then the layer: nothing the server wrote outlives its probe.
                 await tdk.kill(sname);
-                const removed = await tdk.dropLayer(layer);
-                rec.writable_work.probes[tag].removed = removed;
-                if (!removed) rec.errors.push({ step: 'live', error: `the writable layer of probe ${tag} could not be removed` });
+                const dr = await tdk.dropLayer(layer);
+                rec.writable_work.probes[tag].removed = dr.removed;
+                if (!dr.removed) {
+                  rec.writable_work.probes[tag].remove_error = dr.error;
+                  rec.errors.push({ step: 'live', error: `the writable layer of probe ${tag} could not be removed: ${dr.error}`.slice(0, 200) });
+                }
               }
             }
           };
@@ -746,6 +749,12 @@ export async function main(argv = process.argv.slice(2), { fetchFn = fetch, make
     Object.assign(shard.sandbox, { ok: pf.ok, reason: pf.reason, host_log: pf.hostLog });
     if (!pf.ok) throw new HarnessError(`the sandbox is not there (${pf.reason}): ${pf.detail}`);
     ctx.hostLog = pf.hostLog;
+    // A writable layer lands on Docker's volumes folder: on every lane (the local one's preflight is not strict), it must
+    // be the capped filesystem install-runsc.sh makes, or a server could fill the runner's own disk through its layer.
+    if (ctx.writableWork) {
+      const p = dockerFsProblem(cfg, hostRun);
+      if (p) throw new HarnessError(`writableWork needs Docker's volumes on their own capped filesystem: ${p}`);
+    }
     await prepareTools(ctx, dk);
     ctx.baselineMs = await baseline(ctx, dk);
     Object.assign(shard, { writable_work: ctx.writableWork, reader: ctx.reader ? { id: ctx.reader.id, tar_sha256: ctx.readerSha } : null, tools_sha256: ctx.toolsSha, install_ca: ctx.installCa, baseline_initialize_ms: ctx.baselineMs, image_ids: ctx.imageIds, cpus: ctx.cpus });

@@ -5,7 +5,7 @@
 // the hostile self test (and its two mutations) decides as it should.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DATA_TMPFS, Docker, HarnessError, LAYER_CHECK_CMD, LAYER_CMD, LIMITS, WRITABLE_KINDS, overlayOptions, overlayVolumeArgs, sandboxRunArgs, volumeDataPath, volumeMount } from '../src/docker.mjs';
@@ -15,8 +15,9 @@ import { EXPECT, checkMutation } from '../scripts/check-mutation.mjs';
 import { MUTATIONS, layerSeedCmd, seedContent } from '../bin/sandbox-selftest.mjs';
 import { mutationTelemetry } from './evidence-fixtures.mjs';
 import { GOOD } from './selftest-fixtures.mjs';
-import { tree } from '../selftest/stage.mjs';
+import { entryOf, tree } from '../selftest/stage.mjs';
 import { loadRunscConfig } from '../src/runsc.mjs';
+import { KINDS } from '../src/targets.mjs';
 
 const ROOT = '/var/lib/isokron-docker';
 const IMG = `docker.io/library/node:24-bookworm-slim@sha256:${'d'.repeat(64)}`;
@@ -43,6 +44,7 @@ test('R-SBX-57 a layer\'s overlay names only the data-root\'s own folders of a w
   // The layer is mounted like any volume of ours, and never seeded from the image.
   assert.equal(volumeMount({ src: 'surface-r1-s001-layer4', dst: '/work', nocopy: true }), 'type=volume,src=surface-r1-s001-layer4,dst=/work,volume-nocopy');
   assert.deepEqual([...WRITABLE_KINDS].sort(), ['cargo', 'go', 'mcpb', 'npm', 'nuget', 'pypi']);
+  assert.deepEqual([...WRITABLE_KINDS].sort(), KINDS.filter((k) => k !== 'docker').sort(), 'every kind with a work volume, and no other');
   assert.deepEqual([...DATA_TMPFS], ['/data']);
 });
 
@@ -69,7 +71,13 @@ class LayerDocker extends Docker {
       if (this.opts.createFails && o.type === 'overlay') return out('', 1);
       this.vols.set(name, o); return out(`${name}\n`);
     }
-    if (a === 'volume' && b === 'rm') { if (!this.opts.keep) for (const v of argv.slice(3)) this.vols.delete(v); return out(''); }
+    if (a === 'volume' && b === 'rm') {
+      const names = argv.slice(2).filter((x) => x !== '-f');
+      if (this.opts.rmFails && names.some((v) => this.opts.rmFails.test(v)) && !argv.includes('-f')) return out('', 1);
+      if (!this.opts.keep) for (const v of names) this.vols.delete(v);
+      return out('');
+    }
+    if (a === 'volume' && b === 'ls') return out([...this.vols.keys()].join('\n'));
     if (a === 'run') return out('', this.opts.checkFails && argv.join(' ').includes(LAYER_CHECK_CMD) ? 1 : 0);
     return out('');
   }
@@ -101,15 +109,47 @@ test('R-SBX-58 a layer: a fresh upper volume made 65534\'s by a root helper with
   assert.equal(val(check, '--runtime'), 'runsc');
   assert.deepEqual(check.filter((x, i) => check[i - 1] === '--mount'), [`type=volume,src=${layer.volume},dst=/work,readonly,volume-nocopy`]);
   assert.ok(dk.calls.indexOf(check) > dk.calls.indexOf(create));
-  // Removed: the overlay volume, then its upper one; the work volume stays.
-  assert.equal(await dk.dropLayer(layer), true);
-  const rms = dk.calls.filter((a) => a[0] === 'volume' && a[1] === 'rm').map((a) => a[3]);
-  assert.deepEqual(rms, [layer.volume, layer.upper]);
+  // Removed: the overlay volume, then its upper one, never with -f; the work volume stays.
+  assert.deepEqual(await dk.dropLayer(layer), { removed: true, error: null });
+  const rms = dk.calls.filter((a) => a[0] === 'volume' && a[1] === 'rm');
+  assert.deepEqual(rms, [['volume', 'rm', layer.volume], ['volume', 'rm', layer.upper]]);
   assert.ok(dk.vols.has('surface-r1-s001-work'));
   // A layer Docker still lists after its removal is said to be there.
   const keep = new LayerDocker({ keep: true });
   keep.vols.set('surface-r1-s001-work', {});
-  assert.equal(await keep.dropLayer(await keep.writableLayer('surface-r1-s001-work', { root: ROOT, image: IMG, target: 's001' })), false);
+  const kr = await keep.dropLayer(await keep.writableLayer('surface-r1-s001-work', { root: ROOT, image: IMG, target: 's001' }));
+  assert.deepEqual(kr, { removed: false, error: 'Docker still lists a volume of the layer after its removal' });
+});
+
+test('R-SBX-58 an overlay volume Docker will not remove keeps its upper volume (never an upperdir a mounted overlay uses), and says so; the sweep removes layers first, without -f', async () => {
+  const dk = new LayerDocker({ rmFails: /-layer\d+$/ });
+  dk.vols.set('surface-r1-s001-work', {});
+  const layer = await dk.writableLayer('surface-r1-s001-work', { root: ROOT, image: IMG, target: 's001' });
+  const r = await dk.dropLayer(layer);
+  assert.equal(r.removed, false);
+  assert.match(r.error, /^the overlay volume could not be removed \(exit 1\)/);
+  assert.deepEqual(dk.calls.filter((a) => a[0] === 'volume' && a[1] === 'rm'), [['volume', 'rm', layer.volume]], 'the upper volume is not touched');
+  assert.ok(dk.vols.has(layer.upper) && dk.vols.has(layer.volume));
+  // The upper one refusing is said too.
+  const up = new LayerDocker({ rmFails: /-up\d+$/ });
+  up.vols.set('surface-r1-s001-work', {});
+  assert.match((await up.dropLayer(await up.writableLayer('surface-r1-s001-work', { root: ROOT, image: IMG, target: 's001' }))).error, /^the upper volume could not be removed/);
+  // The sweep: layers first, one by one, without -f; while one is still there no upper volume goes; the rest with -f.
+  dk.calls.length = 0;
+  await dk.sweep();
+  const rm = dk.calls.filter((a) => a[0] === 'volume' && a[1] === 'rm');
+  assert.deepEqual(rm[0], ['volume', 'rm', layer.volume]);
+  assert.deepEqual(rm[1], ['volume', 'rm', '-f', 'surface-r1-s001-work']);
+  assert.equal(rm.length, 2);
+  const ok = new LayerDocker();
+  ok.vols.set('surface-r1-s001-work', {});
+  const l2 = await ok.writableLayer('surface-r1-s001-work', { root: ROOT, image: IMG, target: 's001' });
+  ok.calls.length = 0;
+  await ok.sweep();
+  const rm2 = ok.calls.filter((a) => a[0] === 'volume' && a[1] === 'rm');
+  assert.deepEqual(rm2[0], ['volume', 'rm', l2.volume]);
+  assert.deepEqual(rm2[1].slice(0, 3), ['volume', 'rm', '-f']);
+  assert.deepEqual(rm2[1].slice(3).sort(), [l2.upper, 'surface-r1-s001-work'].sort());
 });
 
 test('R-SBX-58 a layer is refused when Docker keeps a volume anywhere but its data-root, when the overlay\'s options are not ours, or when the check through it fails', async () => {
@@ -159,6 +199,7 @@ test('R-CASE-29 work-overlay: blocked only when the work volume under the layer 
   const g = (f) => { const ev = GOOD['work-overlay'](); f(ev); return evaluateCase('work-overlay', ev); };
   const good = g(() => {});
   assert.deepEqual([good.blocked, good.logged, good.pass], [true, true, true], good.detail);
+  assert.ok(GOOD['work-overlay']().trace.links.some((l) => l.kind === 'hard' && l.failed === 0 && l.path.startsWith('/work/')), 'a hard link inside the layer, to a file of the work volume, is a server\'s own business');
   const cases = [
     ['the work volume under the layer changed', (ev) => { ev.stage.lower = { intact: false, entries: 12, changed: 2 }; }, /^got through: the case's writes reached the work volume under the overlay \(2 entries changed\)/],
     ['a fresh layer shows a write', (ev) => { ev.stage.fresh.leaked = ['/work/isk-new-1']; }, /^got through: a fresh layer over the same work volume shows what the case wrote/],
@@ -173,6 +214,8 @@ test('R-CASE-29 work-overlay: blocked only when the work volume under the layer 
     ['umount worked', (ev) => { ev.trace.privileged[1] = { name: 'umount2', n: 1, failed: 0, errno: null }; }, /^got through: umount2 worked/],
     ['a file handle opened', (ev) => { ev.trace.privileged[2] = { name: 'open_by_handle_at', n: 1, failed: 0, errno: null }; }, /^got through: open_by_handle_at worked/],
     ['a hard link was made', (ev) => { ev.trace.links.push({ kind: 'hard', target: '/etc/passwd', path: '/work/h', n: 1, failed: 0, errno: null }); }, /^got through: a hard link was made/],
+    ['a hard link out of the layer was made', (ev) => { ev.trace.links.push({ kind: 'hard', target: '/work/lock/freeze.txt', path: '/var/tmp/h', n: 1, failed: 0, errno: null }); }, /^got through: a hard link was made/],
+    ['the copy-up of the pair did not land', (ev) => { ev.stage.disk.landed = 4; }, /^not shown to work: the case's writes did not land in the layer \(4 of 5 found/],
     ['nothing landed in the layer', (ev) => { Object.assign(ev.stage.disk, { landed: 1, layer_bytes_mb: 0 }); }, /^not shown to work: the case's writes did not land in the layer/],
     ['the fill did not land', (ev) => { ev.stage.disk.layer_bytes_mb = 3; }, /^not shown to work: the case's writes did not land/],
     ['a fresh layer without the seeded files', (ev) => { ev.stage.fresh.seeded = false; }, /^not shown to work: a fresh layer does not show the seeded work volume/],
@@ -217,6 +260,8 @@ test('R-CASE-29 work-overlay: blocked only when the work volume under the layer 
 test('R-CASE-29 work-overlay: the seed is ours (paths and nonce), each file one line the readout can compare, and the tree reads a folder without following its links', () => {
   const cmd = layerSeedCmd('0123456789abcdef');
   for (const p of LAYER_SEED) assert.ok(cmd.includes(`printf '%s\\n' 'isk-seed-0123456789abcdef ${p}' > ${p}`), p);
+  assert.ok(cmd.endsWith(' && ln /work/venv/lib/site-packages/isk_seed.py /work/venv/lib/site-packages/isk_pair.py'), 'a hard-linked pair, for a copy-up of one half');
+  assert.ok(LAYER_WRITES('1').includes('/work/venv/lib/site-packages/isk_pair.py'), 'the copy-up must land in the layer');
   assert.equal(seedContent('/work/lock/freeze.txt', '0123456789abcdef'), 'isk-seed-0123456789abcdef /work/lock/freeze.txt\n');
   for (const bad of ['x; rm -rf /', '', '0123456789ABCDEF', '$(id)']) assert.throws(() => layerSeedCmd(bad), /nonce of ours/);
   const d = mkdtempSync(join(tmpdir(), 'tree-'));
@@ -232,6 +277,19 @@ test('R-CASE-29 work-overlay: the seed is ours (paths and nonce), each file one 
   assert.equal(tree(d).sha256, t1.sha256, 'and only its bytes, mode and kind: not its times');
   rmSync(join(d, 'l')); symlinkSync('/root', join(d, 'l'));
   assert.notEqual(tree(d).sha256, t1.sha256, 'a link\'s target counts');
+  rmSync(join(d, 'l')); symlinkSync('/etc', join(d, 'l'));
+  assert.equal(tree(d).sha256, t1.sha256);
+  // A file's link count: a hard link made to it from elsewhere changes its entry.
+  const item = () => tree(d).items.find(([p]) => p === 'lock/freeze.txt')[1];
+  const before = item();
+  const other = mkdtempSync(join(tmpdir(), 'tree-other-'));
+  linkSync(join(d, 'lock', 'freeze.txt'), join(other, 'x'));
+  assert.notEqual(item(), before, 'nlink counts');
+  // Owner and group count too.
+  const st = { isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true, mode: 0o100644, uid: 65534, gid: 65534, nlink: 1, size: 3 };
+  assert.equal(entryOf(st, 'h'), 'f 644 65534:65534 1 3 h');
+  assert.notEqual(entryOf({ ...st, uid: 0 }, 'h'), entryOf(st, 'h'));
+  assert.notEqual(entryOf({ ...st, gid: 0 }, 'h'), entryOf(st, 'h'));
 });
 
 test('R-MUT-12 overlay-lower-rw: work-overlay on its work volume itself, read-write, is caught by the work volume under the layer changing', () => {

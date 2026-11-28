@@ -950,6 +950,10 @@ def case_work_overlay(nonce, gw, canary, host_canary=None):
         write("/work/lock/freeze.txt", f"isk-over-{nonce}\n".encode()),
         step("/work/pkg/package-lock.json", lambda: os.unlink("/work/pkg/package-lock.json")),
         step("/work/venv/bin/isk-tool", lambda: os.chmod("/work/venv/bin/isk-tool", 0o4755)),
+        # A copy-up of one half of a hard-linked pair the install left (the other half must stay as it is below), then a
+        # hard link inside the layer to the other half (a copy-up of it first).
+        write("/work/venv/lib/site-packages/isk_pair.py", f"isk-pair-{nonce}\n".encode()),
+        step(f"/work/isk-hl-{nonce}", lambda: os.link("/work/venv/lib/site-packages/isk_seed.py", f"/work/isk-hl-{nonce}")),
     ]
     # Links out of the layer, read and written through; the read-out files replaced by links to outside.
     made, reads, writes = [], [], []
